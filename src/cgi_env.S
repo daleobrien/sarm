@@ -7,12 +7,17 @@
 ;; themselves, just the pointers to them.
 .global env_var_ptr_buf
 
+
+;; i only have a macro for add_const_var because, unfortunately, sev_add_kv_var
+;; is called much more inconsistantly. sometimes x3 is ldr_l'd, sometime's it's
+;; mov'd, once it's even add'd. so i can't have a cute little macro for it :(
 .macro add_const_var sym, len
     adr_l x1, \sym
     mov x2, \len
     bl sev_add_const_var
     b.cs sev_failure
 .endm
+
 
 .data
 ;; constant env vars
@@ -49,6 +54,15 @@ put_str:     .ascii "PUT"
 .equ put_len,     . - put_str
 post_str:    .ascii "POST"
 .equ post_len,    . - post_str
+
+.align 3
+method_table:
+    .quad get_str,     get_len
+    .quad head_str,    head_len
+    .quad options_str, options_len
+    .quad delete_str,  delete_len
+    .quad put_str,     put_len
+    .quad post_str,    post_len
 
 remote_addr: .ascii "REMOTE_ADDR="
 .equ remote_addr_len, . - remote_addr
@@ -128,43 +142,23 @@ set_env_vars:
 
     mov x21, #0 ; index into string buffer
     mov x22, #0 ; index into pointer buffer
-    mov x23, env_var_str_buf_size
-    mov x24, env_var_ptr_buf_size
+    ;mov x23, env_var_str_buf_size
+    ;mov x24, env_var_ptr_buf_size
 
     ;; GATEWAY_INTERFACE=CGI/1.1
     add_const_var gateway_interface, gateway_interface_len
-    ;adr_l x1, gateway_interface
-    ;mov x2, gateway_interface_len
-    ;bl sev_add_const_var
-    ;b.cs sev_failure
 
     ;; SERVER_PROTOCOL=HTTP/1.1
     add_const_var server_protocol, server_protocol_len
-    ;adr_l x1, server_protocol
-    ;mov x2, server_protocol_len
-    ;bl sev_add_const_var
-    ;b.cs sev_failure
 
     ;; SERVER_SOFTWARE=ymawky
     add_const_var server_software, server_software_len
-    ;adr_l x1, server_software
-    ;mov x2, server_software_len
-    ;bl sev_add_const_var
-    ;b.cs sev_failure
 
     ;; PATH=/bin:/usr/bin (so CGI scripts can execute things)
     add_const_var path, path_len
-    ;adr_l x1, path
-    ;mov x2, path_len
-    ;bl sev_add_const_var
-    ;b.cs sev_failure
 
     ;; PATH_INFO=(null)
     add_const_var path_info, path_info_len
-    ;adr_l x1, path_info
-    ;mov x2, path_info_len
-    ;bl sev_add_const_var
-    ;b.cs sev_failure
 
     ;; get the remote connections IP (don't really need the port) for the CGI
     ;; script
@@ -191,7 +185,7 @@ set_env_vars:
     mov x4, x26 ; same ip, same ip length we saved above
     bl sev_add_kv_var
     b.cs sev_failure
-;test3:
+
     ;; get our server's IP and port for the CGI script
     mov x25, x0 ; save current pointer
     adr_l x0, addr ; this is the address struct from ymawky.S
@@ -322,49 +316,14 @@ set_env_vars:
 2:
     mov x0, x25 ; gotta restore if the host header field didn't exist, too...
 3:
-    ;; there's gotta be a better way to do this... oh well. that's a problem
-    ;; for future tomt.
+    ;; get the request_id string from the method_table lookup table
     ldr_l x3, request_id
-    cmp x3, #GET_ID
-    b.eq 1f
-    cmp x3, #HEAD_ID
-    b.eq 2f
-    cmp x3, #OPTIONS_ID
-    b.eq 3f
-    cmp x3, #DELETE_ID
-    b.eq 4f
-    cmp x3, #PUT_ID
-    b.eq 5f
-    cmp x3, #POST_ID
-    b.eq 6f
+    cmp x3, #6
+    b.hs sev_failure ; if, for some reason, request_id is >= 6, that's... bad
 
-    ;; if none, just fall through to GET i guess. should really be a 500 tho
-1:
-    adr_l x3, get_str
-    mov x4, get_len
-    b 9f
-2:
-    adr_l x3, head_str
-    mov x4, head_len
-    b 9f
-3:
-    adr_l x3, options_str
-    mov x4, options_len
-    b 9f
-4:
-    adr_l x3, delete_str
-    mov x4, delete_len
-    b 9f
-5:
-    adr_l x3, put_str
-    mov x4, put_len
-    b 9f
-6:
-    adr_l x3, post_str
-    mov x4, post_len
-    ;; fallthrough
-9:
-    ;; REQUEST_METHOD=GET/PUT/POST/whatever blah blah blah
+    adr_l x5, method_table
+    add x5, x5, x3, lsl #4 ; make x5 point to the pair in the method table
+    ldp x3, x4, [x5] ; x3 -> string pointer, x4 -> string length
     adr_l x1, request_method
     mov x2, request_method_len
     bl sev_add_kv_var
@@ -373,28 +332,11 @@ set_env_vars:
     str xzr, [x20, x22]
     b sev_epilogue
 
-sev_failure:
-    cmp xzr, xzr
-    b 1f
-sev_epilogue:
-    cmn xzr, xzr
-1:
-    ldp x25, x26, [sp, #64]
-    ldp x23, x24, [sp, #48]
-    ldp x21, x22, [sp, #32]
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #80
-    ret
-
 ;; x0 -> destination for memcpy
 ;; x1 -> key string
 ;; x2 -> key string length
 ;; x3 -> value string
 ;; x4 -> value string length
-;; NOTE this is technically a part of set_env_vars, so it uses various callee-
-;; saved registers (x19+) without actually saving them. set_env_vars relies on
-;; this function (and sev_add_const_var) modifying them. set_env_vars does save
-;; them, at least, so they're not affected globally after a call to set_env_vars
 sev_add_kv_var:
     stp x29, x30, [sp, #-32]!
     stp x25, x26, [sp, #16]
@@ -402,12 +344,12 @@ sev_add_kv_var:
     mov x25, x3
     mov x26, x4
 
-    cmp x22, x24
+    cmp x22, env_var_ptr_buf_size
     b.hs 2f
 
     ;; bounds check
     add x21, x21, x2
-    cmp x21, x23
+    cmp x21, env_var_str_buf_size
     b.hs 2f
 
     ;; store pointer to current location in env_var_ptr_buf
@@ -420,7 +362,7 @@ sev_add_kv_var:
 
     ;; bounds check again
     add x21, x21, x26
-    cmp x21, x23
+    cmp x21, env_var_str_buf_size
     b.hs 2f
 
     ;; store value string in env_var_str_buf
@@ -430,7 +372,7 @@ sev_add_kv_var:
 
     ;; bounds check and NULL terminate string
     add x21, x21, #1
-    cmp x21, x23
+    cmp x21, env_var_str_buf_size
     b.hs 2f
     strb wzr, [x0], #1
 
@@ -446,12 +388,12 @@ sev_add_kv_var:
 
 sev_add_const_var:
     stp x29, x30, [sp, #-16]!
-    cmp x22, x24
+    cmp x22, env_var_ptr_buf_size
     b.hs 2f
 
     ;; bounds check
     add x21, x21, x2
-    cmp x21, x23
+    cmp x21, env_var_str_buf_size
     b.hs 2f
 
     ;; store pointer in env_var_ptr_buf
@@ -468,6 +410,21 @@ sev_add_const_var:
     cmp xzr, xzr ; set carry
 3:
     ldp x29, x30, [sp], #16
+    ret
+
+;; yup... that was all part of set_env_vars. that's why sev_add_kv_var used
+;; the callee-saved registers without me worrying about it :)
+sev_failure:
+    cmp xzr, xzr
+    b 1f
+sev_epilogue:
+    cmn xzr, xzr
+1:
+    ldp x25, x26, [sp, #64]
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #80
     ret
 
 
