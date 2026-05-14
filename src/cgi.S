@@ -177,8 +177,10 @@ check_cgi_path:
     ;; if filename len is shorter than cgi_dir_len - 1, it's definitely not
     ;; in cgi_dir/.
     ldr_l x0, filename_len
-    mov x2, cgi_dir_len
-    sub x2, x2, #1 ; account for the possible missing /
+    ;; -1 to account for the possible missing /, if the request is for
+    ;; "GET /cgi-bin", we want that to be treated as a CGI request, rather than
+    ;; standard GET. we don't allow directory listing on cgi-bin/.
+    mov x2, #(cgi_dir_len - 1)
     cmp x0, x2
     b.lo Lnot_cgi_file
 
@@ -194,11 +196,17 @@ check_cgi_path:
     ;; check if it matches CGI_DIR, without the slash
     ldr_l x0, filename_str
     adr_l x1, cgi_dir
-    mov x2, cgi_dir_len
-    sub x2, x2, #1 ; account for possible missing /
+    mov x2, #(cgi_dir_len - 1) ; account for possible missing /
     bl streqn_i
     cbz x0, Lnot_cgi_file ; ok, it wasnt CGI_DIR/ or CGI_DIR, so its not a match
-    ;; if they DO match, fallthrough
+
+    ;; if they DO match, check the length. we want it to be the exact length of
+    ;; CGI_DIR - 1, otherwise GET /cgi-binfoo would "match"
+    mov x0, #(cgi_dir_len - 1)
+    ldr_l x1, filename_len
+    cmp x0, x1
+    b.ne Lnot_cgi_file
+    ;; fallthrough
 Lcgi_file:
     cmn xzr, xzr ; clear carry
     b Lccp_epilogue
