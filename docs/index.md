@@ -26,7 +26,7 @@ i gave myself some constraints for this project:
 
 ## assembly, my beloved
 
-assembly language is the layer between machine code and other languages. c gets compiled into assembly, which then gets assembled into an executable binary. assembly is essentially human-readable mnemonics that directly correspond to raw executable bytes: `mov`, `add`, `ldr`, `str`, `cmp`, among others. `svc #0x80` is the human-readable equivalent to the bytes `D4 00 10 01` you'll find in the executable binary on MacOS.
+assembly language is the layer between machine code and other languages. c gets compiled into assembly, which then gets assembled into an executable binary. assembly is essentially human-readable mnemonics that directly correspond to raw executable bytes: `mov`, `add`, `ldr`, `str`, `cmp`, among others. `svc #0x80` is the human-readable equivalent to the bytes `01 10 00 D4` you'll find in the executable binary on MacOS.
 
 you get almost no abstractions. you move values around between cpu registers and memory, compare them, jump to different portions of your code, and call the kernel for syscalls. it makes simple things look complicated, but it also makes almost every step the cpu takes visible and under your control. it does exactly what you tell it to, without warnings, and without any help. if it's behaving incorrectly, it's because *you* wrote it incorrectly.
 
@@ -53,7 +53,7 @@ and for linux:
 
 ```asm
 mov x8, #56 ; SYS_openat syscall number in arm64 linux
-mov x0, #-1 ; directory file descriptor, -1 is a special value (AT_FDCWD) meaning current working directory
+mov x0, #-100 ; directory file descriptor, -100 is a special value (AT_FDCWD) meaning current working directory
 adrp x1, filename
 add x1, x1, :lo12:filename
 mov x2, #0x0 ; O_RDONLY is still 0x0000
@@ -116,7 +116,7 @@ let's walk through an example http request:
 
 ```http
 GET /index.html HTTP/1.0\r\n
-Range: bytes=1-5\r\n\r\n
+Range: bytes=3-5\r\n\r\n
 ```
 
 that first line tells us a lot. it's a `GET` request, which means the client would like us to send over `index.html`. `HTTP/1.0` tells the server what version of http the client is using. the `\r\n` sequence, carriage return plus linefeed, tells the server "that's the end of this line, please process the next one". the `\r\n\r\n` at the end tells the server that's the end of the header. if we never receive `\r\n\r\n`, we have to bail with `400 Bad Request`.
@@ -348,7 +348,7 @@ so ymawky rejects *path segments* that are exactly `..`. this needs to be done *
 
 but wait! what about symlinks?
 
-`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink. sadly for us linuxheads, O_NOFOLLOW_ANY is darin-specific, and there is no equivalent in linux. one approach to ensure there are no symlinks in the path would be to split the string along each `/`, checking each element iteratively using `fstatat()` (syscall #79) with the `AT_SYMLINK_FOLLOW` flag.
+`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink. sadly for us linuxheads, O_NOFOLLOW_ANY is darwin-specific, and there is no equivalent in linux. one approach to ensure there are no symlinks in the path would be to split the string along each `/`, checking each element iteratively using `fstatat()` (syscall #79) with the `AT_SYMLINK_NOFOLLOW` flag.
 
 of course, if someone can plant a specific symlink inside your docroot, odds are something has already gone pretty wrong. but still, can't hurt.
 
@@ -380,7 +380,7 @@ GATEWAY_INTERFACE=CGI/1.1*SERVER_PROTOCOL=HTTP/1.1*SERVER_SOFTWARE=ymawky*
 ^                         ^                        ^
 0x0000000100009ff4        0x000000010000a00e       0x000000010000a027
 ```
-each pointer is 8 bytes long, so if somehow we used up all 4096 bytes of `env_var_string_buffer`, we could have a corresponding pointer to the start of each string. now we can pass `env_var_pointer_buffer` to `execve()`, it will set our environmental variables, and the script can access them via `$GATEWAY_INTERFACE` (or however the scripting language used accesses any environmental variable).
+each pointer is 8 bytes long, so if somehow we end up using up 4096 bytes of `env_var_string_buffer`, we could have a corresponding pointer to the start of each string. in practice, we only set a handful of variables, like under 20, so this is definitely more than enough. now we can pass `env_var_pointer_buffer` to `execve()`, it will set our environmental variables, and the script can access them via `$GATEWAY_INTERFACE` (or however the scripting language used accesses any environmental variable).
 
 ### communication with CGI script
 CGI scripts put their output directly to `stdout`, and read directly from `stdin`. so we have to create some pipes, using the syscalls `pipe()` (syscall #42) to create them, and `dup2()` (syscall #90) to map them to stdout/stdin. now the parent can write to the script's `stdin`, and read from the script's `stdout` to be forwarded to the HTTP client. much like the general `PUT` handler, CGI scripts that called with the `PUT` or `POST` methods have the same dynamically calculated timeout based on content length to prevent slowloris-like attacks.
@@ -406,7 +406,7 @@ apple has a little-documented syscall, `proc_info()` (syscall #336), which allow
 
 since ymawky has a configurable maximum number of connections, it needs to know how many children are alive. `proc_info()` writes child process info to a buffer. since each element has a known size, the server can determine the number of children by looking at how many bytes were written. if there are more than `MAX_PROCS`, new connections get rejected with `503 Service Unavailable`.
 
-on linux, we don't have that syscall, or really any equivalents whatsoever, but we still need to enforce `MAX_PROCS`. we'll need to keep track of how many processes we've spawned vs how many we've reaped, so we have to reap children manually! we use `rt_sigaction()` in the parent to set a handler for `SIGCHLD`. our signal handler is passed into the `sa_handler` field, with a "restorer" set up thanks to the `SA_RESTORER` flag (which the [rt_sigaction(2) manpage](https://man7.org/linux/man-pages/man2/sigaction.2.html) very kindly suggests *"is not intedned for application use"*). this restorer basically has one job: to call `rt_sigreturn()` (syscall #139). this syscall restores the signal frame (basically the entire processor state before the signal was received: all general purpose registers, the stack pointer, FP/SIMD state, etc) from the stack, and allows our process to return to where it was executing before the signal was received.
+on linux, we don't have that syscall, or really any equivalents whatsoever, but we still need to enforce `MAX_PROCS`. we'll need to keep track of how many processes we've spawned vs how many we've reaped, so we have to reap children manually! we use `rt_sigaction()` in the parent to set a handler for `SIGCHLD`. our signal handler is passed into the `sa_handler` field, with a "restorer" set up thanks to the `SA_RESTORER` flag (which the [rt_sigaction(2) manpage](https://man7.org/linux/man-pages/man2/sigaction.2.html) very kindly suggests *"is not intended for application use"*). this restorer basically has one job: to call `rt_sigreturn()` (syscall #139). this syscall restores the signal frame (basically the entire processor state before the signal was received: all general purpose registers, the stack pointer, FP/SIMD state, etc) from the stack, and allows our process to return to where it was executing before the signal was received.
 
 the operating system sends the parent process a `SIGCHLD` signal whenever one of it's child processes terminates, stops, or resumes, and it's typically completely ignored. once a child is stopped, we need to reap the process so it doesn't sit as a zombie. our signal handler calls `wait4()` (syscall #260) in a loop, telling it to reap all zombie child processes. we have to load the active process counter into a register, and then decrement it every time a zombie is reaped, and write it back to memory when we're done. every time a new process is spawned via `clone()` (syscall #220), we have to load that counter, increment it by 1, then write it back to memory (the `fork()` syscall doesn't exist on arm64 linux. don't ask me why. `clone()` does the same thing).
 
@@ -419,7 +419,7 @@ that being said, i did turn to ai at some points during the development of ymawk
 
 but, the only ai-generated code in this repository is html. i'm sorry, but i genuinely do not care about front-end web development at all, really, and know next to no html/css/javascript. i just want pages to look nice, so i tweaked the resulting html pages to my liking.
 
-tl;dr: all of the assembly is artisenal, hand-crafted, human assembly. some of the content is www/ is the work of dirty, dirty robots.
+tl;dr: all of the assembly is artisanal, hand-crafted, human assembly. some of the content in www/ is the work of dirty, dirty robots.
 
 # conclusion
 <p style="text-align: center;">
