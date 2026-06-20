@@ -1,7 +1,7 @@
 ![](docs/ymawky.png)
 
 # *ymawky* -- web server in ARM assembly
-This is *ymawky* (yuh maw kee), a web server written entirely in ARM64 assembly. ymawky is a syscall-only, no libc, fork-per-connection web server written by hand. While it is developed for MacOS, I've tried to make it as portable as possible -- *however*, it's likely you will still need to make some ~~(hopefully minor)~~ Significant tweaks to get this to run on Linux/other Unix systems. See [Implementation Notes](#implementation-notes) for more details.
+This is *ymawky* (yuh maw kee), a web server written entirely in ARM64 assembly. ymawky is a syscall-only, no libc, fork-per-connection web server written by hand for MacOS and Linux (see the [Linux branch](https://github.com/imtomt/ymawky/tree/linux)).
 
 ## Building
 Requires Xcode Command Line Tools. Install with `xcode-select --install`.
@@ -202,6 +202,7 @@ ymawky is written for MacOS (sorry...). There are a few (well, more than a *few*
 - Struct layouts and offsets will differ. The `stat64` struct, `itimerval` struct, and `sockaddr_in` struct, will all need to be reconsidered.
 - `adr xN, foo@PAGE` / `add xN, xN, foo@PAGEOFF` are Mach-O relocation operators. Linux ELF uses different syntax, like `:pg_hi21:` and `:lo12:`. The `adr_l`, `ldr_l` and `str_l` macros would need to be rewritten or replaced.
 - My personal favorite :3 Signal handling works differently on Linux and MacOS. MacOS's `sigaction` struct contains a `sa_tramp` field that the kernel jumps to before your handler. ymawky utilizes `sa_tramp` directly *as the handler itself*, skipping the libc trampoline and `sigreturn` entirely. Since the handler only sends a 408 and exits, without needing to return, that's fine and works wonderfully without libc. The `sigaction` call would need to be rewritten for POSIX systems.
+Lucky for you, I ported ymawky to Linux and did all the work for you! It's available in the Linux branch of this repository.
 
 ### Special Thanks:
 - [asmhttpd](https://github.com/jcalvinowens/asmhttpd), an x86_64 Linux HTTP server, was a big inspiration
