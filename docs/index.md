@@ -3,7 +3,7 @@ layout: default
 title: ymawky
 ---
 # building a web server in aarch64 assembly to give my life (a lack of) meaning
-ymawky is a small, ~~static~~ dynamic http web server written entirely in aarch64 assembly for macos. it uses raw darwin syscalls with *no* libc wrappers, serves static files, supports `GET`, `HEAD`, `PUT`, `OPTIONS`, `DELETE`, byte ranges, directory listing, custom error pages, CGI scripts, and tries to be as hardened as possible.
+ymawky is a small, ~~static~~ dynamic http web server written entirely in aarch64 assembly for macos and linux. it uses raw syscalls with *no* libc wrappers, serves static files, supports `GET`, `HEAD`, `PUT`, `POST` `OPTIONS`, `DELETE`, byte ranges, directory listing, custom error pages, CGI scripts, and tries to be as hardened as possible.
 
 why? why not? the dream of the 80s is alive in ymawky. everybody has nginx. having apache makes you a square. so why not strip every single layer of convenience that computer science has given us since 1957? i wanted to understand how a web server actually works, something i know little about coming from a low-level/systems background. the risks that come up, the problems that need to be solved, the things you don't think about when you're writing python or c.
 
@@ -18,14 +18,15 @@ this *(probably)* won't replace nginx, but it *is* doing something in the most d
 i gave myself some constraints for this project:
 
 * aarch64 assembly only
-* macos/darwin, not linux. only because that's the system i have right now. sorry linuxheads :(
+* ~~macos/darwin, not linux. only because that's the system i have right now. sorry linuxheads :(~~
+* port it to linux, with the same feature set. i caved and installed gentoo in a VM.
 * raw syscalls only: **no** libc wrappers
 * no preexisting parsers
 * absolutely **no** external libraries
 
 ## assembly, my beloved
 
-assembly language is the layer between machine code and other languages. c gets compiled into assembly, which then gets assembled into an executable binary. assembly is essentially human-readable mnemonics that directly correspond to raw executable bytes: `mov`, `add`, `ldr`, `str`, `cmp`, among others. `svc #0x80` is the human-readable equivalent to the bytes `D4 00 10 01` you'll find in the executable binary.
+assembly language is the layer between machine code and other languages. c gets compiled into assembly, which then gets assembled into an executable binary. assembly is essentially human-readable mnemonics that directly correspond to raw executable bytes: `mov`, `add`, `ldr`, `str`, `cmp`, among others. `svc #0x80` is the human-readable equivalent to the bytes `D4 00 10 01` you'll find in the executable binary on MacOS.
 
 you get almost no abstractions. you move values around between cpu registers and memory, compare them, jump to different portions of your code, and call the kernel for syscalls. it makes simple things look complicated, but it also makes almost every step the cpu takes visible and under your control. it does exactly what you tell it to, without warnings, and without any help. if it's behaving incorrectly, it's because *you* wrote it incorrectly.
 
@@ -33,10 +34,10 @@ writing a web server in assembly means there are no http libraries. no automatic
 
 ## raw syscalls
 
-ymawky doesn't use any libc wrappers, it just uses raw calls to the kernel. take, for example, this snippet of code that opens a file:
+ymawky doesn't use any libc wrappers, it just uses raw calls to the kernel. take, for example, these two snippets of code that opens a file. first for MacOS:
 
 ```asm
-mov x16, #5 ; SYS_open syscall number
+mov x16, #5 ; SYS_open syscall number in MacOS
 adrp x0, filename@PAGE
 add x0, x0, filename@PAGEOFF
 mov x1, #0x0 ; O_RDONLY is just 0x0000
@@ -44,12 +45,31 @@ svc #0x80
 b.cs open_failed
 ```
 
-in darwin, the syscall number goes in the `x16` register (in aarch64 linux, it goes in `x8`). syscall number 5 is `open()`, which takes a couple arguments: filename and mode. you put each argument in the registers by hand, then call the kernel with `svc #0x80`.
+in darwin, the syscall number goes in the `x16` register. syscall number 5 is `open()`, which takes a couple arguments: filename and mode. you put each argument in the registers by hand, then call the kernel with `svc #0x80`.
 
 if `open()` fails, the carry flag is set. we check that with `b.cs open_failed`, which means "if the carry flag is set, branch to `open_failed`". then we have to write `open_failed` to do whatever cleanup and response handling is needed.
 
-this happens a lot. assembly doesn't have "exceptions" or "objects", it just sets a cpu flag that you have to check and deal with.
+and for linux:
 
+```asm
+mov x8, #56 ; SYS_openat syscall number in arm64 linux
+mov x0, #-1 ; directory file descriptor, -1 is a special value (AT_FDCWD) meaning current working directory
+adrp x1, filename
+add x1, x1, :lo12:filename
+mov x2, #0x0 ; O_RDONLY is still 0x0000
+;; optionally, openat() takes a third argument, `umode_t mode`. if we were
+;; creating a file (by OR'ing x2 with O_CREAT, or 0x40), `mode` would specify
+;; the file's permissions
+svc #0
+cmn x0, #4095 ; cmn is compare negative. if it's between -4095:-1, it's an error
+b.hi open_failed
+```
+
+the basic layout is the same, but there are important differences. all syscall numbers are different between MacOS and linux (although linux is at least consistent. MacOS syscall numbers can change after updates without warning). syntax in some cases is different, though `add x0, x0, filename@PAGEOFF` and `add x1, x1, :lo12:filename` do essentially the same thing. the way errors are passed by syscalls is different as well: on MacOS, the carry flag (a single bit in the CPU's status register) is set indicating an error, and the `x0` register is set to the errno value. in linux, the carry flag is untouched, and `x0` returns errno as a negative value.
+
+this happens a lot. assembly doesn't have "exceptions" or "objects", it just sets a cpu flag or returns a value that you have to look out for and deal with.
+
+for the rest of the page, i'll be using the MacOS syscall numbers for simplicity's sake. you can find the linux syscalls in `/usr/include/asm-generic/unistd.h`, or <https://arm64.syscall.sh>. other than those differences, it should be very similar.
 
 ## general overview
 at its most basic, a web server receives a request, processes it, returns a status code, and maybe a file. a lot goes into that "receives a request" bit:
@@ -230,12 +250,13 @@ the first two have the same basic fix. if we blindly opened `file.txt` and start
 ```
 
 to get the pid, we use `getpid()` (syscall #20), then a custom `itoa()` to convert the number to a string (while checking for buffer overflow, of course). then, the requested content from the client gets written to the temp file. if everything goes smoothly, the temp file is renamed in place, and `file.txt` now exists on the server. if the client disconnects unexpectedly, times out, or sends a malformed body, the temp file is `unlink()`'d (syscall #10/syscall #472 for `unlinkat()`). existing files are only overwritten after a complete request was sent over successfully.
+
 ## directory listing and more string parsing *yay*
 have you ever noticed sometimes you visit a directory on a website, and it lists all the files with links you can click on? it seems like pretty basic functionality, and it's not *too* complicated. but like everything in assembly, you have to do everything by hand.
 
 if you `GET /somedir/`, we check if directory listing is enabled (`ALLOW_DIR_LISTING` in `config.S`). if it's not, we send a `403 Forbidden` and call it a day.
 
-if it is allowed, we call `getdirentries64()` (syscall #344) on the requested directory. this fills a buffer with information about every file in the directory. importantly for us, it includes the name of each file, and the length of the filename.
+if it is allowed, we call `getdirentries64()` (syscall #344) on the requested directory. this fills a buffer with information about every file in the directory. importantly for us, it includes the name of each file, and the length of the filename. on linux, the equivalent syscall is `getdents64()` (syscall #61). it does basically the same thing, but doesn't give us the length of the filename: we have to pass the filename to a `strlen` function we wrote.
 
 we use that name information to build some HTML, making the directory listing clickable-and-pretty.
 for each file, we write this to the client:
@@ -327,7 +348,7 @@ so ymawky rejects *path segments* that are exactly `..`. this needs to be done *
 
 but wait! what about symlinks?
 
-`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink.
+`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink. sadly for us linuxheads, O_NOFOLLOW_ANY is darin-specific, and there is no equivalent in linux. one approach to ensure there are no symlinks in the path would be to split the string along each `/`, checking each element iteratively using `fstatat()` (syscall #79) with the `AT_SYMLINK_FOLLOW` flag.
 
 of course, if someone can plant a specific symlink inside your docroot, odds are something has already gone pretty wrong. but still, can't hurt.
 
@@ -362,7 +383,7 @@ GATEWAY_INTERFACE=CGI/1.1*SERVER_PROTOCOL=HTTP/1.1*SERVER_SOFTWARE=ymawky*
 each pointer is 8 bytes long, so if somehow we used up all 4096 bytes of `env_var_string_buffer`, we could have a corresponding pointer to the start of each string. now we can pass `env_var_pointer_buffer` to `execve()`, it will set our environmental variables, and the script can access them via `$GATEWAY_INTERFACE` (or however the scripting language used accesses any environmental variable).
 
 ### communication with CGI script
-CGI scripts put their output directly to `stdout`, and read directly from `stdin`. so we have to create some pipes, using the syscalls `pipe()` (syscall #42) to create them, and `dup2()` (syscall #90) to map them to stdout/stdin. now the parent can write to the script's `stdin`, and read from the script's `stdout` to be forwarded `stdout` to the HTTP client. much like the general `PUT` handler, CGI scripts that called with the `PUT` or `POST` methods have the same dynamically calculated timeout based on content length to prevent slowloris-like attacks.
+CGI scripts put their output directly to `stdout`, and read directly from `stdin`. so we have to create some pipes, using the syscalls `pipe()` (syscall #42) to create them, and `dup2()` (syscall #90) to map them to stdout/stdin. now the parent can write to the script's `stdin`, and read from the script's `stdout` to be forwarded to the HTTP client. much like the general `PUT` handler, CGI scripts that called with the `PUT` or `POST` methods have the same dynamically calculated timeout based on content length to prevent slowloris-like attacks.
 
 ### parsing CGI headers
 CGI scripts send headers just like HTTP itself, but with some differences. this allows the script to set their own response code (`200 OK`, `404 Not Found`, etc) and other headers (`Content-Type:`, `Content-Length:`). since the parent process has no way of knowing what the script is going to output, we have to use these in our response header. but CGI headers are more lenient than HTTP headers: in an HTTP header, all lines must end in `\r\n`, and the header itself must end in `\r\n\r\n`. CGI scripts are allowed to have each line in the header end with a single `\n`, and the header as a whole may end in `\n\n` (`\r\n` and `\r\n\r\n` are also acceptable, however). so we have to write a whole host of new parsing functions to deal with CGI headers, as the main parsing functions only deal with HTTP.
@@ -370,19 +391,24 @@ CGI scripts send headers just like HTTP itself, but with some differences. this 
 once we reach the end of the CGI script's headers, we output them to the client literally. we have to skip the `Status:` header, though, since that gets converted to the first line of our response, eg, `HTTP/1.1 200 OK\r\n`. we also need to strip the `Connection:` header, ymawky always sends `Connection: close` and doesn't support keep-alive (yet...?).
 
 ### limitations
-CGI scripts are their own programs. ymawky has no control over what they do. we [cant detect if they're in an infinite loop](https://en.wikipedia.org/wiki/Halting_problem), if they're reading data from outside of the docroot, or anything else. so a CGI script could hang forever, and we can't really do anything about it. they can also have their own vulnerabilities; that's outside of our control.
+CGI scripts are their own programs. ymawky has no control over what they do. we [cant detect if they're in an infinite loop](https://en.wikipedia.org/wiki/Halting_problem), if they're reading data from outside of the docroot, or anything else. so a CGI script could hang forever, and we can't really do anything about it. they can also have their own vulnerabilities; that's outside of our control. the safest option would be to have pretty strict access control lists set up, with ymawky running as a unique, locked-down user/group that only has access to her own directory.
 
-## apple-specific behavior
-
+## some other apple/linux differences
 in order for request timeouts to work, we have to use `setitimer()` (syscall #83) to send `SIGALRM` after a certain amount of time has passed. by default, `SIGALRM` will just kill the child, but we want to send a `408 Request Timeout` message first.
 
 we use `sigaction()` (syscall #46). on darwin, the raw sigaction struct exposes a `sa_tramp` field. typically, libc will set up `sa_tramp` *for* you, and you don't have to think about it. it saves the stack, registers, sets up `sigreturn`, all that jazz, and then branches into your handler. if `sa_tramp` *doesn't* do that, the program won't know where to return to when the handler is done.
 
 but in ymawky, the timeout handler never *needs* to return. it sends a `408 Request Timeout`, closes what it needs to close, and exits the child. because it never returns, i can point the trampoline slot at code that performs the timeout response directly, and bypass `sa_handler` and `sigreturn` entirely.
 
-apple also has a little-documented syscall, `proc_info()` (syscall #336), which allows you to get information about a running process, including its children. this is normally used by tools like `ps`, `lsof`, and `top`, but ymawky uses it to count active child processes.
+this works very similarly on linux. `rt_sigaction()` (syscall #134 on linux) doesn't have an `sa_tramp` field, you can just pass your function as `sa_handler`. for timeouts, it's done the exact same way on linux and macos: nothing gets restored, the signal handler simply catches the signal, sends a response, branches to `child_end` and dies.
+
+apple has a little-documented syscall, `proc_info()` (syscall #336), which allows you to get information about a running process, including its children. this is normally used by tools like `ps`, `lsof`, and `top`, but ymawky uses it to count active child processes.
 
 since ymawky has a configurable maximum number of connections, it needs to know how many children are alive. `proc_info()` writes child process info to a buffer. since each element has a known size, the server can determine the number of children by looking at how many bytes were written. if there are more than `MAX_PROCS`, new connections get rejected with `503 Service Unavailable`.
+
+on linux, we don't have that syscall, or really any equivalents whatsoever, but we still need to enforce `MAX_PROCS`. we'll need to keep track of how many processes we've spawned vs how many we've reaped, so we have to reap children manually! we use `rt_sigaction()` in the parent to set a handler for `SIGCHLD`. our signal handler is passed into the `sa_handler` field, with a "restorer" set up thanks to the `SA_RESTORER` flag (which the [rt_sigaction(2) manpage](https://man7.org/linux/man-pages/man2/sigaction.2.html) very kindly suggests *"is not intedned for application use"*). this restorer basically has one job: to call `rt_sigreturn()` (syscall #139). this syscall restores the signal frame (basically the entire processor state before the signal was received: all general purpose registers, the stack pointer, FP/SIMD state, etc) from the stack, and allows our process to return to where it was executing before the signal was received.
+
+the operating system sends the parent process a `SIGCHLD` signal whenever one of it's child processes terminates, stops, or resumes, and it's typically completely ignored. once a child is stopped, we need to reap the process so it doesn't sit as a zombie. our signal handler calls `wait4()` (syscall #260) in a loop, telling it to reap all zombie child processes. we have to load the active process counter into a register, and then decrement it every time a zombie is reaped, and write it back to memory when we're done. every time a new process is spawned via `clone()` (syscall #220), we have to load that counter, increment it by 1, then write it back to memory (the `fork()` syscall doesn't exist on arm64 linux. don't ask me why. `clone()` does the same thing).
 
 yay!
 
@@ -402,8 +428,6 @@ tl;dr: all of the assembly is artisenal, hand-crafted, human assembly. some of t
 everybody should write more assembly. who cares about security? who cares about ease? why write a 100 line python script when you could write 4,000 lines of assembly? why have productive days when you could spend 7 hours debugging string parsing for the 10th day in a row? *(hint: you wrote `[x3, #1]` instead of `[x3], #1`).*
 
 more seriously, the hard part of writing a static web server was not opening a socket or listening for requests. the hard part was parsing the request and handling every edge case. every request is bytes. every path is bytes. every response is bytes. every range needs to be exact. every filename has to be escaped differently.
-
-my [hacker news post](https://news.ycombinator.com/item?id=48080587) also sparked a lot of interesting discussion. a lot of people were focused on ai and its relationship to programming. this isn't an ai project, it never was, and never will be. what would even be the point of this if i just generated it? the goal isn't to have *a* web server that's written in assembly, the goal is to *write* one. by hand, as a human person. to get down to the metal on the machine and control *everything* just because i can.
 
 i think *people* need to write more assembly. not *have assembly written for them by an llm*. 
 assembly makes *you* do *everything* by hand. isn't that great?
