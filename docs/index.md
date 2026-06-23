@@ -148,9 +148,12 @@ text.split("GET /")[1].split(" ")[0]
 in assembly, it's ~200 lines long, including ensuring HTTP legality.
 isn't assembly the best?
 
-then the path has to be percent-decoded. if the parser sees `%`, it has to read the next two bytes, verify that they are valid hex characters (`0-9`, `a-f`, `A-F`), convert them into the byte they represent, and continue.
+then the path has to be percent-decoded. if the parser sees `%`, it has to read the next two bytes, verify that they are valid hex characters (`0-9`, `a-f`, `A-F`), convert them into the byte they represent, and continue. this is done in the function `decode_url` ([`src/file.S:394-491`](https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/file.S#L394-491).
 
 `GET` requests can have a `Range:` header, and `PUT` requests require `Content-Length:`. unlike the requested URL, these can appear at any line in the header. we have to iterate through the header character by character. if we find a `\r`, we need to check if the next character is `\n`. if it's not, it's a malformed header, and we have to send a `400 Bad Request`. likewise, if we find a `\n` without a preceding `\r`, it's also malformed. once we find `\r\n`, that marks the end of the current line, and the beginning of the next. we check if this new line starts with a space, and send a `400 Bad Request` if it does (header fields cannot start with whitespace). then we check for `Range:` (or `Content-Length:`, depending on the method), using a little string comparison function:
+
+<figure markdown="1">
+
 ```asm
 streqn:
     ldrb w3, [x0]
@@ -176,6 +179,8 @@ Lstreqn_no_match:
     mov x0, #0
     ret
 ```
+<figcaption><a href="https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/util.S#L288-L310">src/utils.S:288-310</a></figcaption>
+</figure>
 this takes two string pointers, `x0` and `x1`, a max length in `x2`, and checks if each character is the same.
 
 let's see what a `Range:` header can look like:
@@ -187,6 +192,8 @@ Range: bytes=5-10
 ```
 
 both sides of the range are optional, but at least one of them is required. since "10" is a string and not a literal 10, each side has to be converted from ascii digits into an integer. we have to write an `atoi`-style function, being careful to check for an integer overflow:
+
+<figure markdown="1">
 
 ```asm
 ;; x0 -> pointer to string
@@ -225,9 +232,10 @@ Latoi_error:
     mov x0, #0
     ret
 ```
+<figcaption><a href="https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/util.S#L114-L148">src/util.S:114-148</a></figcaption>
+</figure>
 
 in python, that would be `int(string)`. isn't assembly magical?
-
 
 ## put
 
@@ -286,6 +294,8 @@ so the final output is:
 
 a file named `<script>something evil</script>` (which would allow XSS for the visible portion) or `"><script>something dastardly</script>` (which would allow XSS in the `href="..."` portion) is safely encoded, rather than being executed.
 
+href-encoding is done in the function `href_encode` ([`src/directory.S:130-235`](https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/directory.S#L130-L235)), and body encoding is done in the function `body_encode` ([`src/directory.S:245-335](https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/directory.S#L245-L335)).
+
 ## network security
 
 there is a type of denial-of-service attack called slowloris. ymawky is heaven for slowloris.
@@ -304,9 +314,14 @@ Content-Length: 1073741823\r\n
 and then sends one byte every 9 seconds? the request will be accepted, since the content length is 1 byte under our maximum. if the only timeout is 10 seconds per byte, the server would continue patiently waiting for over 300 years. not good. pretty bad.
 
 to minimize this, ymawky calculates a timeout based on `Content-Length` and a minimum bytes-per-second transfer speed:
+<figure markdown="1">
+
 ```text
 timeout = grace_period + content_length / min_bps
 ```
+<figcaption><a href="https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/put.S#L137-139">src/put.S:137-139</a></figcaption>
+</figure>
+
 `grace_period` is the minimum amount of time given to any body. `min_bps` is the slowest transfer speed the server is willing to tolerate. by default, it is generous at 16KB/s, but not infinite. this doesn't make ymawky impervious to denial-of-service attacks, but it does limit how long certain types of attacks will tie up resources.
 ## filesystem safety
 for `GET` and `HEAD` methods, ymawky opens the requested path and then calls `fstat64()` (syscall #339) on the file file descriptor, to get things like file type and filesize.
@@ -344,11 +359,11 @@ www/../../../../etc/shadow
 
 which resolves outside the docroot. that's pretty stupid. we've got to deny traversal attempts, but without being too strict. we don't want to reject everything that matches a naive substring search for `..`, because `ohwell...png` is a perfectly valid filename.
 
-so ymawky rejects *path segments* that are exactly `..`. this needs to be done *after* decoding percent-encoding, because `%2E%2E` becomes `..` after decoding.
+so ymawky rejects *path segments* that are exactly `..`. this needs to be done *after* decoding percent-encoding, because `%2E%2E` becomes `..` after decoding. this is done in the function `check_path_traversal` ([`src/file.S:217-272`](https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/file.S#L217-L272)).
 
 but wait! what about symlinks?
 
-`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink. sadly for us linuxheads, O_NOFOLLOW_ANY is darwin-specific, and there is no equivalent in linux. one approach to ensure there are no symlinks in the path would be to split the string along each `/`, checking each element iteratively using `fstatat()` (syscall #79) with the `AT_SYMLINK_NOFOLLOW` flag.
+`open()` (syscall #5) has the flag `O_NOFOLLOW` defined by POSIX, which makes the call fail if the final path component is a symlink. but what if some directory in the middle of the path is a symlink? darwin has `O_NOFOLLOW_ANY` as well, which will fail if *any* element of the path is a symlink. on linux, we can use `openat2()` (syscall #437) with the flag `RESOLVE_NO_SYMLINKS` when opening files. for methods such as `DELETE`, or `PUT`, where the file may or may not exist, we still want to return a 403 if any element in the path is a symlink. the way we do that is by getting the dirname (`/this/is/a/file` -> `/this/is/a`), and then trying to `openat2()` that directory. if the `openat2()` call fails with `ELOOP`, there's a symlink somewhere in the path. otherwise, we close the freshly-opened directory file descriptor and go on our way. if the file itself is a symlink, it will fail during opening. on linux, this is done in the function `do_path_checks` ([`src/parse.S:961:1003`](https://github.com/imtomt/ymawky/blob/258cff8177b538845586afe3ce30ea70877565fc/src/parse.S#L961:L1003), which itself calls `path_check_symlink` ([`src/parse.S:885:950`](https://github.com/imtomt/ymawky/blob/258cff8177b538845586afe3ce30ea70877565fc/src/parse.S#L885:L950)).
 
 of course, if someone can plant a specific symlink inside your docroot, odds are something has already gone pretty wrong. but still, can't hurt.
 
@@ -365,11 +380,17 @@ these are executable programs or scripts that live on the server. when a request
 
 ### environmental variables
 `execve()` lets you pass environmental variables as an array of pointers to strings. assembly doesn't have data types like that, so we need to build an array of pointers. but the pointers need to actually *point* to some part of memory, so we need to store those strings somewhere. we can do this by allocating some space in memory:
+
+<figure markdown="1">
+
 ```asm
 .bss
 env_var_string_buffer:  .skip 4096
 env_var_pointer_buffer: .skip 512
 ```
+<figcaption><a href="https://github.com/imtomt/ymawky/blob/d35b7ee64cf3ce29a09c6cda9885230ee8c5499d/src/cgi_env.S#L101-L105">src/cgi_env.S:101-105</a></figcaption>
+</figure>
+
 this creates two chunks in memory, one 4096 bytes large, the other 512 bytes large. we use our homebrew `memcpy` to copy whatever text we'd like into `env_var_string_buffer`, followed by a NULL character. after copying, the buffer looks something like this, where `*` represents a NULL character:
 ```
 GATEWAY_INTERFACE=CGI/1.1*SERVER_PROTOCOL=HTTP/1.1*SERVER_SOFTWARE=ymawky*
@@ -425,6 +446,7 @@ tl;dr: all of the assembly is artisanal, hand-crafted, human assembly. some of t
 <p style="text-align: center;">
   <img src="ymawky.png" alt="ymawky">
 </p>
+
 everybody should write more assembly. who cares about security? who cares about ease? why write a 100 line python script when you could write 4,000 lines of assembly? why have productive days when you could spend 7 hours debugging string parsing for the 10th day in a row? *(hint: you wrote `[x3, #1]` instead of `[x3], #1`).*
 
 more seriously, the hard part of writing a static web server was not opening a socket or listening for requests. the hard part was parsing the request and handling every edge case. every request is bytes. every path is bytes. every response is bytes. every range needs to be exact. every filename has to be escaped differently.
