@@ -1,5 +1,6 @@
 SRCS := $(wildcard src/*.S)
 OBJS := $(SRCS:src/%.S=%.o)
+CFLAGS += -O3
 LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e _main -arch arm64
 
 ymawky: $(OBJS)
@@ -7,7 +8,7 @@ ymawky: $(OBJS)
 	rm -f $(OBJS)
 
 %.o: src/%.S $(SRCS)
-	cc -g -c $< -o $@
+	cc -g $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -f ymawky $(OBJS)
