@@ -10,6 +10,7 @@
 .global query_str
 .global query_len
 .global request_id
+.global resource_type
 .global embedded_found
 .global embedded_content
 .global embedded_ct
@@ -31,6 +32,7 @@ query_str:    .skip 8
 query_len:    .skip 8
 docroot_len:      .skip 8
 request_id:       .skip 8
+resource_type:    .skip 8
 embedded_found:   .skip 8
 embedded_content: .skip 8
 embedded_ct:      .skip 8

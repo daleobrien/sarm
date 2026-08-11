@@ -343,8 +343,9 @@ Lbh_content_type:
     mov x13, x0
 
     // check if we have an embedded content-type to use
-    ldr_l x9, embedded_found
-    cbz x9, Lbh_ct_filesystem
+    ldr_l x9, resource_type
+    cmp x9, #1   // RES_EMBEDDED
+    b.ne Lbh_ct_filesystem
     ldr_l x0, embedded_ct
     cbz x0, Lbh_ct_filesystem
     ldr_l x1, embedded_ct_len
@@ -366,8 +367,9 @@ Lbh_ct_write:
 
 Lheader_tail:
     // Check if embedded content is gzipped — add Content-Encoding header
-    ldr_l x9, embedded_found
-    cbz x9, 1f
+    ldr_l x9, resource_type
+    cmp x9, #1   // RES_EMBEDDED
+    b.ne 1f
     ldr_l x9, embedded_gzip
     cbz x9, 1f
 

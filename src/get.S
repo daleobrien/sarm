@@ -67,6 +67,7 @@ get_setup:
     b.eq L400
 
     // try embedded content lookup first
+    str_l xzr, resource_type
     ldr_l x0, filename_str
     ldr_l x1, filename_len
     bl lookup_embedded
@@ -82,6 +83,7 @@ Lembedded_found:
     str_l x3, embedded_ct_len
     str_l x4, embedded_gzip
     mov x9, #1
+    str_l x9, resource_type, x10
     str_l x9, embedded_found
     mov x9, #-1
     str_l x9, file_des
@@ -272,8 +274,9 @@ Lbuild_ranged_header:
 
 Lmmap_start:
     // check for embedded content
-    ldr_l x9, embedded_found
-    cbz x9, Lmmap_real
+    ldr_l x9, resource_type
+    cmp x9, #1   // RES_EMBEDDED
+    b.ne Lmmap_real
 
     // use embedded content pointer directly
     ldr_l x12, embedded_content
@@ -323,8 +326,9 @@ Lwrite_header_body:
 2:
     // likewise if filesize is 0, we don't need to munmap. just close!
     // also skip munmap for embedded content
-    ldr_l x9, embedded_found
-    cbnz x9, Lget_end
+    ldr_l x9, resource_type
+    cmp x9, #1   // RES_EMBEDDED
+    b.eq Lget_end
     cbz x19, Lget_end
     b Lwrite_done
 
