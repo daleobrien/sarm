@@ -132,8 +132,6 @@ get:
     mov x21, x1
 
     bl get_setup
-    cmp w1, #S_IFDIR
-    b.eq Ldir_list
 
     // let's save file length into x19! please? we need to use it but only in
     // this func -- i really don't wanna do more stack shit here...
@@ -285,9 +283,3 @@ L500:
     mov x0, #500
     mov x1, #0
     b reply_status
-
-Ldir_list:
-    ldr_l x0, file_des
-    ldr_l x1, filename_str
-    ldr_l x2, filename_len
-    b dir_listing
