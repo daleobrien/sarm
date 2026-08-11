@@ -94,44 +94,6 @@ Lembedded_found:
     ldp x29, x30, [sp], #32
     ret
 
-gbp:
-#ifdef __linux__
-    SCWINUM SYS_openat
-    mov x0, #AT_FDCWD
-    ldr_l x1, filename_str
-    mov x2, #0 // RDONLY
-    orr x2, x2, #O_NOFOLLOW
-    mov x3, #0 // mode = 0
-#else
-    SCWINUM SYS_open
-    ldr_l x0, filename_str
-    mov x1, #0 // RDONLY
-    orr x1, x1, #O_NOFOLLOW_ANY
-#endif
-    SCWISVC
-    SCERR
-    b.cs Lhfs_err // if the carry flag is set, open() failed so handle it
-
-    // save the file descriptor
-    str_l x0, file_des
-
-    bl stat_fd
-    cbnz x0, Lhfs_err
-
-    cmp w1, #S_IFREG
-    b.eq Lgs_epilogue
-    cmp w1, #S_IFDIR
-    b.eq Lgs_epilogue
-
-    b L403
-
-Lgs_epilogue:
-    mov x0, x2
-
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #32
-    ret
-
 // for HEAD, reply with just the header. pretty short n sweet.
 head:
     bl get_setup // this does basically everything we want.
@@ -272,36 +234,8 @@ Lbuild_ranged_header:
     // fallthrough
 
 Lmmap_start:
-    // check for embedded content
-    ldr_l x9, resource_type
-    cmp x9, #1   // RES_EMBEDDED
-    b.ne Lmmap_real
-
     // use embedded content pointer directly
     ldr_l x12, embedded_content
-    b Lwrite_header_body
-
-Lmmap_real:
-    // if filesize is 0, just print the header, hehe, skip the mmap
-    cbz x19, 1f
-
-    // mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)
-    SCWINUM SYS_mmap
-    mov x0, #0
-    mov x1, x19
-    mov x2, #1 // PROT_READ
-    mov x3, #2 // MAP_PRIVATE
-    ldr_l x4, file_des // file descriptor
-    mov x5, #0 // offset
-    SCWISVC
-    SCERR
-    b.cs L500
-    // x0 is now the pointer to memory for the file
-
-    // stash the pointer somewhere safe
-    mov x12, x0
-
-1:
 Lwrite_header_body:
     ldr_l x0, clientfd
     adr_l x1, header_buf
@@ -323,22 +257,7 @@ Lwrite_header_body:
     add x2, x2, #1
     bl write_all
 2:
-    // likewise if filesize is 0, we don't need to munmap. just close!
-    // also skip munmap for embedded content
-    ldr_l x9, resource_type
-    cmp x9, #1   // RES_EMBEDDED
-    b.eq Lget_end
-    cbz x19, Lget_end
-    b Lwrite_done
-
-Lwrite_done:
-    SCWINUM SYS_munmap
-    mov x0, x12
-    mov x1, x19
-    SCWISVC
-    SCERR
-    // if munmap fails, b.cs would just branch to Lget_end anyway. so just
-    // fall through either way.
+    b Lget_end
 
 // close the file
 Lget_end:
@@ -350,10 +269,6 @@ Lget_end:
 // files (b.cond / cbz can't reach across files; unconditional b can).
 L400:
     mov x0, #400
-    mov x1, #0
-    b reply_status
-L403:
-    mov x0, #403
     mov x1, #0
     b reply_status
 L404:
@@ -374,5 +289,3 @@ Ldir_list:
     ldr_l x1, filename_str
     ldr_l x2, filename_len
     b dir_listing
-
-Lhfs_err: b handle_fs_error

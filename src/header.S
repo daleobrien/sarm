@@ -343,15 +343,13 @@ Lbh_content_type:
     mov x13, x0
 
     // check if we have an embedded content-type to use
-    ldr_l x9, resource_type
-    cmp x9, #1   // RES_EMBEDDED
-    b.ne Lbh_ct_filesystem
     ldr_l x0, embedded_ct
     cbz x0, Lbh_ct_filesystem
     ldr_l x1, embedded_ct_len
     b Lbh_ct_write
 
 Lbh_ct_filesystem:
+    // safety fallback: derive content-type from filename extension
     ldr_l x0, filename_str
     ldr_l x1, filename_len
     bl get_filetype
