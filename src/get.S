@@ -84,7 +84,6 @@ Lembedded_found:
     str_l x4, embedded_gzip
     mov x9, #1
     str_l x9, resource_type, x10
-    str_l x9, embedded_found
     mov x9, #-1
     str_l x9, file_des
 
