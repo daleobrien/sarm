@@ -743,81 +743,126 @@ lookup_embedded:
     mov x19, x0  // save path_ptr
     mov x20, x1  // save path_len
 
-    // load entry count
-    adr_l x9, embedded_count
-    ldr x21, [x9]
-    cbz x21, Lle_not_found  // empty table
+    // Hash the incoming path
+    bl fnv1a_64
+    mov x21, x0   // x21 = hash of requested path
 
-    mov x22, #0              // low = 0
-    sub x23, x21, #1         // high = count - 1
-    adr_l x5, embedded_files // table base
+    // Load hash table count
+    adr_l x9, embedded_hash_count
+    ldr x22, [x9]
+    cbz x22, Lle_not_found  // empty table
 
-Lle_binsearch:
-    cmp x22, x23
-    b.gt Lle_not_found  // low > high → not found
+    mov x23, #0                // low = 0
+    sub x24, x22, #1           // high = count - 1
+    adr_l x5, embedded_hash_table  // hash table base
 
-    // mid = (low + high) / 2
-    add x6, x22, x23
-    lsr x6, x6, #1
+    // Binary search the hash table for matching hash
+Lle_hash_binsearch:
+    cmp x23, x24
+    b.gt Lle_not_found
 
-    // entry_ptr = table + mid * 72
-    mov x7, #72
-    mul x7, x6, x7
+    add x6, x23, x24
+    lsr x6, x6, #1       // mid = (low + high) / 2
+
+    // hash_entry = hash_table + mid * 16  (16 bytes per hash entry)
+    lsl x7, x6, #4
     add x7, x5, x7
 
-    // load path_len from table entry
-    ldr x8, [x7, #8]
+    ldr x8, [x7]         // load hash from table
+    cmp x21, x8
+    b.eq Lle_hash_match
+    b.lt Lle_hash_lower
+    b.gt Lle_hash_higher
 
-    // String comparison using the shorter length for ordering,
-    // since lengths may differ but lexicographic order still matters.
-    mov x0, x19          // our path
-    ldr x1, [x7]         // table path ptr
-    mov x2, x20          // use our path length
-    cmp x8, x20
-    csel x2, x8, x2, lo  // x2 = min(entry_len, our_len)
-    bl Lle_strcmp        // returns ordering in x0 (-1,0,1)
-    cbz x0, Lle_equal_prefix
+Lle_hash_lower:
+    sub x24, x6, #1
+    b Lle_hash_binsearch
 
-    // Different at some char — use comparison result directly
-    b.lt Lle_go_lower    // our path < table → go lower
-    b.gt Lle_go_higher   // our path > table → go higher
-    b Lle_not_found
+Lle_hash_higher:
+    add x23, x6, #1
+    b Lle_hash_binsearch
 
-Lle_equal_prefix:
-    // Characters matched up to min length. If lengths also match, found!
-    cmp x8, x20
-    b.eq Lle_found
+Lle_hash_match:
+    // Found matching hash. Scan backwards to find the first entry with
+    // this hash (handles the unlikely case of hash collisions).
+    mov x22, x6   // x22 = current mid index in hash table
+    mov x7, x5    // x7 = hash_table base (will walk backwards)
+    add x7, x7, x6, lsl #4  // x7 = &hash_table[mid]
 
-    // Lengths differ. Shorter string comes first lexicographically.
-    b.lt Lle_go_higher   // entry shorter → our path is later
-    b.gt Lle_go_lower    // entry longer → our path is earlier
+Lle_scan_back:
+    cbz x22, Lle_scan_forward  // at beginning
+    sub x7, x7, #16             // previous hash entry
+    ldr x8, [x7]
+    cmp x8, x21
+    b.ne Lle_scan_forward       // different hash, start scanning forward
+    sub x22, x22, #1
+    b Lle_scan_back
 
-Lle_go_higher:
-    add x22, x6, #1  // low = mid + 1
-    b Lle_binsearch
+Lle_scan_forward:
+    // x22 = start index in hash table (first entry with matching hash)
+    // Load boundary
+    adr_l x9, embedded_hash_count
+    ldr x23, [x9]   // x23 = hash_count (upper bound)
 
-Lle_go_lower:
-    sub x23, x6, #1  // high = mid - 1
-    b Lle_binsearch
+    adr_l x5, embedded_files     // x5 = main table base
+    mov x9, #80                  // entry size
+
+    // x7 = &hash_table[x22], recompute from x22
+    adr_l x7, embedded_hash_table
+    add x7, x7, x22, lsl #4
+
+Lle_scan_loop:
+    cmp x22, x23
+    b.ge Lle_not_found           // scanned all entries, not found
+
+    // Check hash
+    ldr x8, [x7]
+    cmp x8, x21
+    b.ne Lle_not_found           // hash changed, no more matches
+
+    // Get entry index from hash table
+    ldr x6, [x7, #8]             // entry index into main table
+
+    // Compute entry_ptr = embedded_files + index * 80
+    mul x6, x6, x9
+    add x6, x5, x6               // x6 = &embedded_files[index]
+
+    // Verify path string matches
+    mov x0, x19                  // our path
+    ldr x1, [x6, #8]             // entry path_ptr (offset +8 from entry)
+    mov x2, x20                  // our path length
+    ldr x3, [x6, #16]            // entry path_len (offset +16 from entry)
+    cmp x2, x3
+    b.ne Lle_scan_next           // lengths differ → not a match
+
+    // Lengths match, compare strings byte-by-byte
+    bl streqn
+    cbnz x0, Lle_found           // match!
+
+Lle_scan_next:
+    add x22, x22, #1             // next hash table index
+    add x7, x7, #16              // next hash table entry
+    b Lle_scan_loop
 
 Lle_found:
-    // entry layout at x7:
-    // +0:  path_ptr
-    // +8:  path_len
-    // +16: content_ptr
-    // +24: content_size
-    // +32: ct_ptr
-    // +40: ct_len
-    // +48: gzip flag
-    // +56: etag_ptr
-    // +64: etag_len
-    ldr x0, [x7, #16]  // content_ptr
-    ldr x1, [x7, #24]  // content_size
-    ldr x2, [x7, #32]  // ct_ptr
-    ldr x3, [x7, #40]  // ct_len
-    ldr x4, [x7, #48]  // gzip flag
-    ldr x5, [x7, #56]  // etag_ptr
-    ldr x6, [x7, #64]  // etag_len
+    // Entry layout at x6:
+    // +0:  hash        (8 bytes)
+    // +8:  path_ptr    (8 bytes)
+    // +16: path_len    (8 bytes)
+    // +24: content_ptr (8 bytes)
+    // +32: content_size (8 bytes)
+    // +40: ct_ptr      (8 bytes)
+    // +48: ct_len      (8 bytes)
+    // +56: gzip flag   (8 bytes)
+    // +64: etag_ptr    (8 bytes)
+    // +72: etag_len    (8 bytes)
+    ldr x0, [x6, #24]   // content_ptr
+    ldr x1, [x6, #32]   // content_size
+    ldr x2, [x6, #40]   // ct_ptr
+    ldr x3, [x6, #48]   // ct_len
+    ldr x4, [x6, #56]   // gzip flag
+    ldr x5, [x6, #64]   // etag_ptr
+    ldr x6, [x6, #72]   // etag_len
 
     cmn xzr, xzr  // clear carry
     b Lle_epilogue
@@ -831,35 +876,4 @@ Lle_epilogue:
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
-    ret
-
-// Three-way string comparison for binary search ordering.
-// input
-// x0 -> str1
-// x1 -> str2
-// x2 -> max length
-//
-// returns
-// x0 -> -1 if str1 < str2, 0 if equal, 1 if str1 > str2
-Lle_strcmp:
-    cbz x2, 1f
-    ldrb w3, [x0]
-    ldrb w4, [x1]
-    cmp w3, w4
-    b.lt 2f
-    b.gt 3f
-    // chars equal, continue
-    subs x2, x2, #1
-    b.eq 1f
-    add x0, x0, #1
-    add x1, x1, #1
-    b Lle_strcmp
-1:
-    mov x0, #0   // equal
-    ret
-2:
-    mov x0, #-1  // str1 < str2
-    ret
-3:
-    mov x0, #1   // str1 > str2
     ret

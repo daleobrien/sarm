@@ -23,6 +23,7 @@
 .global memcpy
 .global streqn_i
 .global streqn
+.global fnv1a_64
 
 .bss
 // itoa_buf is byte-addressed (strb/ldrb), so no special alignment needed.
@@ -326,4 +327,41 @@ Lstreqn_match:
 
 Lstreqn_no_match:
     mov x0, #0
+    ret
+
+
+// FNV-1a 64-bit hash
+// input:  x0 -> buffer, x1 -> length
+// output: x0 -> 64-bit hash
+// clobbers x1, x2, x3, x4
+fnv1a_64:
+    // FNV offset basis: 0xcbf29ce484222325
+    movz x3, #0x2325
+    movk x3, #0x8422, lsl #16
+    movk x3, #0x9ce4, lsl #32
+    movk x3, #0xcbf2, lsl #48
+
+    mov x2, x1    // remaining length
+    cbz x2, 2f
+
+1:
+    ldrb w1, [x0], #1
+    eor x3, x3, x1     // h ^= byte
+
+    // h = (h * 0x100000001b3) & 0xffffffffffffffff
+    // 0x100000001b3 = h + (h<<1) + (h<<4) + (h<<5) + (h<<7) + (h<<8) + (h<<40)
+    mov x4, x3
+    add x4, x4, x3, lsl #1
+    add x4, x4, x3, lsl #4
+    add x4, x4, x3, lsl #5
+    add x4, x4, x3, lsl #7
+    add x4, x4, x3, lsl #8
+    add x4, x4, x3, lsl #40
+    mov x3, x4
+
+    sub x2, x2, #1
+    cbnz x2, 1b
+
+2:
+    mov x0, x3
     ret
