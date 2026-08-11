@@ -18,13 +18,10 @@
 .equ RESPONSE_HEADER_SIZE, 512
 
 // Maximum time, in seconds, without receiving any data before closing the
-// connection.
+// connection. Also acts as the total header timeout — if a client takes
+// longer than this between any two read() calls, the connection is closed.
 // Default: 10 seconds
 .equ RECV_TIMEOUT, 10
-
-// Maximum time, in seconds, to receive the full header before timing out.
-// Default: 10 seconds
-.equ HEADER_REQ_TIMEOUT_SECS, 10
 
 // Maximum number of active, concurrent processes allowed.
 // This is entirely up to you and how many processes your computer can handle.

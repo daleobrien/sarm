@@ -30,18 +30,6 @@ rcv_timeout:           // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
 
-// timer for total header -- prevent slowloris-like attackers from opening a
-// connection and sending <1 byte/min or something, hogging resources.
-// configured in config.S, HEADER_REQ_TIMEOUT_SECS.
-read_timer:
-    .quad 0   // it_interval.tv_sec
-    .long 0   // it_interval.tv_usec
-    .long 0   // -- padding --
-
-    .quad 0   // it_value.tv_sec
-    .long 0   // it_value.tv_usec
-    .long 0   // -- padding --
-
 .align 2 // one is a .word (4 bytes)
 one: .word 1
 
@@ -320,51 +308,7 @@ child:
     b.cs child_end
 #endif
 
-    // arm timer before reading
-    SCWINUM SYS_setitimer
-    mov x0, #0 // ITIMER_REAL
-    adr_l x1, read_timer
-    mov x2, #HEADER_REQ_TIMEOUT_SECS
-    str x2, [x1, #16] // offset 16 = it_value.tv_sec
-    mov x2, #0
-    SCWISVC
-    SCERR
 
-    // set a signal handler for SIGALRM, so we can respond with 408 if the
-    // connection times out during the header.
-#ifdef __linux__
-    sub sp, sp, #32
-    adr_l x0, L408
-    str x0, [sp, #0]  // sa_handler
-    str xzr, [sp, #8]  // sa_flags = 0
-    str xzr, [sp, #16] // sa_restorer = NULL
-    str xzr, [sp, #24] // sa_mask = 0
-
-    SCWINUM SYS_rt_sigaction
-    mov w0, #SIGALRM
-    mov x1, sp
-    mov x2, #0 // old action = NULL
-    mov x3, #8 // sigsetsize
-    SCWISVC
-    SCERR
-    add sp, sp, #32
-#else
-    sub sp, sp, #32
-    adr_l x0, L408
-    str x0, [sp, #0]  // sa_handler
-    str x0, [sp, #8]   // sp_tramp = 408 handler. see bigass comment above.
-    str wzr, [sp, #16] // sa_mask = 0
-    str wzr, [sp, #20] // sa_flags = 0
-
-    SCWINUM SYS_sigaction
-    mov w0, #SIGALRM
-    mov x1, sp
-    mov x2, #0 // old action = NULL
-    SCWISVC
-    SCERR
-    add sp, sp, #32
-#endif
-    b.cs L500
 
     // read(client_fd, buffer, buffer_size)
     mov x7, #0
@@ -417,10 +361,10 @@ read_failed:
     // affect x7/buf offset.
     cmp x0, #EINTR
     b.eq read_loop
-    // check if errno is ECONNRESET, ECONNABORTED, ETIMEDOUT, then just
-    // silently exit if so. otherwise, return server error.
+    // check if errno is ECONNRESET, ECONNABORTED, etc — silently exit.
+    // ETIMEDOUT from SO_RCVTIMEO sends a 408 before closing.
     cb eq, x0, #ECONNRESET, child_end
-    cb eq, x0, #ETIMEDOUT, child_end
+    cb eq, x0, #ETIMEDOUT, L408
     cb eq, x0, #ECONNABORTED, child_end
     cb eq, x0, #EPIPE, child_end
     cb eq, x0, #ENETDOWN, child_end
@@ -432,15 +376,6 @@ read_failed:
     b L500
 
 2:
-    // disarm timer
-    SCWINUM SYS_setitimer
-    mov x0, #0
-    adr_l x1, read_timer
-    str xzr, [x1, #16] // offset 16 = it_value.tv_sec
-    mov x2, #0
-    SCWISVC
-    SCERR
-
     // let's make sure buf is NULL terminated
     adr_l x1, buf
     strb wzr, [x1, x24] // x24 -> length of bytes read
