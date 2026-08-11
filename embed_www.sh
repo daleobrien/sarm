@@ -2,11 +2,19 @@
 # embed_www.sh — generate src/embedded.S by embedding all www/ files into the binary.
 # This script scans www/ recursively, determines MIME types by extension,
 # and generates an assembly file with .incbin directives and a lookup table.
+# For text-like files, gzip is applied if it reduces size; browsers will
+# decompress transparently via Content-Encoding: gzip.
 
 set -eu
 
 WWW_DIR="www"
 OUTPUT="src/embedded.S"
+GZFLAGS=$(mktemp /tmp/ymawky_gzflags_XXXXXX)
+trap 'rm -f "$GZFLAGS"' EXIT
+
+# Persistent gzip cache dir — must outlive this script for the assembler.
+GZCACHEDIR="www_gz"
+mkdir -p "$GZCACHEDIR"
 
 # ── MIME type map (mirrors file_types table in src/file.S) ────────────────
 mime_type() {
@@ -72,6 +80,17 @@ mime_type() {
     esac
 }
 
+# ── Decide whether to gzip a file based on extension ──────────────────────
+# Returns 0 (success) for text-like types where gzip is likely to help.
+should_gzip() {
+    case "$1" in
+        .html|.htm|.css|.csv|.xml|.js|.json|.mjs|.map|.svg|.txt|.ttf|.otf)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
 # ── Collect files (recursive, exclude .DS_Store and dirs) ────────────────
 files=""
 if [ -d "$WWW_DIR" ]; then
@@ -90,6 +109,8 @@ fi
 
     i=0
     entry_count=0
+    : > "$GZFLAGS"  # clear the gzip flags file
+
     for f in $files; do
         ext=".${f##*.}"
         # Handle files with no extension or dotfiles
@@ -106,10 +127,36 @@ fi
         echo "    .asciz \"$ct\""
         echo "embedded_ct_${i}_end:"
         echo ''
-        echo "embedded_data_${i}:"
-        echo "    .incbin \"$f\""
-        echo "embedded_data_${i}_end:"
-        echo ''
+
+        # Try gzip for text-like files
+        gzipped=0
+        tmp_gz=""
+        if should_gzip "$ext"; then
+            tmp_gz="${GZCACHEDIR}/${i}.gz"
+            if gzip -c -9 -n "$f" > "$tmp_gz" 2>/dev/null; then
+                # Compare sizes: use wc -c for portability
+                orig_size=$(wc -c < "$f" | tr -d ' ')
+                gz_size=$(wc -c < "$tmp_gz" | tr -d ' ')
+                if [ "$gz_size" -lt "$orig_size" ]; then
+                    gzipped=1
+                fi
+            fi
+        fi
+
+        # Save the gzip flag for the table pass
+        echo "$gzipped" >> "$GZFLAGS"
+
+        if [ "$gzipped" -eq 1 ]; then
+            echo "embedded_data_${i}:"
+            echo "    .incbin \"$tmp_gz\""
+            echo "embedded_data_${i}_end:"
+            echo ''
+        else
+            echo "embedded_data_${i}:"
+            echo "    .incbin \"$f\""
+            echo "embedded_data_${i}_end:"
+            echo ''
+        fi
 
         i=$((i + 1))
         entry_count=$((entry_count + 1))
@@ -120,12 +167,13 @@ fi
     echo 'embedded_files:'
 
     i=0
-    for f in $files; do
-        echo "    .8byte embedded_path_${i}, (embedded_path_${i}_end - embedded_path_${i} - 1)"
-        echo "    .8byte embedded_data_${i}, (embedded_data_${i}_end - embedded_data_${i})"
-        echo "    .8byte embedded_ct_${i},   (embedded_ct_${i}_end - embedded_ct_${i} - 1)"
+    while read -r gzflag; do
+        printf '    .8byte embedded_path_%d, (embedded_path_%d_end - embedded_path_%d - 1)\n' "$i" "$i" "$i"
+        printf '    .8byte embedded_data_%d, (embedded_data_%d_end - embedded_data_%d)\n' "$i" "$i" "$i"
+        printf '    .8byte embedded_ct_%d,   (embedded_ct_%d_end - embedded_ct_%d - 1)\n' "$i" "$i" "$i"
+        printf '    .8byte %d\n' "$gzflag"
         i=$((i + 1))
-    done
+    done < "$GZFLAGS"
 
     # Sentinel entry
     echo '    .8byte 0   // sentinel — end of table'

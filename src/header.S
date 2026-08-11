@@ -93,6 +93,9 @@ header_content_type: .ascii "\r\nContent-Type: "
 header_content_range: .ascii "\r\nContent-Range: bytes "
 .equ header_content_range_len, . - header_content_range
 
+header_content_encoding: .ascii "\r\nContent-Encoding: gzip"
+.equ header_content_encoding_len, . - header_content_encoding
+
 header_tail:
     .ascii "\r\nConnection: close\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ header_tail_len, . - header_tail
@@ -362,6 +365,22 @@ Lbh_ct_write:
     bl memcpy
 
 Lheader_tail:
+    // Check if embedded content is gzipped — add Content-Encoding header
+    ldr_l x9, embedded_found
+    cbz x9, 1f
+    ldr_l x9, embedded_gzip
+    cbz x9, 1f
+
+    // write "\r\nContent-Encoding: gzip"
+    // x0 still points past the last written byte (from memcpy in Lbh_ct_write)
+    adr_l x1, header_content_encoding
+    mov x2, header_content_encoding_len
+    add x14, x14, x2
+    cb gt, x14, header_buf_size, Lheader_too_big
+    bl memcpy
+    mov x13, x0
+
+1:
     // write the \r\n\r\n
     // x0 is still set from memcpy
     adr_l x1, header_tail

@@ -15,3 +15,4 @@ src/embedded.S: embed_www.sh $(wildcard www/* www/assets/*)
 
 clean:
 	rm -f ymawky $(OBJS) embedded.o src/embedded.S
+	rm -rf www_gz

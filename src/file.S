@@ -511,6 +511,7 @@ Ldecode_epilogue:
 // x1 -> content size
 // x2 -> content-type string pointer
 // x3 -> content-type string length
+// x4 -> gzip flag (1 = gzipped, 0 = raw)
 // carry set = not found, carry clear = found
 lookup_embedded:
     stp x29, x30, [sp, #-32]!
@@ -542,7 +543,7 @@ Lle_loop:
     b.eq Lle_found
 
 Lle_next:
-    add x5, x5, #48  // advance to next 48-byte entry
+    add x5, x5, #56  // advance to next 56-byte entry
     b Lle_loop
 
 Lle_found:
@@ -553,10 +554,12 @@ Lle_found:
     // +24: content_size
     // +32: ct_ptr
     // +40: ct_len
+    // +48: gzip flag
     ldr x0, [x5, #16]  // content_ptr
     ldr x1, [x5, #24]  // content_size
     ldr x2, [x5, #32]  // ct_ptr
     ldr x3, [x5, #40]  // ct_len
+    ldr x4, [x5, #48]  // gzip flag
 
     cmn xzr, xzr  // clear carry
     b Lle_epilogue

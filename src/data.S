@@ -14,6 +14,7 @@
 .global embedded_content
 .global embedded_ct
 .global embedded_ct_len
+.global embedded_gzip
 
 .data
 file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
@@ -34,3 +35,4 @@ embedded_found:   .skip 8
 embedded_content: .skip 8
 embedded_ct:      .skip 8
 embedded_ct_len:  .skip 8
+embedded_gzip:    .skip 8
