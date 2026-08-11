@@ -91,6 +91,7 @@
 .equ SYS_newfstatat,   79
 .equ SYS_fstat64,      80   // Linux fstat = 80
 .equ SYS_nanosleep,    101
+.equ SYS_writev,       66
 
 // socket stuff
 .equ AF_INET,          2
@@ -361,6 +362,7 @@
 .equ SYS_getdirentries64, 344
 .equ SYS_unlinkat,     472
 .equ SYS_renameatx_np, 488
+.equ SYS_writev,       121
 
 // socket
 .equ AF_INET,          2

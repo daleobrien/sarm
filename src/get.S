@@ -237,26 +237,36 @@ Lmmap_start:
     // use embedded content pointer directly
     ldr_l x12, embedded_content
 Lwrite_header_body:
-    ldr_l x0, clientfd
-    adr_l x1, header_buf
-    ldr_l x2, header_len
-    bl write_all
-    b.cs 2f // if header write failed, don't bother writing the body
+    // Zero-copy response: use writev to send header + body in one syscall.
+    // This avoids copying the embedded asset data through user space.
+    // Set up 2 iovecs on the stack (16 bytes each = 32 bytes total).
+    sub sp, sp, #32
 
-    // if filesize is 0, the mmap'd registers are unitialized, and the file is
-    // empty! so just skip this write
-    cbz x19, 2f
+    adr_l x0, header_buf
+    str x0, [sp, #0]       // iov[0].iov_base = header_buf
+    ldr_l x0, header_len
+    str x0, [sp, #8]       // iov[0].iov_len  = header_len
 
-    // x12 -> pointer to mmap'd memory
-    // x19 -> total length of file
-    // x22 -> start range
-    // x23 -> end range
-    ldr_l x0, clientfd
-    add x1, x12, x22
-    sub x2, x23, x22
-    add x2, x2, #1
-    bl write_all
+    cbz x19, 1f             // empty body? only send the header
+
+    add x0, x12, x22        // iov[1].iov_base = embedded_content + start_range
+    str x0, [sp, #16]
+    sub x0, x23, x22        // iov[1].iov_len  = end_range - start_range
+    add x0, x0, #1
+    str x0, [sp, #24]
+    mov x2, #2              // 2 iovecs
+    b 2f
+
+1:
+    mov x2, #1              // 1 iovec (header only, empty body)
+
 2:
+    ldr_l x0, clientfd
+    mov x1, sp              // pointer to iovec array
+    SCWINUM SYS_writev
+    SCWISVC
+    SCERR
+    add sp, sp, #32
     b Lget_end
 
 // close the file
