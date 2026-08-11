@@ -1,0 +1,15 @@
+{
+  "name": "Static Web Server",
+  "short_name": "Static",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    }
+  ]
+}

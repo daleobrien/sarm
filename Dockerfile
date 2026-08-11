@@ -15,13 +15,14 @@
 #   docker run --rm -p 9090:9090 ymawky 9090
 
 # ── builder ────────────────────────────────────────────────────
-FROM --platform=linux/arm64 debian:bookworm-slim AS builder
+ARG TARGETPLATFORM
+FROM debian:bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         binutils \
         bash \
         ca-certificates \
-        cpp \
+        gcc \
         git \
         make \
     && rm -rf /var/lib/apt/lists/*
@@ -29,28 +30,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 # Pull the Linux port (arm64 syscall numbers, openat2, etc.).
-RUN git clone --depth 1 --branch linux \
-        https://github.com/imtomt/ymawky.git .
-
-# ymawky hardcodes a bind to 127.0.0.1 which prevents Docker's
-# -p port publishing from reaching the container.  Patch it to
-# listen on every interface (0.0.0.0) — inside an isolated
-# container this is the expected behaviour.
-RUN sed -i \
-    's|\.byte 0x7F, 0x00, 0x00, 0x01 // 127\.0\.0\.1|.byte 0x00, 0x00, 0x00, 0x00 // 0.0.0.0 (container)|' \
-    src/ymawky.S
+COPY docs docs
+COPY src src
+COPY err err
+COPY www www
+COPY Makefile Makefile
+COPY Makefile.linux Makefile.linux
+COPY build_err_pages.sh build_err_pages.sh
 
 # Generate custom error pages (err/404.html, err/500.html, …).
 RUN bash build_err_pages.sh
 
-RUN make
+RUN make -f Makefile.linux
 
 # ── scratch runtime ─────────────────────────────────────────────
 FROM scratch
 
+#
 COPY --from=builder /build/ymawky /ymawky
-COPY --from=builder /build/www/   /www/
-COPY --from=builder /build/err/   /err/
+COPY --from=builder /build/www/ /www/
 
 EXPOSE 8080
 ENTRYPOINT ["/ymawky"]

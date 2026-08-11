@@ -115,31 +115,29 @@ unknown_ct: .ascii "text/plain; charset=utf-8"
 ;; x0 -> 0 on success, otherwise, errno from stat64
 ;; w1 -> file type
 ;; x2 -> size
-;; x3 -> executable? 1 = yes, 0 = no
 stat_fd:
     sub sp, sp, #160 ; reserve stack buffer (stat requires 144 bytes, round up)
-    mov x16, SYS_fstat64
+    SCWINUM SYS_fstat64
 
     mov x1, sp ; stat buffer, on the stack
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs Lstat_fd_failed
 
-    ; read st_mode (halfword at offset 4 in stat buffer)
-    ; NOTE st_mode in struct stat64 is a mode_t (u16) inside the stat struct,
-    ; NOTE at offset 4. if that ever changes, look here!
+#ifdef __linux__
+    ; Linux: st_mode is u32 at offset 16, st_size is u64 at offset 48
+    ldr w1, [sp, #16]
+#else
+    ; macOS: st_mode is u16 at offset 4
     ldrh w1, [sp, #4]
+#endif
 
-    ;; here we check if the file is executable, so we can treat it as a CGI
-    ;; script possibly!
-    tst w1, #S_IXUSR
-    ;; cset sets x3 to 1 if the condition is TRUE, otherwise 0.
-    ;; basically, if the S_IXUSR bit is found in w1, it's 1. if not, it's 0
-    cset x3, ne
-
-    ;; w1 is unchanged from tst. so, we can use it for the file type return,
-    ;; too.
     and w1, w1, #0xF000 ; mask S_IFMT
+#ifdef __linux__
+    ldr x2, [sp, #48] ; load st_size into x2
+#else
     ldr x2, [sp, #96] ; load st_size into x2
+#endif
 
     mov x0, #0
     b Lstat_fd_end
@@ -164,26 +162,37 @@ Lstat_fd_end:
 ;; x0 -> 0 on success, otherwise, errno from stat64
 ;; w1 -> file type
 ;; x2 -> size
-;; x3 -> executable? 1 = yes, 0 = no
 stat_path:
     sub sp, sp, #160 ; reserve stack buffer (stat requires 144 bytes, round up)
-    mov x16, SYS_stat64
-    ;; x0 is already set
+#ifdef __linux__
+    SCWINUM SYS_newfstatat
+    mov x3, #0              ; flags = 0
+    mov x2, sp              ; buf = stack buffer
+    mov x1, x0              ; path (was in x0)
+    mov x0, #AT_FDCWD       ; dirfd = AT_FDCWD
+#else
+    SCWINUM SYS_stat64
+    ;; x0 is already set (path)
     mov x1, sp ; stat buffer, on the stack
-    svc #0x80
+#endif
+    SCWISVC
+    SCERR
     b.cs Lstat_path_failed
 
-    ; read st_mode (halfword at offset 4 in stat buffer)
-    ; NOTE st_mode in struct stat64 is a mode_t (u16) inside the stat struct,
-    ; NOTE at offset 4. if that ever changes, look here!
+#ifdef __linux__
+    ; Linux: st_mode is u32 at offset 16, st_size is u64 at offset 48
+    ldr w1, [sp, #16]
+#else
+    ; macOS: st_mode is u16 at offset 4
     ldrh w1, [sp, #4]
-
-    ;; same shit as before you know the deal
-    tst w1, #S_IXUSR
-    cset x3, ne
+#endif
 
     and w1, w1, #0xF000 ; mask S_IFMT
+#ifdef __linux__
+    ldr x2, [sp, #48] ; load st_size into x2
+#else
     ldr x2, [sp, #96] ; load st_size into x2
+#endif
     mov x0, #0
     b Lstat_path_end
 

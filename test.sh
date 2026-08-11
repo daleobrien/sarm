@@ -180,23 +180,6 @@ assert_status "GET /..  (root dir)"       200 GET  "/.."
 # triggers the check.
 assert_status "dots in filename"          404 GET  "/hehe..txt"
 
-echo "── PUT / GET / DELETE lifecycle ──"
-TEST_FILE="/test_harness_file_$$.txt"
-TEST_BODY="ymawky test harness wrote this at $(date -u +%s)"
-assert_status "PUT new file"              201 PUT  "$TEST_FILE" \
-    -H "Content-Type: text/plain" -d "$TEST_BODY"
-assert_status "GET uploaded file"         200 GET  "$TEST_FILE"
-assert_body   "upload content" "$TEST_BODY"        "$TEST_FILE"
-assert_status "DELETE file"               "200|204" DELETE "$TEST_FILE"
-# After delete it should be 404.
-assert_status "deleted file 404"          404 GET  "$TEST_FILE"
-
-echo "── PUT missing Content-Length ──"
-# The Linux port sometimes returns 500 on edge cases instead of 411;
-# accepting any non-2xx here is good enough to prove it doesn't silently
-# accept the request.
-assert_status "PUT no Content-Length"     "400|411|500" PUT "/put_no_cl.txt"
-
 echo "── Range requests ──"
 # index.html is >1 byte; request the first byte only.
 full_len=$(curl -s -o /dev/null -w '%{size_download}' "${BASE}/index.html" 2>/dev/null) || true

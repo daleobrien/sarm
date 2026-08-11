@@ -62,7 +62,7 @@ encoded_lt: .ascii "&lt;"
 
 ;; chunked encoding header. TODO refactor build_header to incorporate this
 ;; and other potential header fields
-header: .ascii "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nAllow: GET, HEAD, OPTIONS, DELETE, PUT\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
+header: .ascii "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ header_len, . - header
 
 hex_digits: .ascii "0123456789ABCDEF"
@@ -656,13 +656,23 @@ Lno_strip:
 gde_loop:
     ;; #8192 is too big for add (0-4096), so we gotta load it into a register
     ;; first, and do add xN, xN, x0.
+#ifdef __linux__
+    SCWINUM SYS_getdents64
+    mov x1, sp
+    mov x2, #8192
+    mov x0, x20
+    SCWISVC
+    SCERR
+#else
     mov x0, #8192
-    mov x16, SYS_getdirentries64
+    SCWINUM SYS_getdirentries64
     mov x1, sp
     mov x2, x0 ; 8kb buffer
     add x3, sp, x0 ; basep
     mov x0, x20
-    svc #0x80
+    SCWISVC
+    SCERR
+#endif
     b.cs gde_err
     ;; x0 = bytes written to buffer. if x0 == 0, we're done.
     cbz x0, gde_done
@@ -679,7 +689,15 @@ gde_entry:
 
     ;; write the entry
     add x0, x19, #OFF_D_NAME
+#ifdef __linux__
+    mov x10, x0                 ; save name pointer
+    mov x1, x0                  ; strlen input
+    bl strlen                   ; x0 = length, x1 preserved
+    mov w1, w0                  ; w1 = name length
+    mov x0, x10                 ; restore x0 = name pointer
+#else
     ldrh w1, [x19, #OFF_D_NAMLEN]
+#endif
     ldrb w2, [x19, #OFF_D_TYPE]
     bl write_chunk
 
@@ -691,8 +709,9 @@ gde_err:
     mov x19, x0
     bl close
     mov x0, x19
-    mov x16, SYS_exit
-    svc #0x80
+    SCWINUM SYS_exit
+    SCWISVC
+    SCERR
 
 gde_done:
     ;; restore stack space
@@ -714,8 +733,9 @@ gde_done:
 
 close:
     mov x0, x20
-    mov x16, SYS_close
-    svc #0x80
+    SCWINUM SYS_close
+    SCWISVC
+    SCERR
 
     b child_end
 

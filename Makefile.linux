@@ -1,0 +1,20 @@
+# ymawky Linux Makefile — static ARM64 binary, zero libc dependencies.
+SRCS := $(wildcard src/*.S)
+OBJS := $(SRCS:src/%.S=%.o)
+
+CC  := gcc
+AS  := as
+LD  := ld
+
+ASFLAGS :=
+LDFLAGS := -e _start --static
+
+ymawky: $(OBJS)
+	$(LD) $(OBJS) -o ymawky $(LDFLAGS)
+	rm -f $(OBJS)
+
+%.o: src/%.S
+	$(CC) -g -O3 -c $< -o $@
+
+clean:
+	rm -f ymawky *.o

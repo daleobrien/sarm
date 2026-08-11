@@ -13,10 +13,6 @@ options:
     cmp w1, #'*'
     b.eq L204
 
-    ;; is this a request for a file in CGI_DIR?
-    bl check_cgi_path
-    b.cc Lcgi
-
     ldr_l x0, filename_str
     bl stat_path
     cbnz x0, Lhfs_err
@@ -26,7 +22,6 @@ options:
     b L204
 
 Lhfs_err: b handle_fs_error
-Lcgi: b cgi
 L204:
     mov x0, #204
     mov x1, #0

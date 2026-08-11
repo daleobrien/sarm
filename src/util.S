@@ -48,11 +48,12 @@ write_all:
     cmn xzr, xzr
     cbz x2, 2f
 
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, x25
     ; x1 is set by caller
     ; x2 is also set by caller
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs Lwrite_fail
 
     sub x2, x2, x0 ; subtract written bytes

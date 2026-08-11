@@ -1,4 +1,4 @@
-;;; ymawky.S -- Web server in ARM64 assembly for MacOS
+;;; ymawky.S -- Web server in ARM64 assembly
 ;;; This file is part of ymawky.
 ;;; Copyright (C) 2026 imtomt
 ;;;
@@ -16,11 +16,12 @@
 
 #include "defs.S"
 
+#ifdef __linux__
+.global _start
+#else
 .global _main
+#endif
 .global child_end
-.global addr ; we use the addr struct in cgi_env.S to get server ip/port
-             ; we *could* hardcode 127.0.0.1, but where's the fun in that?
-             ; what if google dot com ends up running on ymawky huh?
 
 .data
 .align 3
@@ -47,16 +48,16 @@ one: .word 1
 addr:
     .byte 0x02, 0x00             ; AF_INET (2) + padding byte
     .byte 0x1f, 0x90             ; Port 8080, big-endian
+#ifdef __linux__
+    .byte 0x00, 0x00, 0x00, 0x00 ; 0.0.0.0 (container needs all interfaces)
+#else
     .byte 0x7F, 0x00, 0x00, 0x01 ; 127.0.0.1
+#endif
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 ; padding
 
 get_req:
     .ascii "GET "
 .equ get_req_len, . - get_req
-
-put_req:
-    .ascii "PUT "
-.equ put_req_len, . - put_req
 
 head_req:
     .ascii "HEAD "
@@ -66,17 +67,11 @@ options_req:
     .ascii "OPTIONS "
 .equ options_req_len, . - options_req
 
-delete_req:
-    .ascii "DELETE "
-.equ delete_req_len, . - delete_req
-
-post_req:
-    .ascii "POST "
-.equ post_req_len, . - post_req
-
 brew_req:
     .ascii "BREW "
 .equ brew_req_len, . - brew_req
+
+;; other data definitions...
 
 http_: .ascii "HTTP/"
 .equ http_len, . - http_
@@ -89,9 +84,6 @@ http_1_1: .ascii "HTTP/1.1"
 
 host_str: .ascii "Host"
 .equ host_str_len, . - host_str
-
-;header_503: .ascii "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\nServer: ymawky\r\n\r\n"
-;.equ header_503_len, . - header_503
 
 arrows_in: .ascii "\n\n<<<\n"
 .equ arrows_in_len, . - arrows_in
@@ -113,6 +105,9 @@ sockfd:             .skip 8
 .text
 .align 2
 
+#ifdef __linux__
+_start:
+#endif
 _main:
     mov x28, #0
     ;; did we get an argument
@@ -148,55 +143,79 @@ _main:
     strh w0, [x1, #2]
 
 skip_argv:
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, #1
     adr_l x1, ymawky_connecting
     mov x2, ymawky_connecting_len
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; socket(AF_INET, SOCK_STREAM, 0)
-    mov x16, SYS_socket
-    mov x0, #2 ; AF_INET
-    mov x1, #1 ; SOCK_STREAM
+    SCWINUM SYS_socket
+    mov x0, #AF_INET
+    mov x1, #SOCK_STREAM
     mov x2, #0 ; nothin, TCP
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs fatal_exit
 
     str_l x0, sockfd
 
     ;; setsockopt(serverfd, SOL_SOCKET, SO_REUSEADDR, &value, 4)
-    mov x16, SYS_setsockopt
+    SCWINUM SYS_setsockopt
     ldr_l x0, sockfd
-    mov x1, #0xFFFF ; SOL_SOCKET = 0xFFFF
-    mov x2, #4 ; SO_REUSEADDR = 4
+    mov x1, #SOL_SOCKET
+    mov x2, #SO_REUSEADDR
     adr_l x3, one
     mov x4, #4 ; sizeof int
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs exit
 
     ;; bind(sockfd, &addr, 16)
-    mov x16, SYS_bind
+    SCWINUM SYS_bind
     ldr_l x0, sockfd
     adr_l x1, addr
     mov x2, #16 ; the struct is 16 bytes
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs exit
 
     ;; listen(sockfd, 5)
-    mov x16, SYS_listen
+    SCWINUM SYS_listen
     ldr_l x0, sockfd
     mov x1, #5
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs exit
 
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, #1
     adr_l x1, ymawky_connected
     mov x2, ymawky_connected_len
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; set up SIG_IGN on SIGCHLD, with SA_NOCLDWAIT to tell the kernel to auto
     ;; reap children. previously zombies were piling up :(
+#ifdef __linux__
+    sub sp, sp, #32
+    mov x0, #SIG_IGN
+    str x0, [sp, #0]  ; sa_handler = SIG_IGN
+    mov x0, #SA_NOCLDWAIT
+    str x0, [sp, #8]  ; sa_flags = SA_NOCLDWAIT
+    str xzr, [sp, #16] ; sa_restorer = NULL
+    str xzr, [sp, #24] ; sa_mask = 0
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGCHLD_
+    mov x1, sp
+    mov x2, #0 ; old action = NULL
+    mov x3, #8 ; sigsetsize
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+#else
     sub sp, sp, #32
     mov x0, #SIG_IGN
     mov x1, #SA_NOCLDWAIT
@@ -205,15 +224,34 @@ skip_argv:
     str wzr, [sp, #16] ; sa_mask = 0
     str x1, [sp, #20] ; sa_flags = SA_NOCLDWAIT
 
-    mov x16, SYS_sigaction
-    mov w0, #SIGCHLD
+    SCWINUM SYS_sigaction
+    mov w0, #SIGCHLD_
     mov x1, sp
     mov x2, #0 ; old action = NULL
-    svc #0x80
+    SCWISVC
+    SCERR
     add sp, sp, #32
+#endif
     b.cs exit
 
     ;; ignore SIGPIPE so write() returns EPIPE instead of killing us
+#ifdef __linux__
+    sub sp, sp, #32
+    mov x0, #SIG_IGN
+    str x0, [sp, #0]  ; sa_handler = SIG_IGN
+    str xzr, [sp, #8]  ; sa_flags = 0
+    str xzr, [sp, #16] ; sa_restorer = NULL
+    str xzr, [sp, #24] ; sa_mask = 0
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGPIPE_
+    mov x1, sp
+    mov x2, #0
+    mov x3, #8 ; sigsetsize
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+#else
     sub sp, sp, #32
     mov x0, #SIG_IGN
     str x0, [sp, #0] ; sa_handler = SIG_IGN
@@ -221,21 +259,32 @@ skip_argv:
     str wzr, [sp, #16] ; sa_mask = 0
     str wzr, [sp, #20] ; sa_flags = 0
 
-    mov x16, SYS_sigaction
-    mov w0, #13 ;#SIGPIPE
+    SCWINUM SYS_sigaction
+    mov w0, #SIGPIPE_
     mov x1, sp
     mov x2, #0
-    svc #0x80
+    SCWISVC
+    SCERR
     add sp, sp, #32
+#endif
     b.cs exit
 
 loop:
     ;; accept(sockfd, NULL, NULL)
-    mov x16, SYS_accept
+#ifdef __linux__
+    SCWINUM SYS_accept4
     ldr_l x0, sockfd
     mov x1, #0
     mov x2, #0
-    svc #0x80
+    mov x3, #0 ; flags = 0
+#else
+    SCWINUM SYS_accept
+    ldr_l x0, sockfd
+    mov x1, #0
+    mov x2, #0
+#endif
+    SCWISVC
+    SCERR
     b.cs loop ;; loop if accept() failed.
 
     ;; store x0 (return of accept) in clientfd
@@ -245,8 +294,13 @@ loop:
     ;; fork -- it's much easier to debug with lldb if there's no forking :(
     cbnz x28, child
 
-    mov x16, SYS_getpid
-    svc #0x80
+#ifdef __linux__
+    ;; On Linux, skip the proc_info pid-count check.  We just fork.
+    b 8f
+#else
+    SCWINUM SYS_getpid
+    SCWISVC
+    SCERR
     ;; x0 now contains pid
 
     ;; gotta check if number of processes is > MAX_PROCS. luckily, apple has an
@@ -254,14 +308,15 @@ loop:
     ;; this process into a buffer. in the buffer, each child pid is stored as a
     ;; 32-bit integers.
     sub sp, sp, #2048 ; allocate a bit of stack space for the proc_info buf
-    mov x16, SYS_proc_info
+    SCWINUM SYS_proc_info
     mov x2, x0 ; our pid. wondering why we called gitpid() a minute ago? ;)
     mov x0, PROC_INFO_CALL_LISTPIDS
     mov x1, PROC_PPID_ONLY
     mov x3, #0
     mov x4, sp
     mov x5, #2048
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; proc_info returns the number of bytes written to the stack. if we divide
     ;; by 4, it tells us the total number of procs.
@@ -278,72 +333,104 @@ loop:
     mov x1, #1 ; we DO want to return here!
     bl reply_status
     b 2f ; close n loop!
+#endif
 
 8:
     ;; fork()
-    mov x16, SYS_fork
-    svc #0x80
+#ifdef __linux__
+    SCWINUM SYS_clone
+    mov x0, #SIGCHLD_       ; child exit signal
+    mov x1, #0              ; child stack (NULL = share parent's)
+    mov x2, #0              ; parent_tidptr
+    mov x3, #0              ; child_tidptr
+    mov x4, #0              ; tls
+    SCWISVC
+    SCERR
     b.cs 2f ;; fork failed :( fuck :( close and loop again :(
 
-    ;; if we're in the child, go there
-    ;; NOTE
-    ;; on macos, fork() returns the pid of the child process in x0 in the
-    ;; parent process. in the child process, it puts 1 in x1. on linux, fork
-    ;; will put 0 in x0 in the child, or the pid in x0 in the parent. so it's
-    ;; a bit different. if you're on linux, you've got to change this to
-    ;; cmp x0, #0
+    ;; On Linux, clone returns 0 in x0 for child, pid for parent.
+    cbz x0, child
+#else
+    SCWINUM SYS_fork
+    SCWISVC
+    SCERR
+    b.cs 2f ;; fork failed :( fuck :( close and loop again :(
+
+    ;; On macOS, fork returns child pid in x0 (parent) or sets x1=1 (child).
     cmp x1, #1
     b.eq child
+#endif
 2:
     ;; otherwise close clientfd and loop
-    mov x16, SYS_close
+    SCWINUM SYS_close
     ldr_l x0, clientfd
-    svc #0x80
+    SCWISVC
+    SCERR
 
     b loop
 
 
 child:
     ;; close sockfd
-    mov x16, SYS_close
+    SCWINUM SYS_close
     ldr_l x0, sockfd
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; setsockopt() with a SO_RCVTIMEO timeout from config.S, to prevent
     ;; connections from staying open indefinitely
-    mov x16, SYS_setsockopt
+    SCWINUM SYS_setsockopt
     ldr_l x0, clientfd
-    mov x1, #0xFFFF ; SOL_SOCKET
-    mov x2, #0x1006 ; SO_RCVTIMEO = 0x1006
+    mov x1, #SOL_SOCKET
+    mov x2, #SO_RCVTIMEO
     adr_l x3, rcv_timeout
     mov x4, #16 ; struct timeval is 16 bytes
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs child_end
 
-    ;; setsockopt(), SO_NOSIGPIPE
-    mov x16, SYS_setsockopt
+#ifndef __linux__
+    ;; setsockopt(), SO_NOSIGPIPE (macOS only; Linux ignores SIGPIPE instead)
+    SCWINUM SYS_setsockopt
     ldr_l x0, clientfd
-    mov x1, 0xFFFF ; SOL_SOCKET
-    mov x2, 0x1022 ; SO_NOSIGPIPE
+    mov x1, #SOL_SOCKET
+    mov x2, #SO_NOSIGPIPE
     adr_l x3, one
     mov x4, #4
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs child_end
+#endif
 
     ;; arm timer before reading
-    mov x16, SYS_setitimer
+    SCWINUM SYS_setitimer
     mov x0, #0 ; ITIMER_REAL
     adr_l x1, read_timer
     mov x2, #HEADER_REQ_TIMEOUT_SECS
     str x2, [x1, #16] ; offset 16 = it_value.tv_sec
     mov x2, #0
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; set a signal handler for SIGALRM, so we can respond with 408 if the
-    ;; connection times out during the header. see the long ass comment in
-    ;; put.S for a more detailed explanation of this, since it's extremely
-    ;; not-portable. macOS only. yuck. (it shouldn't be too hard to port to
-    ;; linux though).
+    ;; connection times out during the header.
+#ifdef __linux__
+    sub sp, sp, #32
+    adr_l x0, L408
+    str x0, [sp, #0]  ; sa_handler
+    str xzr, [sp, #8]  ; sa_flags = 0
+    str xzr, [sp, #16] ; sa_restorer = NULL
+    str xzr, [sp, #24] ; sa_mask = 0
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGALRM
+    mov x1, sp
+    mov x2, #0 ; old action = NULL
+    mov x3, #8 ; sigsetsize
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+#else
     sub sp, sp, #32
     adr_l x0, L408
     str x0, [sp, #0]  ; sa_handler
@@ -351,24 +438,27 @@ child:
     str wzr, [sp, #16] ; sa_mask = 0
     str wzr, [sp, #20] ; sa_flags = 0
 
-    mov x16, SYS_sigaction
+    SCWINUM SYS_sigaction
     mov w0, #SIGALRM
     mov x1, sp
     mov x2, #0 ; old action = NULL
-    svc #0x80
+    SCWISVC
+    SCERR
     add sp, sp, #32
+#endif
     b.cs L500
 
     ;; read(client_fd, buffer, buffer_size)
     mov x7, #0
 read_loop:
-    mov x16, SYS_read
+    SCWINUM SYS_read
     ldr_l x0, clientfd
     adr_l x1, buf
     add x1, x1, x7 ; account for buffer being partially filled
     mov x22, #BUF_SIZE
     sub x2, x22, x7 ; BUF_SIZE - bytes_read
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs read_failed
     mov x22, x0 ; stash number of bytes read() got in x22
 
@@ -425,30 +515,33 @@ read_failed:
 
 2:
     ;; disarm timer
-    mov x16, SYS_setitimer
+    SCWINUM SYS_setitimer
     mov x0, #0
     adr_l x1, read_timer
     str xzr, [x1, #16] ; offset 16 = it_value.tv_sec
     mov x2, #0
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; let's make sure buf is NULL terminated
     adr_l x1, buf
     strb wzr, [x1, x24] ; x24 -> length of bytes read
 
     ;; write \n\n<<<\n to stdout to mark a header we're receiving
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, #1
     adr_l x1, arrows_in
     mov x2, arrows_in_len
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; this just writes the request to stdout
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, #1
     adr_l x1, buf
     mov x2, x23
-    svc #0x80
+    SCWISVC
+    SCERR
 
     adr_l x0, buf
     mov x1, x23
@@ -478,31 +571,6 @@ read_failed:
     cmp x0, #1
     b.eq Loptions_method
 
-    ;; could be a DELETE request, i *guess*...
-    adr_l x0, buf
-    adr_l x1, delete_req
-    mov x2, delete_req_len
-    bl streqn
-    cmp x0, #1
-    b.eq Ldelete_method
-
-    ;; oh i know! PUT!
-    adr_l x0, buf
-    adr_l x1, put_req
-    mov x2, put_req_len
-    bl streqn
-    cmp x0, #1
-    b.eq Lput_method
-
-    ;; oohhh, could it be a POST? that's a fancy one! (and not really
-    ;; implemented yet... TODO i guess)
-    adr_l x0, buf
-    adr_l x1, post_req
-    mov x2, post_req_len
-    bl streqn
-    cmp x0, #1
-    b.eq Lpost_method
-
     ;; oh god. it's probably BREW. unfortunately, I'm a teapot, so we can't
     ;; support that method.
     adr_l x0, buf
@@ -523,15 +591,6 @@ Lget_method:
     mov x1, x23
     b get
 
-Lput_method:
-    mov x0, PUT_ID
-    str_l x0, request_id
-
-    adr_l x0, buf
-    mov x1, x23
-    mov x2, x24
-    b put
-
 Lhead_method:
     mov x0, HEAD_ID
     str_l x0, request_id
@@ -542,60 +601,55 @@ Loptions_method:
     str_l x0, request_id
     b options
 
-Ldelete_method:
-    mov x0, DELETE_ID
-    str_l x0, request_id
-    b delete
-
-Lpost_method:
-    mov x0, POST_ID
-    str_l x0, request_id
-    ;; TODO FIXME XXX HACK actually make post
-    b put
-
-
 child_end:
     ;; close(clientfd)
-    mov x16, SYS_close
+    SCWINUM SYS_close
     ldr_l x0, clientfd
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ldr_l x0, file_des
     cmn x0, #1
     b.eq 1f
-    mov x16, SYS_close
+    SCWINUM SYS_close
     ; x0 is set
-    svc #0x80
+    SCWISVC
+    SCERR
 1:
     ;; This is always for children, so let's exit. the parent will loop
-    mov x16, SYS_exit
+    SCWINUM SYS_exit
     mov x0, #0
-    svc #0x80
+    SCWISVC
+    SCERR
 
 
 exit:
-    mov x16, SYS_write
+    SCWINUM SYS_write
     mov x0, #1
     adr_l x1, ymawky_shutdown
     mov x2, ymawky_shutdown_len
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; shutdown(sockfd, SHUT_RDRW)
-    mov x16, SYS_shutdown
+    SCWINUM SYS_shutdown
     ldr_l x0, sockfd
     mov x1, #2 ; SHUT_RDRW
-    svc #0x80
+    SCWISVC
+    SCERR
 
     ;; close(sockfd)
-    mov x16, SYS_close
+    SCWINUM SYS_close
     ldr_l x0, sockfd
-    svc #0x80
+    SCWISVC
+    SCERR
     ;; fallthrough
 fatal_exit:
     ;; exit(1)
-    mov x16, SYS_exit
+    SCWINUM SYS_exit
     mov x0, #1
-    svc #0x80
+    SCWISVC
+    SCERR
 
 
 ;; verify the header has an HTTP version and that it's 1.1 or 1.0

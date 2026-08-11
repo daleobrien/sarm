@@ -17,24 +17,17 @@
 
 .global parse_header_end
 .global parse_range
-.global parse_content_length
-.global make_tmp_file
 .global do_path_checks
 .global get_header_field
 
 ;; this is PATH_MAX
 .equ filename_buf_size, 4096
-;; (PATH_MAX + some extra bytes for tmp stuff)
-.equ filename_buf_tmp_size, filename_buf_size + 64
 ;; max size for query string (everything after ? in, eg, GET /index?f=u&c=k
 .equ query_buf_size, 4096
 
 .data
 header_end: .ascii "\r\n\r\n"
 .equ header_end_len, . - header_end
-
-content_len_match_str: .ascii "content-length"
-.equ content_len_match_len, 14
 
 range_match_str: .ascii "range"
 .equ range_match_len, 5
@@ -49,110 +42,16 @@ www_prefix: .ascii DOCROOT ;; DOCROOT from config.S
 default_file: .ascii DEFAULT_FILE ;; also from config.S
 .equ default_file_len, . - default_file
 
-tmp_prefix: .ascii DOCROOT
-            .ascii ".ymawky_tmp_"
-.equ tmp_prefix_len, . - tmp_prefix
-.align 3 ;; tmp_prefix length is odd, realign for the .quad below
-tmp_prefix_len_val: .quad tmp_prefix_len
-
 .bss
 ;; probably way too defensive, but can't hurt, eh?
 filename_buf: .skip filename_buf_size + 1
 .align 3 ;; fix broken alignment again
-filename_buf_tmp: .skip filename_buf_tmp_size + 1
-.align 3
 range_buf: .skip 19
 .align 3
 query_buf: .skip query_buf_size
 
 .text
 .align 2
-
-;; take a filename, and create a temporary file for PUT.
-;; eg, "test.txt" -> ".ymawky_tmp_<pid>", then that temp file gets written to,
-;; and on success, renamed to "test.txt", or unlinked on fail.
-;; input
-;; none
-;;
-;; return
-;; x0 -> generated temporary filename
-;; x1 -> length of generated temporary filename
-make_tmp_file:
-    stp x29, x30, [sp, #-64]!
-    stp x19, x20, [sp, #16]
-    stp x21, x22, [sp, #32]
-    stp x23, x24, [sp, #48]
-
-    mov x23, #0
-    movz x24, #filename_buf_tmp_size
-
-    ;; preemptively increment the counter to account for the prefix
-    mov x22, #tmp_prefix_len
-    add x23, x23, x22
-    ;; quit if it's too big. we don't want to accidentally write into other
-    ;; memory
-    cmp x23, x24
-    b.hi mtf_err 
-
-    ;; copy tmp_prefix to filename_buf_tmp
-    adr_l x0, filename_buf_tmp
-    adr_l x1, tmp_prefix
-    mov x2, #tmp_prefix_len
-    bl memcpy
-    mov x21, x0 ; save pointer with offset from memcpy
-
-    ;; getpid()
-    mov x16, SYS_getpid
-    svc #0x80
-    ;; now x0 contains the pid
-
-    ;; itoa() on getpid()
-    bl itoa
-    ;; x0 -> string, x1 -> length of string
-    mov x22, x1
-
-    ;; preemptively increment the counter, and bounds check, for return once
-    ;; more
-    add x23, x23, x22
-    cmp x23, x24
-    b.hi mtf_err
-
-    ;; copy string of pid to the end of filename_buf_tmp
-    mov x2, x1
-    mov x1, x0
-    mov x0, x21 ; load pointer with offset
-    bl memcpy
-
-    ;; one last bounds check, preemptively, for the NULL terminator. then add
-    ;; it.
-    add x23, x23, #1
-    cmp x23, x24
-    b.hi mtf_err
-    strb wzr, [x0]
-
-    ;; load data for returning. make x0 a pointer to the start of
-    ;; filename_buf_tmp, and x1 the total length of the file (-1 to get rid of
-    ;; the NULL byte from length).
-    adr_l x0, filename_buf_tmp
-    sub x1, x23, #1
-
-    cmn xzr, xzr ; clear carry bit just in case! probably unneeded.
-    b mtf_epilogue
-
-mtf_err:
-    cmp xzr, xzr ; sets carry bit
-    ;; return NULLs
-    mov x0, #0
-    mov x1, #0
-    ;; fallthrough
-
-mtf_epilogue:
-    ldp x23, x24, [sp, #48]
-    ldp x21, x22, [sp, #32]
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #64
-    ret
-
 
 ;; find header field
 ;; x0 -> HTTP header from client
@@ -429,144 +328,6 @@ pr_epilogue:
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #80
-    ret
-;; parse Content-Length: header line
-;; input
-;; x0 -> HTTP header from client
-;; x1 -> length of header
-;;
-;; return
-;; x0 -> content length as an integer
-parse_content_length:
-    stp x29, x30, [sp, #-48]!
-    stp x19, x20, [sp, #16]
-    stp x21, x22, [sp, #32]
-
-    mov x19, x0  ; headers
-    mov x20, x1  ; length
-    mov x21, #0  ; index
-    mov x22, #-1 ; value, sentinel -1 = not found yet
-
-    ;; x0 is already set
-    ;; x1 is already set
-    adr_l x2, content_len_match_str
-    mov x3, content_len_match_len
-    bl get_header_field
-    b.cs pcl_err
-
-    mov x19, x0
-    mov x20, x1
-
-    ;; check if there's duplicate content-length fields... if there are, it's
-    ;; a malformed request. oops!
-    mov x0, x19
-    mov x1, x20
-    adr_l x2, content_len_match_str
-    mov x3, content_len_match_len
-    bl get_header_field
-    b.cc pcl_malformed
-
-Lskip_leading_zeroes:
-    ldrb w2, [x19, x21]
-    cmp w2, #'0'
-    b.ne 1f ;; not a zero so lets get the content length for real!
-
-    ;; hm it is a zero. is it the last zero? peak at da next char
-    add x3, x21, #1
-    cmp x3, x20
-    b.ge 1f ; if it's the end of the string, don't skip this zero
-
-    ldrb w3, [x19, x3]
-    cmp w3, #'0'
-    b.lt 1f ;; if the next char is < 0, like \r, keep it and count
-    cmp w3, #'9'
-    b.gt 1f ;; likewise if the char is > 9
-
-    ;; if we're here, the current char is 0 and the next char is also a digit.
-    ;; skip it to skip leading zeroes!
-    add x21, x21, #1
-    b Lskip_leading_zeroes
-
-1:
-    mov x0, x21 ; x21 points to the true start of the number, after leading 0s
-    mov x1, #0
-
-Lget_cl_len:
-    ldrb w2, [x19, x0]
-    cmp w2, #'0'
-    b.lt Lgot_cl_len
-    cmp w2, #'9'
-    b.gt Lgot_cl_len
-
-    add x1, x1, #1
-    add x0, x0, #1
-    cmp x0, x20
-    b.ge pcl_done
-
-    b Lget_cl_len
-
-Lgot_cl_len:
-    ;; now x1 is the number of digits following "content-length:", after
-    ;; whitespace. if it's 0, that means empty content length. bad!
-    cbz x1, pcl_malformed
-    ;; but first, if the next character is *not* \r, then it means content
-    ;; length has some string like "124afoo", which is invalid.
-    cmp w2, #'\r'
-    b.ne pcl_malformed
-
-    ;; if the header ends like "content-length: foo" with nothing after, like
-    ;; no \r\n\r\n, it's malformed. this isn't a strict check -- just makes
-    ;; sure the end of content-length is not the last byte of the header.
-    cmp x0, x20
-    b.ge pcl_malformed
-
-    ;; ensure x1 has a reasonable size to prevent overflows. 18 characters
-    cmp x1, #18
-    b.ge pcl_body_too_large
-
-    ;; load the string + pointer index into x0
-    mov x0, x19
-    add x0, x0, x21
-    ;; x1 is still set
-    bl atoi_n
-    b.cs pcl_malformed
-
-    ;; let's also cap it at 1GB (by default). change MAX_BODY_SIZE at the top
-    ;; of the file to customize.
-    mov x1, #MAX_BODY_SIZE
-    cmp x0, x1
-    b.hi pcl_body_too_large
-
-    ;; now x0 should be the length!
-    mov x22, x0
-
-pcl_done:
-    cmp x22, #-1
-    b.eq pcl_err
-
-    mov x0, x22
-    cmn xzr, xzr ; clears carry bit
-    b pcl_epilogue
-
-pcl_body_too_large:
-    cmp xzr, xzr ; sets carry bit
-    mov x0, #2 ; 2 means Content-Length: X value is too large
-    b pcl_epilogue
-
-pcl_malformed:
-    cmp xzr, xzr ; sets carry bit
-    mov x0, #1 ; 1 means malformed header
-    b pcl_epilogue
-
-pcl_err:
-    cmp xzr, xzr ; sets carry bit
-    mov x0, #0 ; 0 means other error, like no content-length found
-    ;; fall through
-
-pcl_epilogue:
-    ldp x21, x22, [sp, #32]
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #48
     ret
 
 
@@ -931,17 +692,6 @@ do_path_checks:
     bl check_path_traversal
     cbz x0, L400
 
-    ldr_l x0, filename_len
-    ldr_l x1, tmp_prefix_len_val
-    cmp x0, x1
-    b.lt 2f
-
-    ldr_l x0, filename_str
-    adr_l x1, tmp_prefix
-    ldr_l x2, tmp_prefix_len_val
-    bl streqn_i
-    cbnz x0, L403
-2:
     ldp x29, x30, [sp], #16
     ret
 

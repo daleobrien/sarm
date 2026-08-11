@@ -38,7 +38,7 @@ head_content_type:
 .equ head_content_type_len, . - head_content_type
 
 good_response_tail:
-    .ascii "\r\nAllow: GET, HEAD, OPTIONS, DELETE, PUT\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
+    .ascii "\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ good_response_tail_len, . - good_response_tail
 
 .text
@@ -67,15 +67,21 @@ get_setup:
     b.eq L400
 
 gbp:
-    ;; check if the path requested is in CGI_DIR
-    bl check_cgi_path
-    b.cc Lcgi ; branch to cgi handler if so
-
-    mov x16, SYS_open
+#ifdef __linux__
+    SCWINUM SYS_openat
+    mov x0, #AT_FDCWD
+    ldr_l x1, filename_str
+    mov x2, #0 ; RDONLY
+    orr x2, x2, #O_NOFOLLOW
+    mov x3, #0 ; mode = 0
+#else
+    SCWINUM SYS_open
     ldr_l x0, filename_str
     mov x1, #0 ; RDONLY
     orr x1, x1, #O_NOFOLLOW_ANY
-    svc #0x80
+#endif
+    SCWISVC
+    SCERR
     b.cs Lhfs_err ; if the carry flag is set, open() failed so handle it
 
     ;; save the file descriptor
@@ -97,12 +103,6 @@ Lgs_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #32
     ret
-
-Lcgi:
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #32
-    b cgi
-
 
 ;; for HEAD, reply with just the header. pretty short n sweet.
 head:
@@ -248,14 +248,15 @@ Lmmap_start:
     cbz x19, 1f
 
     ; mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)
-    mov x16, SYS_mmap
+    SCWINUM SYS_mmap
     mov x0, #0
     mov x1, x19
     mov x2, #1 ; PROT_READ
     mov x3, #2 ; MAP_PRIVATE
     ldr_l x4, file_des ; file descriptor
     mov x5, #0 ; offset
-    svc #0x80
+    SCWISVC
+    SCERR
     b.cs L500
     ;; x0 is now the pointer to memory for the file
 
@@ -288,10 +289,11 @@ Lmmap_start:
     b Lwrite_done
 
 Lwrite_done:
-    mov x16, SYS_munmap
+    SCWINUM SYS_munmap
     mov x0, x12
     mov x1, x19
-    svc #0x80
+    SCWISVC
+    SCERR
     ;; if munmap fails, b.cs would just branch to Lget_end anyway. so just
     ;; fall through either way.
 

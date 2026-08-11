@@ -3,12 +3,6 @@
 ;; Default: www/
 #define DOCROOT "www/"
 
-;; Default directory where CGI scripts will be stored.
-;; This is inside DOCROOT. Set this to a nonexisten directory if you don't
-;; want CGI.
-;; Default: cgi-bin/
-#define CGI_DIR "cgi-bin/"
-
 ;; Directory to search for custom error HTML pages, so a page can be displayed
 ;; on 404 rather than just the browser's boring stuff.
 ;; Note that this needs the trailing /.
@@ -31,20 +25,6 @@
 ;; Maximum time, in seconds, to receive the full header before timing out.
 ;; Default: 10 seconds
 .equ HEADER_REQ_TIMEOUT_SECS, 10
-
-;; The timeout for PUT is calculated by:
-;; timeout (secs) = PUT_GRACE_SECS + Content-Length / MIN_BPS. So for very small
-;; files, it will basically just be the grace period.
-;; How many seconds of grace time should be added to the PUT read timeout?
-;; Default: 5 seconds
-.equ PUT_GRACE_SECS, 5
-;; What should the minimum number of bytes per second be for the PUT timeout?
-;; Default: 16KB/s
-.equ PUT_MIN_BPS, 1024 * 16
-
-;; Maximum file size, in bytes, for PUT to receive.
-;; Default: 1GB
-.equ MAX_BODY_SIZE, 1024 * 1024 * 1024
 
 ;; Maximum number of active, concurrent processes allowed.
 ;; This is entirely up to you and how many processes your computer can handle.
