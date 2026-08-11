@@ -9,3 +9,4 @@ www/cgi-bin/*
 !www/cgi-bin/envtest
 src/embedded.S
 www_gz/
+*.o
