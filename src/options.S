@@ -4,7 +4,7 @@
 
 .text
 options:
-    ;; do not default to index.html
+    // do not default to index.html
     mov x0, #0
     bl do_path_checks
 

@@ -1,46 +1,63 @@
 #include "config.S"
 
-;; macros
-;; turn adrp ... add ... into one call, adr_l
+// macros
+
+#ifdef __linux__
+// Linux GAS uses :pg_hi21: and :lo12: relocations
+.macro adr_l, reg, sym
+    adrp \reg, :pg_hi21:\sym
+    add \reg, \reg, :lo12:\sym
+.endm
+
+.macro ldr_l reg, sym, scratch=x9
+    adrp \scratch, :pg_hi21:\sym
+    ldr \reg, [\scratch, :lo12:\sym]
+.endm
+
+.macro str_l src, sym, scratch=x9
+    adrp \scratch, :pg_hi21:\sym
+    str \src, [\scratch, :lo12:\sym]
+.endm
+#else
+// Apple assembler uses @PAGE and @PAGEOFF relocations
 .macro adr_l, reg, sym
     adrp \reg, \sym@PAGE
     add \reg, \reg, \sym@PAGEOFF
 .endm
 
-;; same with adrp ... (add ...) ldr ...
 .macro ldr_l reg, sym, scratch=x9
     adrp \scratch, \sym@PAGE
     ldr \reg, [\scratch, \sym@PAGEOFF]
 .endm
 
-;; and adrp ... (add ...) str ...
 .macro str_l src, sym, scratch=x9
     adrp \scratch, \sym@PAGE
     str \src, [\scratch, \sym@PAGEOFF]
 .endm
+#endif
 
-;; (c)ompare and (b)ranch, (eq/ne/gt/etc), x0, x1, label
+// (c)ompare and (b)ranch, (eq/ne/gt/etc), x0, x1, label
 .macro cb cond, r1, r2, l
     cmp \r1, \r2
     b.\cond \l
 .endm
 
-;; ── Platform-specific syscall helpers ─────────────────────────
+// ── Platform-specific syscall helpers ─────────────────────────
 
 #ifdef __linux__
 
-;; SCWINUM: set the syscall number in the platform-specific register.
+// SCWINUM: set the syscall number in the platform-specific register.
 .macro SCWINUM num
     mov x8, \num
 .endm
 
-;; SCWISVC: execute the syscall instruction.
+// SCWISVC: execute the syscall instruction.
 .macro SCWISVC
     svc #0
 .endm
 
-;; SCERR: after a Linux syscall, convert negative-x0 errno to positive
-;; and set/clear C so that b.cs works identically to macOS.
+// SCERR: after a Linux syscall, convert negative-x0 errno to positive
+// and set/clear C so that b.cs works identically to macOS.
 .macro SCERR
     tbnz x0, #63, 9900f
     cmn xzr, xzr   // success: C=0
@@ -51,7 +68,7 @@
 9901:
 .endm
 
-;; syscalls
+// syscalls
 .equ SYS_exit,         93
 .equ SYS_read,         63
 .equ SYS_write,        64
@@ -73,29 +90,29 @@
 .equ SYS_getdents64,   217
 .equ SYS_newfstatat,   79
 .equ SYS_fstat,        80
-.equ SYS_fstat64,      80   ;; alias: Linux fstat = 80
+.equ SYS_fstat64,      80   // alias: Linux fstat = 80
 .equ SYS_nanosleep,    101
 
-;; socket stuff
+// socket stuff
 .equ AF_INET,          2
 .equ SOCK_STREAM,      1
 .equ SOL_SOCKET,       1
 .equ SO_REUSEADDR,     2
 .equ SO_RCVTIMEO,      20
-;; Linux doesn't have SO_NOSIGPIPE; we ignore SIGPIPE instead.
+// Linux doesn't have SO_NOSIGPIPE; we ignore SIGPIPE instead.
 .equ SO_NOSIGPIPE,     -1
 
-;; mmap
+// mmap
 .equ PROT_READ,        1
 .equ MAP_PRIVATE,      2
 
-;; open flags
+// open flags
 .equ O_RDONLY,         0x0000
-.equ O_NOFOLLOW,       0x20000  ;; Linux O_NOFOLLOW
+.equ O_NOFOLLOW,       0x20000  // Linux O_NOFOLLOW
 .equ AT_FDCWD,         -100
 
-;; stat — Linux struct stat64 (arm64)
-;; st_mode is a u32 at offset 16, st_size is u64 at offset 48
+// stat — Linux struct stat64 (arm64)
+// st_mode is a u32 at offset 16, st_size is u64 at offset 48
 .equ OFF_ST_MODE,      16
 .equ S_IFREG,          0x8000
 .equ S_IFDIR,          0x4000
@@ -104,21 +121,21 @@
 .equ S_IXOTH,          0x01
 .equ S_IXANY,          0x49
 
-;; getdents64 — Linux dirent64 struct
+// getdents64 — Linux dirent64 struct
 .equ OFF_D_INTO,       0
 .equ OFF_D_SEEKOFF,    8
 .equ OFF_D_RECLEN,     16
 .equ OFF_D_TYPE,       18
-.equ OFF_D_NAMLEN,     19   ;; NOTE: not present in Linux dirent64; we compute from d_name
+.equ OFF_D_NAMLEN,     19   // NOTE: not present in Linux dirent64; we compute from d_name
 .equ OFF_D_NAME,       19
 .equ DT_DIR,           4
 
-;; clone flags for fork() replacement
+// clone flags for fork() replacement
 .equ CLONE_CHILD_SETTID,  0x01000000
 .equ CLONE_CHILD_CLEARTID, 0x00200000
 .equ SIGCHLD_LINUX,          17
 
-;; errno values (Linux arm64)
+// errno values (Linux arm64)
 .equ EPERM,          1
 .equ ENOENT,         2
 .equ ESRCH,          3
@@ -174,7 +191,7 @@
 .equ ENOANO,         55
 .equ EBADRQC,        56
 .equ EBADSLT,        57
-.equ EDEADLOCK,      58  ;; note: EDEADLOCK == EDEADLK on many archs
+.equ EDEADLOCK,      58  // note: EDEADLOCK == EDEADLK on many archs
 .equ EBFONT,         59
 .equ ENOSTR,         60
 .equ ENODATA,        61
@@ -251,18 +268,18 @@
 .equ ERFKILL,        132
 .equ EHWPOISON,      133
 
-;; signals
+// signals
 .equ SIGALRM,        14
 .equ SIGCHLD_,       17
 .equ SIGPIPE_,       13
 .equ SIG_IGN,        1
 
-;; For SA_NOCLDWAIT on Linux ARM64, we just set SIGCHLD to SIG_IGN
-;; which has the same effect on Linux (auto-reap children).
-;; SA_NOCLDWAIT is #defined as 2 for most Linux archs including arm64.
+// For SA_NOCLDWAIT on Linux ARM64, we just set SIGCHLD to SIG_IGN
+// which has the same effect on Linux (auto-reap children).
+// SA_NOCLDWAIT is #defined as 2 for most Linux archs including arm64.
 .equ SA_NOCLDWAIT,   2
 
-;; request type ids
+// request type ids
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
@@ -270,23 +287,23 @@
 .equ BUF_SIZE,   16384
 
 #else
-;; ── macOS / Apple ARM64 ───────────────────────────────────────
+// ── macOS / Apple ARM64 ───────────────────────────────────────
 
-;; SCWINUM: set the syscall number. macOS uses x16.
+// SCWINUM: set the syscall number. macOS uses x16.
 .macro SCWINUM num
     mov x16, \num
 .endm
 
-;; SCWISVC: execute the syscall instruction. macOS uses svc #0x80.
+// SCWISVC: execute the syscall instruction. macOS uses svc #0x80.
 .macro SCWISVC
     svc #0x80
 .endm
 
-;; SCERR: on macOS, the carry flag is already correct after svc #0x80.
+// SCERR: on macOS, the carry flag is already correct after svc #0x80.
 .macro SCERR
 .endm
 
-;; syscalls
+// syscalls
 .equ SYS_exit,         1
 .equ SYS_fork,         2
 .equ SYS_read,         3
@@ -318,7 +335,7 @@
 .equ SYS_unlinkat,     472
 .equ SYS_renameatx_np, 488
 
-;; socket
+// socket
 .equ AF_INET,          2
 .equ SOCK_STREAM,      1
 .equ SOL_SOCKET,       0xFFFF
@@ -326,16 +343,16 @@
 .equ SO_RCVTIMEO,      0x1006
 .equ SO_NOSIGPIPE,     0x1022
 
-;; mmap
+// mmap
 .equ PROT_READ,        1
 .equ MAP_PRIVATE,      2
 
-;; oflags
+// oflags
 .equ O_RDONLY,         0x0000
 .equ O_NOFOLLOW_ANY,   0x20000000
 .equ AT_FDCWD,         -2
 
-;; stat
+// stat
 .equ OFF_ST_MODE,    4
 .equ S_IFREG,        0x8000
 .equ S_IFDIR,        0x4000
@@ -344,7 +361,7 @@
 .equ S_IXOTH,        0x01
 .equ S_IXANY,        0x49
 
-;; getdirentries64
+// getdirentries64
 .equ OFF_D_INTO,    0
 .equ OFF_D_SEEKOFF, 8
 .equ OFF_D_RECLEN,  16
@@ -353,11 +370,11 @@
 .equ OFF_D_NAME,    21
 .equ DT_DIR,        4
 
-;; proc stuff
+// proc stuff
 .equ PROC_INFO_CALL_LISTPIDS, 1
 .equ PROC_PPID_ONLY,          6
 
-;; errno values
+// errno values
 .equ EPERM,          1
 .equ ENOENT,         2
 .equ EACCES,         13
@@ -385,14 +402,14 @@
 .equ ENOTEMPTY,      66
 .equ EINVAL,         22
 
-;; signals
+// signals
 .equ SIGALRM,        14
 .equ SIGCHLD_,       20
 .equ SIGPIPE_,       13
 .equ SIG_IGN,        1
 .equ SA_NOCLDWAIT,   0x0020
 
-;; request type ids
+// request type ids
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2

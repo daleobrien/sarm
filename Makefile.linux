@@ -1,5 +1,5 @@
 # ymawky Linux Makefile — static ARM64 binary, zero libc dependencies.
-SRCS := $(wildcard src/*.S)
+SRCS := $(filter-out src/config.S src/defs.S,$(wildcard src/*.S))
 OBJS := $(SRCS:src/%.S=%.o)
 
 CC  := gcc

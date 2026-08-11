@@ -1,4 +1,4 @@
-SRCS := $(wildcard src/*.S)
+SRCS := $(filter-out src/config.S src/defs.S,$(wildcard src/*.S))
 OBJS := $(SRCS:src/%.S=%.o)
 CFLAGS += -O3
 LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e _main -arch arm64
