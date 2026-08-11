@@ -290,93 +290,11 @@ loop:
     // store x0 (return of accept) in clientfd
     str_l x0, clientfd
 
-    // we check if x28 is set, indicated "d" was passed to cli. if it was, skip
-    // fork -- it's much easier to debug with lldb if there's no forking :(
-    cbnz x28, child
-
-#ifdef __linux__
-    // On Linux, skip the proc_info pid-count check.  We just fork.
-    b 8f
-#else
-    SCWINUM SYS_getpid
-    SCWISVC
-    SCERR
-    // x0 now contains pid
-
-    // gotta check if number of processes is > MAX_PROCS. luckily, apple has an
-    // undocumented syscall, "proc_info", that allows us to get all children of
-    // this process into a buffer. in the buffer, each child pid is stored as a
-    // 32-bit integers.
-    sub sp, sp, #2048 // allocate a bit of stack space for the proc_info buf
-    SCWINUM SYS_proc_info
-    mov x2, x0 // our pid. wondering why we called gitpid() a minute ago? ;)
-    mov x0, PROC_INFO_CALL_LISTPIDS
-    mov x1, PROC_PPID_ONLY
-    mov x3, #0
-    mov x4, sp
-    mov x5, #2048
-    SCWISVC
-    SCERR
-
-    // proc_info returns the number of bytes written to the stack. if we divide
-    // by 4, it tells us the total number of procs.
-    lsr x0, x0, #2
-    add sp, sp, #2048 // now we can free up the stack space
-
-    // is the nuymber of procs > MAX_PROCS? 503 if so.
-    cmp x0, #MAX_PROCS
-    b.ls 8f
-
-    // uh-oh, we're at the max processes. let's give a nice, kind, smart, cute,
-    // lil, friendly 503 :3
-    mov x0, #503
-    mov x1, #1 // we DO want to return here!
-    bl reply_status
-    b 2f // close n loop!
-#endif
-
-8:
-    // fork()
-#ifdef __linux__
-    SCWINUM SYS_clone
-    mov x0, #SIGCHLD_       // child exit signal
-    mov x1, #0              // child stack (NULL = share parent's)
-    mov x2, #0              // parent_tidptr
-    mov x3, #0              // child_tidptr
-    mov x4, #0              // tls
-    SCWISVC
-    SCERR
-    b.cs 2f // fork failed :( fuck :( close and loop again :(
-
-    // On Linux, clone returns 0 in x0 for child, pid for parent.
-    cbz x0, child
-#else
-    SCWINUM SYS_fork
-    SCWISVC
-    SCERR
-    b.cs 2f // fork failed :( fuck :( close and loop again :(
-
-    // On macOS, fork returns child pid in x0 (parent) or sets x1=1 (child).
-    cmp x1, #1
-    b.eq child
-#endif
-2:
-    // otherwise close clientfd and loop
-    SCWINUM SYS_close
-    ldr_l x0, clientfd
-    SCWISVC
-    SCERR
-
-    b loop
+    // handle the request inline (no fork — connection-per-loop cycle)
+    b child
 
 
 child:
-    // close sockfd
-    SCWINUM SYS_close
-    ldr_l x0, sockfd
-    SCWISVC
-    SCERR
-
     // setsockopt() with a SO_RCVTIMEO timeout from config.S, to prevent
     // connections from staying open indefinitely
     SCWINUM SYS_setsockopt
@@ -616,11 +534,8 @@ child_end:
     SCWISVC
     SCERR
 1:
-    // This is always for children, so let's exit. the parent will loop
-    SCWINUM SYS_exit
-    mov x0, #0
-    SCWISVC
-    SCERR
+    // loop back to accept the next connection instead of exiting
+    b loop
 
 
 exit:
