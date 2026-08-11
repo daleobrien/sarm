@@ -24,7 +24,7 @@ src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 .PHONY: clean
 clean:
 	rm -f ymawky $(OBJS) embedded.o src/embedded.S
-	rm -rf www_gz
+	rm -rf www_gz www/err
 
 .PHONY: test
 test: ymawky

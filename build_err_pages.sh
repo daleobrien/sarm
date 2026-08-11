@@ -1,11 +1,12 @@
 #!/bin/sh
 
+mkdir -p www/err
 while IFS=: read -r code title msg; do
-    printf "$code $title ($msg) -> err/$code.html..."
+    printf "$code $title ($msg) -> www/err/$code.html..."
     sed -e "s/{{CODE}}/$code/g" \
         -e "s/{{TITLE}}/$title/g" \
         -e "s/{{MSG}}/$msg/g" \
-        err/template.html > "err/$code.html"
+        err/template.html > "www/err/$code.html"
     echo " done"
 done <<EOF
 400:Bad Request:the rats didn't understand you

@@ -445,6 +445,9 @@ Lbh_epilogue:
 //
 // returns
 // nothing
+//
+// Serves error pages from the embedded table (www/err/<code>.html).
+// No filesystem access — all content is embedded at build time.
 reply_status:
     cbz x1, 1f // skip the stack pushing shit if we're just gonna b child_end
 
@@ -459,10 +462,6 @@ reply_status:
 
     // this is used to check if we should "b child_end", or "ret".
     mov x27, x1
-
-    // this will eventually be open()'d file descriptor. gonna save it so we can
-    // check if a file has been opened, and close it, in sc_err.
-    mov x23, #-1
 
     // make sure the error code is valid: not an error below 400, and we don't
     // support anything above 507 (currently).
@@ -482,12 +481,12 @@ reply_status:
 
     b.hi sc_err
 
-    // copy "err/" or whatever err_dir is set to, to err_page_buf
+    // copy "www/err/" or whatever err_dir is set to, to err_page_buf
     adr_l x0, err_page_buf
     adr_l x1, err_dir
     mov x2, #err_dir_len
     bl memcpy
-    mov x22, x0 // save pointer with offset from mempcy
+    mov x22, x0 // save pointer with offset from memcpy
 
     // itoa the error code
     mov x0, x19
@@ -518,88 +517,56 @@ reply_status:
     adr_l x1, err_ext
     mov x2, err_ext_len
     bl memcpy
-    mov x22, x0 // save that shit! yes! i FUCKIN G LOVE SAVING POINTERS
 
-    // we also gotta save it to filename_str so build_header can work with it
+    // Null-terminate the assembled path
+    strb wzr, [x0]
+
+    // Now err_page_buf is "www/err/<code>.html". Look it up in the embedded
+    // table — no filesystem open(), stat(), mmap(), or munmap().
+    str_l xzr, resource_type
     adr_l x0, err_page_buf
-    str_l x0, filename_str
-    str_l x20, filename_len
+    mov x1, x20   // path length
+    bl lookup_embedded
+    b.cs sc_err   // not found in embedded table → header only
 
-    // ok now err_page_buf should be something like "err/404.html". now we
-    // gotta basically GET that shit.
-#ifdef __linux__
-    SCWINUM SYS_openat
-    mov x0, #AT_FDCWD
-    adr_l x1, err_page_buf
-    mov x2, #0            // RDONLY
-    orr x2, x2, #O_NOFOLLOW
-    mov x3, #0
-#else
-    SCWINUM SYS_open
-    adr_l x0, err_page_buf
-    mov x1, #0
-    orr x1, x1, #O_NOFOLLOW_ANY
-#endif
-    SCWISVC
-    SCERR
+    // Found in embedded table — x0=content, x1=size, x2=ct, x3=ct_len,
+    // x4=gzip, x5=etag, x6=etag_len
+    str_l x0, embedded_content
+    str_l x2, embedded_ct
+    str_l x3, embedded_ct_len
+    str_l x4, embedded_gzip
+    str_l x5, embedded_etag
+    str_l x6, embedded_etag_len
+    mov x9, #1
+    str_l x9, resource_type, x10
 
-    b.cs sc_err
-    mov x23, x0 // save the fd
+    mov x24, x1  // save content_size
+    mov x25, x0  // save content_ptr
 
-    // x0 is still set tho
-    bl stat_fd
-    cbnz x0, sc_err
-    cmp w1, #S_IFREG
-
-    b.ne sc_err
-    cmp x2, #0
-
-    b.eq sc_err // empty file, just do the http code alone
-    mov x24, x2 // save the file size
-
-    mov x0, x24
-    mov x1, #-1
+    // Build the response header
+    mov x0, x24  // file length
+    mov x1, #-1  // no range
     mov x2, #-1
-    mov x3, x19
+    mov x3, x19  // status code
     bl build_header
 
-    // mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)
-    SCWINUM SYS_mmap
-    mov x0, #0
-    mov x1, x24
-    mov x2, #1 // PROT_READ
-    mov x3, #2 // MAP_PRIVATE
-    mov x4, x23 // from open()
-    mov x5, #0 // offset
-    SCWISVC
-    SCERR
-
-    b.cs sc_err
-
-    // x0 is now the pointer to memory for the file. save it for now.
-    mov x25, x0
-
+    // Write the header to client
     ldr_l x0, clientfd
     adr_l x1, header_buf
     ldr_l x2, header_len
     bl write_all
 
+    // Write the embedded body to client
     ldr_l x0, clientfd
     mov x1, x25
     mov x2, x24
     bl write_all
-    // munmap the file now
-    SCWINUM SYS_munmap
-    mov x0, x25
-    mov x1, x24
-    SCWISVC
-    SCERR
     b sc_epilogue
 
 sc_err:
     // if something went wrong during this function, just send the header by
-    // itself -- with no body. no custom pages if opening the custom page
-    // didn't work :(
+    // itself -- with no body. no custom pages if embedded lookup failed.
+    str_l xzr, resource_type
     mov x0, #0
     mov x1, #-1
     mov x2, #-1
@@ -628,14 +595,6 @@ sc_epilogue:
     SCWISVC
     SCERR
 
-    cmn x23, #1
-    b.eq 1f
-
-    SCWINUM SYS_close
-    mov x0, x23
-    SCWISVC
-    SCERR
-1:
     cbnz x27, 3f // if x27 (x1) is nonzero, ret instead of branching to child_end
 2:
     b child_end

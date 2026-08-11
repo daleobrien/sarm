@@ -3,11 +3,11 @@
 // Default: www/
 #define DOCROOT "www/"
 
-// Directory to search for custom error HTML pages, so a page can be displayed
-// on 404 rather than just the browser's boring stuff.
+// Directory to search for custom error HTML pages in the embedded table.
+// Pages are embedded from www/err/ at build time — no filesystem reads.
 // Note that this needs the trailing /.
-// Default: err/
-#define ERR_DIR "err/"
+// Default: www/err/
+#define ERR_DIR "www/err/"
 
 // When receiving a "GET /" request with no filename, what file should be GOT?
 // Default: index.html

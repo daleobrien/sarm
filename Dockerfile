@@ -39,7 +39,7 @@ COPY Makefile.linux Makefile.linux
 COPY build_err_pages.sh build_err_pages.sh
 COPY embed_www.sh embed_www.sh
 
-# Generate custom error pages (err/404.html, err/500.html, …).
+# Generate custom error pages into www/err/ for embedded serving.
 RUN bash build_err_pages.sh
 
 RUN make -f Makefile.linux
