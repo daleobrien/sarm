@@ -18,6 +18,29 @@
 .global get
 .global head
 
+// ═══════════════════════════════════════════════════════════════
+//  Stage 5: Register Convention for the GET hot path
+//
+//  Callee-saved registers (preserved across function calls):
+//    x19  — content_size (file length)
+//    x20  — request header buffer pointer
+//    x21  — request header length
+//    x22  — range start offset
+//    x23  — range end offset
+//    x26  — client file descriptor (loaded once at entry)
+//
+//  Caller-saved / scratch registers (may be clobbered by calls):
+//    x12  — embedded content pointer (loaded at Lmmap_start)
+//    x0–x7, x9–x15, x16–x18  — general scratch
+//
+//  Global memory is only accessed via ldr_l/str_l macros
+//  when a value cannot be kept in a callee-saved register.
+//  Key globals accessed in the hot path:
+//    embedded_content   → cached in x12 before writev
+//    header_len         → read once for writev iovec
+//    header_buf         → read once for writev iovec
+// ═══════════════════════════════════════════════════════════════
+
 .data
 .align 3
 
@@ -130,6 +153,9 @@ head:
 get:
     mov x20, x0
     mov x21, x1
+
+    // Load clientfd once into x26 — reused in writev below
+    ldr_l x26, clientfd
 
     bl get_setup
 
@@ -261,7 +287,7 @@ Lwrite_header_body:
     mov x2, #1              // 1 iovec (header only, empty body)
 
 2:
-    ldr_l x0, clientfd
+    mov x0, x26              // clientfd (loaded once at get entry)
     mov x1, sp              // pointer to iovec array
     SCWINUM SYS_writev
     SCWISVC

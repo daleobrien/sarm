@@ -743,106 +743,37 @@ lookup_embedded:
     mov x19, x0  // save path_ptr
     mov x20, x1  // save path_len
 
-    // Hash the incoming path
-    bl fnv1a_64
-    mov x21, x0   // x21 = hash of requested path
-
-    // Load hash table count
-    adr_l x9, embedded_hash_count
-    ldr x22, [x9]
-    cbz x22, Lle_not_found  // empty table
-
-    mov x23, #0                // low = 0
-    sub x24, x22, #1           // high = count - 1
-    adr_l x5, embedded_hash_table  // hash table base
-
-    // Binary search the hash table for matching hash
-Lle_hash_binsearch:
-    cmp x23, x24
-    b.gt Lle_not_found
-
-    add x6, x23, x24
-    lsr x6, x6, #1       // mid = (low + high) / 2
-
-    // hash_entry = hash_table + mid * 16  (16 bytes per hash entry)
-    lsl x7, x6, #4
-    add x7, x5, x7
-
-    ldr x8, [x7]         // load hash from table
-    cmp x21, x8
-    b.eq Lle_hash_match
-    b.lt Lle_hash_lower
-    b.gt Lle_hash_higher
-
-Lle_hash_lower:
-    sub x24, x6, #1
-    b Lle_hash_binsearch
-
-Lle_hash_higher:
-    add x23, x6, #1
-    b Lle_hash_binsearch
-
-Lle_hash_match:
-    // Found matching hash. Scan backwards to find the first entry with
-    // this hash (handles the unlikely case of hash collisions).
-    mov x22, x6   // x22 = current mid index in hash table
-    mov x7, x5    // x7 = hash_table base (will walk backwards)
-    add x7, x7, x6, lsl #4  // x7 = &hash_table[mid]
-
-Lle_scan_back:
-    cbz x22, Lle_scan_forward  // at beginning
-    sub x7, x7, #16             // previous hash entry
-    ldr x8, [x7]
-    cmp x8, x21
-    b.ne Lle_scan_forward       // different hash, start scanning forward
-    sub x22, x22, #1
-    b Lle_scan_back
-
-Lle_scan_forward:
-    // x22 = start index in hash table (first entry with matching hash)
-    // Load boundary
-    adr_l x9, embedded_hash_count
-    ldr x23, [x9]   // x23 = hash_count (upper bound)
-
-    adr_l x5, embedded_files     // x5 = main table base
+    // DEBUG: linear scan fallback to verify entry layout
+    adr_l x5, embedded_files
     mov x9, #80                  // entry size
+    adr_l x10, embedded_count
+    ldr x22, [x10]              // x22 = count
+    mov x23, #0                 // index
 
-    // x7 = &hash_table[x22], recompute from x22
-    adr_l x7, embedded_hash_table
-    add x7, x7, x22, lsl #4
+Lle_linear_scan:
+    cmp x23, x22
+    b.ge Lle_not_found
 
-Lle_scan_loop:
-    cmp x22, x23
-    b.ge Lle_not_found           // scanned all entries, not found
+    mul x6, x23, x9             // offset = index * 80
+    add x6, x5, x6              // x6 = &embedded_files[index]
 
-    // Check hash
-    ldr x8, [x7]
-    cmp x8, x21
-    b.ne Lle_not_found           // hash changed, no more matches
+    ldr x1, [x6, #8]            // entry path_ptr
+    ldr x3, [x6, #16]           // entry path_len
+    cmp x20, x3                 // compare lengths
+    b.ne Lle_linear_next
 
-    // Get entry index from hash table
-    ldr x6, [x7, #8]             // entry index into main table
-
-    // Compute entry_ptr = embedded_files + index * 80
-    mul x6, x6, x9
-    add x6, x5, x6               // x6 = &embedded_files[index]
-
-    // Verify path string matches
-    mov x0, x19                  // our path
-    ldr x1, [x6, #8]             // entry path_ptr (offset +8 from entry)
-    mov x2, x20                  // our path length
-    ldr x3, [x6, #16]            // entry path_len (offset +16 from entry)
-    cmp x2, x3
-    b.ne Lle_scan_next           // lengths differ → not a match
-
-    // Lengths match, compare strings byte-by-byte
+    mov x0, x19
+    mov x2, x20
     bl streqn
-    cbnz x0, Lle_found           // match!
+    cbnz x0, Lle_found_from_linear
 
-Lle_scan_next:
-    add x22, x22, #1             // next hash table index
-    add x7, x7, #16              // next hash table entry
-    b Lle_scan_loop
+Lle_linear_next:
+    add x23, x23, #1
+    b Lle_linear_scan
+
+Lle_found_from_linear:
+    // x6 already points to the entry
+    b Lle_found
 
 Lle_found:
     // Entry layout at x6:
