@@ -747,7 +747,14 @@ close:
 // x0 -> number of digits written
 // x1 -> start of string
 hex_itoa:
-    mov w2, #8 // max digits
+    cbnz w0, 1f
+    // special case: input is 0
+    mov w4, #'0'
+    sub x1, x1, #1
+    strb w4, [x1]
+    mov x0, #1
+    ret
+1:
     add x1, x1, #8 // write right-to-left
     mov w3, #0 // digit count
 
@@ -763,10 +770,9 @@ Lstore:
     sub x1, x1, #1
     strb w4, [x1]
     add w3, w3, #1
-    lsr w0, w0, #4 // shift down one nibble
+    lsr w0, w0, #4
     cbnz w0, Lhex_loop
 
-    // we're done
     mov x0, x3
     ret
 
