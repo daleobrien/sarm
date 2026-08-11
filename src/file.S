@@ -735,6 +735,8 @@ Ldecode_epilogue:
 // x2 -> content-type string pointer
 // x3 -> content-type string length
 // x4 -> gzip flag (1 = gzipped, 0 = raw)
+// x5 -> ETag string pointer (e.g. "\"abc123...\"")
+// x6 -> ETag string length
 // carry set = not found, carry clear = found
 lookup_embedded:
     stp x29, x30, [sp, #-64]!
@@ -762,8 +764,8 @@ Lle_binsearch:
     add x6, x22, x23
     lsr x6, x6, #1
 
-    // entry_ptr = table + mid * 56
-    mov x7, #56
+    // entry_ptr = table + mid * 72
+    mov x7, #72
     mul x7, x6, x7
     add x7, x5, x7
 
@@ -811,11 +813,15 @@ Lle_found:
     // +32: ct_ptr
     // +40: ct_len
     // +48: gzip flag
+    // +56: etag_ptr
+    // +64: etag_len
     ldr x0, [x7, #16]  // content_ptr
     ldr x1, [x7, #24]  // content_size
     ldr x2, [x7, #32]  // ct_ptr
     ldr x3, [x7, #40]  // ct_len
     ldr x4, [x7, #48]  // gzip flag
+    ldr x5, [x7, #56]  // etag_ptr
+    ldr x6, [x7, #64]  // etag_len
 
     cmn xzr, xzr  // clear carry
     b Lle_epilogue

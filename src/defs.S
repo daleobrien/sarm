@@ -305,10 +305,12 @@
 .equ CTX_EMBED_CT,        80
 .equ CTX_EMBED_CT_LEN,    88
 .equ CTX_EMBED_GZIP,      96
-.equ CTX_FILE_DES,        104
-.equ CTX_REQUEST_BUF,     112  // points to buf
+.equ CTX_EMBED_ETAG,      104
+.equ CTX_EMBED_ETAG_LEN,  112
+.equ CTX_FILE_DES,        120
+.equ CTX_REQUEST_BUF,     128  // points to buf
 
-.equ REQUEST_CTX_SIZE,    120
+.equ REQUEST_CTX_SIZE,    136
 
 .equ BUF_SIZE,   16384
 
@@ -461,10 +463,12 @@
 .equ CTX_EMBED_CT,        80
 .equ CTX_EMBED_CT_LEN,    88
 .equ CTX_EMBED_GZIP,      96
-.equ CTX_FILE_DES,        104
-.equ CTX_REQUEST_BUF,     112  // points to buf
+.equ CTX_EMBED_ETAG,      104
+.equ CTX_EMBED_ETAG_LEN,  112
+.equ CTX_FILE_DES,        120
+.equ CTX_REQUEST_BUF,     128  // points to buf
 
-.equ REQUEST_CTX_SIZE,    120
+.equ REQUEST_CTX_SIZE,    136
 
 .equ BUF_SIZE,   16384
 

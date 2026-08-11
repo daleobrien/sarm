@@ -16,6 +16,8 @@
 .global embedded_ct
 .global embedded_ct_len
 .global embedded_gzip
+.global embedded_etag
+.global embedded_etag_len
 .global request_ctx
 
 .data
@@ -45,3 +47,5 @@ embedded_content: .skip 8  // CTX_EMBED_CONTENT
 embedded_ct:      .skip 8  // CTX_EMBED_CT
 embedded_ct_len:  .skip 8  // CTX_EMBED_CT_LEN
 embedded_gzip:    .skip 8  // CTX_EMBED_GZIP
+embedded_etag:    .skip 8  // CTX_EMBED_ETAG
+embedded_etag_len:.skip 8  // CTX_EMBED_ETAG_LEN

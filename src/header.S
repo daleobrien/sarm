@@ -96,6 +96,9 @@ header_content_range: .ascii "\r\nContent-Range: bytes "
 header_content_encoding: .ascii "\r\nContent-Encoding: gzip"
 .equ header_content_encoding_len, . - header_content_encoding
 
+header_etag: .ascii "\r\nETag: "
+.equ header_etag_len, . - header_etag
+
 header_tail:
     .ascii "\r\nConnection: close\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ header_tail_len, . - header_tail
@@ -381,6 +384,33 @@ Lheader_tail:
     mov x13, x0
 
 1:
+    // Check if embedded content has a precomputed ETag
+    ldr_l x9, resource_type
+    cmp x9, #1   // RES_EMBEDDED
+    b.ne 2f
+    ldr_l x10, embedded_etag
+    cbz x10, 2f
+    ldr_l x11, embedded_etag_len
+    cbz x11, 2f
+
+    // write "\r\nETag: "
+    adr_l x1, header_etag
+    mov x2, header_etag_len
+    add x14, x14, x2
+    cb gt, x14, header_buf_size, Lheader_too_big
+    bl memcpy
+    mov x13, x0
+
+    // write the ETag value
+    mov x1, x10
+    mov x2, x11
+    add x14, x14, x2
+    cb gt, x14, header_buf_size, Lheader_too_big
+    mov x0, x13
+    bl memcpy
+    mov x13, x0
+
+2:
     // write the \r\n\r\n
     // x0 is still set from memcpy
     adr_l x1, header_tail

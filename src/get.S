@@ -77,11 +77,13 @@ get_setup:
     b L404
 
 Lembedded_found:
-    // x0 = content_ptr, x1 = content_size, x2 = ct_ptr, x3 = ct_len, x4 = gzip
+    // x0 = content_ptr, x1 = content_size, x2 = ct_ptr, x3 = ct_len, x4 = gzip, x5 = etag, x6 = etag_len
     str_l x0, embedded_content
     str_l x2, embedded_ct
     str_l x3, embedded_ct_len
     str_l x4, embedded_gzip
+    str_l x5, embedded_etag
+    str_l x6, embedded_etag_len
     mov x9, #1
     str_l x9, resource_type, x10
     mov x9, #-1
