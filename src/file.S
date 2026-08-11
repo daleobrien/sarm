@@ -282,7 +282,18 @@ Lpath_traversal:
     ret
 
 
-// ensure a path only has ascii characters.
+// ensure a path only has printable ASCII characters.
+//
+// URL policy:
+//     allowed bytes = 0x20–0x7E (printable ASCII)
+//
+// The only exclusions from this range are:
+//   - Control characters (0x00–0x1F): NUL, SOH, STX, …, US
+//   - DEL (0x7F) and everything above (non-ASCII)
+//
+// This is deliberately restrictive for a small server; it rejects all
+// non-ASCII byte sequences including UTF-8 multi-byte characters.
+//
 // input
 // x0 -> path to check
 // x1 -> path length
@@ -394,13 +405,26 @@ Lreturn:
 
 
 // convert %XX in URL to 0xXX raw bytes. %0a = newline, %20 = space, etc.
+//
+// SECURITY: This function is called BEFORE check_path_safety and
+// check_path_traversal (see do_path_checks in parse.S). This ordering is
+// deliberate: percent-encoded path-traversal sequences like %2e%2e%2f are
+// decoded to ../ and then caught by check_path_traversal.
+//
+// The function rejects the following dangerous inputs by returning (0, 0):
+//   - %00 (decoded null byte) — caught by cmp w4, #0 / b.eq Lbad_end
+//   - %XX where X is not a hex digit — caught by hex_to_val setting x20=1
+//   - Truncated % at end of string (fewer than 3 bytes remaining)
+//
+// If any of these are encountered, do_path_checks responds with HTTP 400.
+//
 // input
 // x0 -> encoded string
 // x1 -> length of encoded string
 //
 // returns
-// x0 -> decoded string (decoded in-place)
-// x1 -> length of decoded string
+// x0 -> decoded string (decoded in-place), or 0 on rejection
+// x1 -> length of decoded string, or 0 on rejection
 decode_url:
     stp x29, x30, [sp, #-32]!
     str x20, [sp, #16]
