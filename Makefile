@@ -8,16 +8,24 @@ LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e 
 # Build pipeline:
 #   www/ ──embed_www.sh──> src/embedded.S ──cc──> embedded.o ──ld──> ymawky
 
-ymawky: $(OBJS) embedded.o
+# Dependency graph:
+#   www/* ──> src/embedded.S ──> embedded.o ──> ymawky
+#
+# ymawky depends on 'assets' so that changing any file under www/
+# triggers regeneration of src/embedded.S, recompilation of
+# embedded.o, and relinking of the final binary.
+ymawky: assets $(OBJS) embedded.o
 	ld $(OBJS) embedded.o -o ymawky $(LDFLAGS)
 	rm -f $(OBJS) embedded.o
 
-%.o: src/%.S $(SRCS)
+%.o: src/%.S
 	cc -g $(CFLAGS) -c $< -o $@
 
 .PHONY: assets
 assets: src/embedded.S
 
+# Regenerate src/embedded.S whenever any file under www/ changes
+# or when the embedding script itself is modified.
 src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 	sh embed_www.sh
 
