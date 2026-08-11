@@ -241,7 +241,7 @@ strlen:
     ret
 
 
-// case insensitive streqn
+// case insensitive streqn — optimized with 4-byte wide loads
 // input
 // x0 -> str1
 // x1 -> str2
@@ -251,42 +251,98 @@ strlen:
 // x0 -> 1 if match, 0 if doesn't match
 streqn_i:
     cbz x2, Lstreqn_i_match
+
+    // Preload constants for the 4-byte case-fold fast path.
+    // Use w11-w17 to avoid clobbering w5-w10 used by callers (get_filetype etc).
+    // w11 = 0x80808080 (used in haszero and as byte-range stopper)
+    movz w11, #0x8080
+    movk w11, #0x8080, lsl #16
+    // w12 = 0x41414141  (ASCII 'A' repeated)
+    movz w12, #0x4141
+    movk w12, #0x4141, lsl #16
+    // w13 = 0x1A1A1A1A  (26 = 'Z'+1 - 'A')
+    movz w13, #0x1A1A
+    movk w13, #0x1A1A, lsl #16
+    // w14 = 0x01010101  (used in haszero)
+    movz w14, #0x0101
+    movk w14, #0x0101, lsl #16
+
 1:
-    // load bytes
+    cmp x2, #4
+    b.lo 4f                    // fewer than 4 bytes left — byte loop
+
+    // Load and fold str1 (4 bytes) to lowercase
+    ldr w3, [x0]
+    orr w15, w3, w11           // w15 = word | 0x80 per byte
+    sub w15, w15, w12          // mask_ge_A  (bit 7 set where byte >= 'A')
+    sub w16, w15, w13          // mask_gt_Z  (bit 7 set where byte >  'Z')
+    bic w16, w15, w16          // mask_AZ = mask_ge_A & ~mask_gt_Z
+    and w16, w16, w11          // isolate bit 7 per byte
+    lsr w16, w16, #2           // 0x80 → 0x20
+    orr w3, w3, w16            // w3 = str1 lowercased
+
+    // Load and fold str2 (4 bytes) to lowercase
+    ldr w4, [x1]
+    orr w15, w4, w11
+    sub w15, w15, w12
+    sub w17, w15, w13
+    bic w17, w15, w17
+    and w17, w17, w11
+    lsr w17, w17, #2
+    orr w4, w4, w17            // w4 = str2 lowercased
+
+    // Check for null bytes in either word (would mean string ends inside these 4 bytes)
+    sub w15, w3, w14           // haszero(w3)
+    bic w15, w15, w3
+    tst w15, w11
+    b.ne 4f                    // str1 has zero — fall to byte loop
+
+    sub w15, w4, w14           // haszero(w4)
+    bic w15, w15, w4
+    tst w15, w11
+    b.ne 4f                    // str2 has zero — fall to byte loop
+
+    // No null bytes — 4-byte word compare is safe
+    cmp w3, w4
+    b.ne Lstreqn_i_no_match
+
+    sub x2, x2, #4
+    add x0, x0, #4
+    add x1, x1, #4
+    cbz x2, Lstreqn_i_match
+    b 1b
+
+4:  // byte-at-a-time fallback (same semantics as original)
     ldrb w3, [x0]
     ldrb w4, [x1]
 
     cmp w3, #0
-    ccmp w4, #0, #0, eq  // if w3 == NULL, check if w4 is also NULL
-    b.eq Lstreqn_i_match // if they're both NULL, it's a match!
-    // if we're here, they're not *both* NULL. but if *ONE* is NULL, we should
-    // exit - not a match :(
+    ccmp w4, #0, #0, eq
+    b.eq Lstreqn_i_match
     cbz w3, Lstreqn_i_no_match
     cbz w4, Lstreqn_i_no_match
 
-    // make them both lowercase by only modifying A-Z range
     cmp w3, #'A'
-    b.lo 1f
+    b.lo 5f
     cmp w3, #'Z'
-    b.hi 1f
+    b.hi 5f
     add w3, w3, #0x20
-1:
+5:
     cmp w4, #'A'
-    b.lo 2f
+    b.lo 6f
     cmp w4, #'Z'
-    b.hi 2f
+    b.hi 6f
     add w4, w4, #0x20
-2:
+6:
     cmp w3, w4
     b.ne Lstreqn_i_no_match
 
-    // if we've reached the end, it's a match yeah? fuck yeah.
     subs x2, x2, #1
     b.eq Lstreqn_i_match
 
     add x0, x0, #1
     add x1, x1, #1
-    b 1b
+    b 4b
 
 Lstreqn_i_match:
     mov x0, #1
@@ -305,7 +361,42 @@ Lstreqn_i_no_match:
 // returns
 // x0 -> 1 if match, 0 if doesn't match
 streqn:
+    // Preload constants for null-byte detection via haszero.
+    // Use x11-x13 to avoid clobbering x5-x6 used by callers (lookup_embedded).
+    // x11 = 0x0101010101010101
+    movz x11, #0x0101
+    movk x11, #0x0101, lsl #16
+    movk x11, #0x0101, lsl #32
+    movk x11, #0x0101, lsl #48
+    // x12 = 0x8080808080808080
+    movz x12, #0x8080
+    movk x12, #0x8080, lsl #16
+    movk x12, #0x8080, lsl #32
+    movk x12, #0x8080, lsl #48
+
 1:
+    cmp x2, #8
+    b.lo 4f                    // fewer than 8 bytes → byte loop
+
+    ldr x3, [x0]
+    ldr x4, [x1]
+    cmp x3, x4
+    b.ne 4f                    // 8-byte words differ → byte loop to find exact pos
+
+    // Words match — check for null bytes via haszero(x3)
+    sub x13, x3, x11           // x3 - 0x0101...
+    bic x13, x13, x3           // ~x3 & (x3 - 0x0101...)
+    tst x13, x12               // & 0x8080... — non-zero means null byte present
+    b.ne 4f                    // null byte → byte loop for correct termination
+
+    // No nulls, perfect 8-byte match — advance
+    sub x2, x2, #8
+    add x0, x0, #8
+    add x1, x1, #8
+    cbz x2, Lstreqn_match
+    b 1b
+
+4:  // byte-at-a-time fallback
     ldrb w3, [x0]
     ldrb w4, [x1]
     cmp w3, w4
@@ -319,7 +410,7 @@ streqn:
 
     add x0, x0, #1
     add x1, x1, #1
-    b 1b
+    b 4b
 
 Lstreqn_match:
     mov x0, #1

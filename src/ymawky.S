@@ -400,38 +400,46 @@ read_failed:
     mov x1, x23
     bl verify_http_version
 
-    // check if we got a GET request. if so, jump to get!
+    // ── HTTP method dispatch via direct word compares (no streqn calls) ──
+
     adr_l x0, buf
-    adr_l x1, get_req
-    mov x2, get_req_len
-    bl streqn
-    cmp x0, #1
+    ldr w5, [x0]              // first 4 bytes of request
+
+    // GET ?
+    movz w6, #0x4547          // "GE" (LE word)
+    movk w6, #0x2054, lsl #16 // "T "
+    cmp w5, w6
     b.eq Lget_method
 
-    // check if maybe we got a HEAD request instead.
-    adr_l x0, buf
-    adr_l x1, head_req
-    mov x2, head_req_len
-    bl streqn
-    cmp x0, #1
+    // HEAD ?  (compare first 4 bytes, then 5th byte)
+    movz w6, #0x4148          // "HE"
+    movk w6, #0x4441, lsl #16 // "AD"
+    cmp w5, w6
+    b.ne 1f
+    ldrb w7, [x0, #4]
+    cmp w7, #' '
     b.eq Lhead_method
+1:
 
-    // hm. maybe it was an OPTIONS request?
-    adr_l x0, buf
-    adr_l x1, options_req
-    mov x2, options_req_len
-    bl streqn
-    cmp x0, #1
+    // OPTIONS ?  (8 bytes → single 64-bit LDR + compare)
+    ldr x5, [x0]              // first 8 bytes of request
+    movz x6, #0x504F          // "OP"
+    movk x6, #0x4954, lsl #16 // "TI"
+    movk x6, #0x4E4F, lsl #32 // "ON"
+    movk x6, #0x2053, lsl #48 // "S "
+    cmp x5, x6
     b.eq Loptions_method
 
-    // oh god. it's probably BREW. unfortunately, I'm a teapot, so we can't
-    // support that method.
-    adr_l x0, buf
-    adr_l x1, brew_req
-    mov x2, brew_req_len
-    bl streqn
-    cmp x0, #1
+    // BREW ?  (compare first 4 bytes, then 5th byte)
+    ldr w5, [x0]
+    movz w6, #0x5242          // "BR"
+    movk w6, #0x5745, lsl #16 // "EW"
+    cmp w5, w6
+    b.ne 1f
+    ldrb w7, [x0, #4]
+    cmp w7, #' '
     b.eq L418
+1:
 
     // if it was none of the above, reply 501
     b L501
@@ -546,28 +554,33 @@ verify_http_version:
     sub x9, x0, #9
     // now it should point to where the "H" would be.
 
-    // HTTP/1.1
+    // Load 8 bytes and compare directly (no streqn calls)
     add x0, x20, x9
-    adr_l x1, http_1_1
-    mov x2, http_1_1_len
-    bl streqn
-    cmp x0, #1
+    ldr x3, [x0]
+
+    // HTTP/1.1  (LE: 0x312E312F50545448)
+    movz x4, #0x5448
+    movk x4, #0x5054, lsl #16
+    movk x4, #0x312F, lsl #32
+    movk x4, #0x312E, lsl #48
+    cmp x3, x4
     b.eq Lhttp11
 
-    // HTTP/1.0
-    add x0, x20, x9
-    adr_l x1, http_1_0
-    mov x2, http_1_0_len
-    bl streqn
-    cmp x0, #1
+    // HTTP/1.0  (LE: 0x302E312F50545448)
+    movz x4, #0x5448
+    movk x4, #0x5054, lsl #16
+    movk x4, #0x312F, lsl #32
+    movk x4, #0x302E, lsl #48
+    cmp x3, x4
     b.eq Lhttp10
 
-    // some other http version?
-    add x0, x20, x9
-    adr_l x1, http_
-    mov x2, http_len
-    bl streqn
-    cmp x0, #1
+    // Check at least "HTTP/"  (5 bytes)
+    movz w4, #0x5448
+    movk w4, #0x5054, lsl #16    // 0x50545448 = "HTTP"
+    cmp w3, w4
+    b.ne L400
+    ldrb w4, [x0, #4]
+    cmp w4, #'/'
     b.eq L505
 
     // oops. none.
