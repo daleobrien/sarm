@@ -26,7 +26,7 @@
 .data
 .align 3
 
-rcv_timeout:
+rcv_timeout:           // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
 

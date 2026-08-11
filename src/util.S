@@ -71,6 +71,7 @@ write_all:
 Lwrite_fail:
     cmp x0, #EINTR
     b.eq 1b
+    cb eq, x0, #EPIPE, 3b    // treat as clean exit (client disconnected)
 
     cmp xzr, xzr // set C=1 so we can b.cs
     // x0 is already errno
@@ -203,13 +204,20 @@ Latoi_n_error:
 // clobbers x0, x1, and x3
 memcpy:
     cbz x2, 1f
-
+    cmp x2, #16
+    b.lo 3f
+2:
+    ldp x3, x4, [x1], #16
+    stp x3, x4, [x0], #16
+    sub x2, x2, #16
+    cmp x2, #16
+    b.hs 2b
+3:
+    cbz x2, 1f
     ldrb w3, [x1], #1
     strb w3, [x0], #1
-
     sub x2, x2, #1
-    b memcpy
-
+    b 3b
 1:
     ret
 
@@ -255,10 +263,19 @@ streqn_i:
     cbz w3, Lstreqn_i_no_match
     cbz w4, Lstreqn_i_no_match
 
-    // make them both lowercase by OR'ing with 0x20, doesn't affect other
-    // characters than alphabetical.
-    orr w3, w3, #0x20
-    orr w4, w4, #0x20
+    // make them both lowercase by only modifying A-Z range
+    cmp w3, #'A'
+    b.lo 1f
+    cmp w3, #'Z'
+    b.hi 1f
+    add w3, w3, #0x20
+1:
+    cmp w4, #'A'
+    b.lo 2f
+    cmp w4, #'Z'
+    b.hi 2f
+    add w4, w4, #0x20
+2:
     cmp w3, w4
     b.ne Lstreqn_i_no_match
 
@@ -287,6 +304,7 @@ Lstreqn_i_no_match:
 // returns
 // x0 -> 1 if match, 0 if doesn't match
 streqn:
+1:
     ldrb w3, [x0]
     ldrb w4, [x1]
     cmp w3, w4
@@ -300,7 +318,7 @@ streqn:
 
     add x0, x0, #1
     add x1, x1, #1
-    b streqn
+    b 1b
 
 Lstreqn_match:
     mov x0, #1

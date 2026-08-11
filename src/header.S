@@ -100,7 +100,7 @@ header_etag: .ascii "\r\nETag: "
 .equ header_etag_len, . - header_etag
 
 header_tail:
-    .ascii "\r\nConnection: close\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
+    .ascii "\r\nConnection: close\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ header_tail_len, . - header_tail
 
 err_dir: .ascii ERR_DIR
@@ -226,7 +226,7 @@ build_header:
     // so is x2!
     // make sure we don't write past header_buf's memory!
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0 // store header_buf + offset, memcpy increments the pointer
 
@@ -239,7 +239,7 @@ Lbh_content_length:
 
     mov x2, header_content_length_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
 
     mov x0, x13
     adr_l x1, header_content_length
@@ -266,7 +266,7 @@ Lbh_content_length:
     mov x1, x0  // content_length_str
     mov x0, x13 // header_buf + offset
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
 
     // skip all this stuff for no range
@@ -278,7 +278,7 @@ Lbh_content_length:
     adr_l x1, header_content_range
     mov x2, header_content_range_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
@@ -290,13 +290,13 @@ Lbh_content_length:
     mov x1, x0
     mov x0, x13
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
     // -
     add x14, x14, #1
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     mov w0, #'-'
     strb w0, [x13]
     add x13, x13, #1
@@ -309,13 +309,13 @@ Lbh_content_length:
     mov x1, x0
     mov x0, x13
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
     // /
     add x14, x14, #1
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     mov w0, #'/'
     strb w0, [x13]
     add x13, x13, #1
@@ -328,7 +328,7 @@ Lbh_content_length:
     mov x1, x0  // content_length_str
     mov x0, x13 // header_buf + offset
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
 
 Lbh_content_type:
@@ -341,7 +341,7 @@ Lbh_content_type:
     adr_l x1, header_content_type
     mov x2, header_content_type_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
@@ -363,7 +363,7 @@ Lbh_ct_write:
     mov x1, x0 // source string, ct_str
     mov x0, x13 // destination, header_buf
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
 
 Lheader_tail:
@@ -379,7 +379,7 @@ Lheader_tail:
     adr_l x1, header_content_encoding
     mov x2, header_content_encoding_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
@@ -397,7 +397,7 @@ Lheader_tail:
     adr_l x1, header_etag
     mov x2, header_etag_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
     mov x13, x0
 
@@ -405,7 +405,7 @@ Lheader_tail:
     mov x1, x10
     mov x2, x11
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     mov x0, x13
     bl memcpy
     mov x13, x0
@@ -416,7 +416,7 @@ Lheader_tail:
     adr_l x1, header_tail
     mov x2, header_tail_len
     add x14, x14, x2
-    cb gt, x14, header_buf_size, Lheader_too_big
+    cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
 
     b Lbh_done
@@ -467,16 +467,10 @@ reply_status:
     // make sure the error code is valid: not an error below 400, and we don't
     // support anything above 507 (currently).
     cmp x0, #400
-    b.hs 1f
+    b.lo sc_err    // x0 < 400 → not an error code, just write the header
     cmp x0, #507
-    b.ls 1f
-
-    // if we get here, we were given an http code that's not an error exactly.
-    // so, don't try to treat is as an error. just write the header. it's
-    // probably PUT doing 201/204, or DELETE doing 204.
-    // x0 is already set, so is x19.
-
-    b sc_err // ironically called sc_err. prob should rename.
+    b.hi sc_err    // x0 > 507 → unsupported error code, just write header
+    // fall through to 1f: 400–507, valid error
 
 1:
     mov x20, #0 // how many bytes have we written to err_page_buf?

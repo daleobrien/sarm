@@ -190,11 +190,9 @@ stat_fd:
     b Lstat_fd_end
 
 Lstat_fd_failed:
-    // x0 is already errno. these two movs aren't strictly necessary, but i
-    // think it's nice to have it all zeroed out.
+    // x0 is already errno
     mov x1, #0
     mov x2, #0
-    mov x3, #0
     // fallthrough
 Lstat_fd_end:
     add sp, sp, #160
@@ -244,11 +242,9 @@ stat_path:
     b Lstat_path_end
 
 Lstat_path_failed:
-    // x0 is already errno. these two movs aren't strictly necessary, but i
-    // think it's nice to have it all zeroed out.
+    // x0 is already errno
     mov x1, #0
     mov x2, #0
-    mov x3, #0
     // fallthrough
 Lstat_path_end:
     add sp, sp, #160

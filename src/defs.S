@@ -89,8 +89,7 @@
 .equ SYS_clone,        220
 .equ SYS_getdents64,   217
 .equ SYS_newfstatat,   79
-.equ SYS_fstat,        80
-.equ SYS_fstat64,      80   // alias: Linux fstat = 80
+.equ SYS_fstat64,      80   // Linux fstat = 80
 .equ SYS_nanosleep,    101
 
 // socket stuff

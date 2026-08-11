@@ -15,13 +15,12 @@ options:
 
     ldr_l x0, filename_str
     bl stat_path
-    cbnz x0, Lhfs_err
+    cbnz x0, 1f
     cmp w1, #S_IFREG
     b.ne L403
 
     b L204
-
-Lhfs_err: b handle_fs_error
+1:  b handle_fs_error
 L204:
     mov x0, #204
     mov x1, #0
