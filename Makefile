@@ -1,3 +1,5 @@
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S,$(wildcard src/*.S))
 OBJS := $(SRCS:src/%.S=%.o)
 CFLAGS += -O3
@@ -10,7 +12,7 @@ ymawky: $(OBJS) embedded.o
 %.o: src/%.S $(SRCS)
 	cc -g $(CFLAGS) -c $< -o $@
 
-src/embedded.S: embed_www.sh $(wildcard www/* www/assets/*)
+src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 	sh embed_www.sh
 
 clean:
