@@ -16,6 +16,7 @@
 .global embedded_ct
 .global embedded_ct_len
 .global embedded_gzip
+.global request_ctx
 
 .data
 file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
@@ -24,17 +25,23 @@ file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
 // + 1 so we can NULL terminate, even if content is BUF_SIZE bytes long
 buf:          .skip BUF_SIZE + 1
 .align 3 // + 1 breaks alignment
-header_len:   .skip 8
-clientfd:     .skip 8
-filename_str: .skip 8
-filename_len: .skip 8
-query_str:    .skip 8
-query_len:    .skip 8
-docroot_len:      .skip 8
-request_id:       .skip 8
-resource_type:    .skip 8
 
-embedded_content: .skip 8
-embedded_ct:      .skip 8
-embedded_ct_len:  .skip 8
-embedded_gzip:    .skip 8
+// request_ctx — unified per-request state block.
+// Offsets defined in defs.S (CTX_HEADER_LEN, CTX_CLIENT_FD, ...).
+// Functions access via:  adr_l x19, request_ctx
+//                          ldr x0, [x19, #CTX_FILENAME_STR]
+request_ctx:
+header_len:   .skip 8      // CTX_HEADER_LEN
+clientfd:     .skip 8      // CTX_CLIENT_FD
+filename_str: .skip 8      // CTX_FILENAME_STR
+filename_len: .skip 8      // CTX_FILENAME_LEN
+query_str:    .skip 8      // CTX_QUERY_STR
+query_len:    .skip 8      // CTX_QUERY_LEN
+docroot_len:      .skip 8  // CTX_DOCROOT_LEN
+request_id:       .skip 8  // CTX_REQUEST_ID
+resource_type:    .skip 8  // CTX_RESOURCE_TYPE
+
+embedded_content: .skip 8  // CTX_EMBED_CONTENT
+embedded_ct:      .skip 8  // CTX_EMBED_CT
+embedded_ct_len:  .skip 8  // CTX_EMBED_CT_LEN
+embedded_gzip:    .skip 8  // CTX_EMBED_GZIP
