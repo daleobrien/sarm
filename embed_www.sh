@@ -162,8 +162,18 @@ fi
         entry_count=$((entry_count + 1))
     done
 
+    # Table entries are sorted lexicographically by path (files are
+    # already sorted by 'find ... | sort' above), enabling binary search
+    # in lookup_embedded for O(log n) lookup.
     echo '.align 3'
     echo '.global embedded_files'
+    echo '.global embedded_count'
+    echo '.global embedded_entry_size'
+    echo ''
+    echo '.equ embedded_entry_size, 56'
+    echo "embedded_count:"
+    echo "    .8byte $entry_count"
+    echo ''
     echo 'embedded_files:'
 
     i=0

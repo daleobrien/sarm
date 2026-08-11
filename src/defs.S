@@ -284,6 +284,11 @@
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
 
+// unified resource type constants (embedded vs filesystem)
+.equ RES_NONE,     0
+.equ RES_EMBEDDED, 1
+.equ RES_FILE,     2
+
 .equ BUF_SIZE,   16384
 
 #else
@@ -413,6 +418,11 @@
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
+
+// unified resource type constants (embedded vs filesystem)
+.equ RES_NONE,     0
+.equ RES_EMBEDDED, 1
+.equ RES_FILE,     2
 
 .equ BUF_SIZE,   16384
 
