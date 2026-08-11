@@ -339,13 +339,23 @@ Lbh_content_type:
     bl memcpy
     mov x13, x0
 
+    // check if we have an embedded content-type to use
+    ldr_l x9, embedded_found
+    cbz x9, Lbh_ct_filesystem
+    ldr_l x0, embedded_ct
+    cbz x0, Lbh_ct_filesystem
+    ldr_l x1, embedded_ct_len
+    b Lbh_ct_write
+
+Lbh_ct_filesystem:
     ldr_l x0, filename_str
     ldr_l x1, filename_len
     bl get_filetype
 
-    // write filename to header_buf
-    mov x2, x1 // filename_len
-    mov x1, x0 // source string, filename_str
+Lbh_ct_write:
+    // write content-type to header_buf
+    mov x2, x1 // ct_len
+    mov x1, x0 // source string, ct_str
     mov x0, x13 // destination, header_buf
     add x14, x14, x2
     cb gt, x14, header_buf_size, Lheader_too_big

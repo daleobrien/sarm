@@ -37,6 +37,7 @@ COPY www www
 COPY Makefile Makefile
 COPY Makefile.linux Makefile.linux
 COPY build_err_pages.sh build_err_pages.sh
+COPY embed_www.sh embed_www.sh
 
 # Generate custom error pages (err/404.html, err/500.html, …).
 RUN bash build_err_pages.sh
@@ -48,7 +49,6 @@ FROM scratch
 
 #
 COPY --from=builder /build/ymawky /ymawky
-COPY --from=builder /build/www/ /www/
 
 EXPOSE 8080
 ENTRYPOINT ["/ymawky"]

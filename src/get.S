@@ -66,6 +66,32 @@ get_setup:
     cmp w1, #'*'
     b.eq L400
 
+    // try embedded content lookup first
+    ldr_l x0, filename_str
+    ldr_l x1, filename_len
+    bl lookup_embedded
+    b.cc Lembedded_found
+
+    // not found in embedded table — 404
+    b L404
+
+Lembedded_found:
+    // x0 = content_ptr, x1 = content_size, x2 = ct_ptr, x3 = ct_len
+    str_l x0, embedded_content
+    str_l x2, embedded_ct
+    str_l x3, embedded_ct_len
+    mov x9, #1
+    str_l x9, embedded_found
+    mov x9, #-1
+    str_l x9, file_des
+
+    mov x0, x1   // return content_size
+    mov w1, #S_IFREG
+
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
 gbp:
 #ifdef __linux__
     SCWINUM SYS_openat
@@ -244,6 +270,15 @@ Lbuild_ranged_header:
     // fallthrough
 
 Lmmap_start:
+    // check for embedded content
+    ldr_l x9, embedded_found
+    cbz x9, Lmmap_real
+
+    // use embedded content pointer directly
+    ldr_l x12, embedded_content
+    b Lwrite_header_body
+
+Lmmap_real:
     // if filesize is 0, just print the header, hehe, skip the mmap
     cbz x19, 1f
 
@@ -264,6 +299,7 @@ Lmmap_start:
     mov x12, x0
 
 1:
+Lwrite_header_body:
     ldr_l x0, clientfd
     adr_l x1, header_buf
     ldr_l x2, header_len
@@ -285,6 +321,9 @@ Lmmap_start:
     bl write_all
 2:
     // likewise if filesize is 0, we don't need to munmap. just close!
+    // also skip munmap for embedded content
+    ldr_l x9, embedded_found
+    cbnz x9, Lget_end
     cbz x19, Lget_end
     b Lwrite_done
 
@@ -311,6 +350,10 @@ L400:
     b reply_status
 L403:
     mov x0, #403
+    mov x1, #0
+    b reply_status
+L404:
+    mov x0, #404
     mov x1, #0
     b reply_status
 L416:
