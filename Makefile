@@ -15,11 +15,11 @@ LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e 
 # triggers regeneration of src/embedded.S, recompilation of
 # embedded.o, and relinking of the final binary.
 ymawky: assets $(OBJS) embedded.o
-	ld $(OBJS) embedded.o -o ymawky $(LDFLAGS)
-	rm -f $(OBJS) embedded.o
+	@ld $(OBJS) embedded.o -o ymawky $(LDFLAGS)
+	@rm -f $(OBJS) embedded.o
 
 %.o: src/%.S
-	cc -g $(CFLAGS) -c $< -o $@
+	@cc -g $(CFLAGS) -c $< -o $@
 
 .PHONY: assets
 assets: src/embedded.S
@@ -36,6 +36,9 @@ clean:
 
 .PHONY: test
 test: ymawky
-	./tests/test_files.sh --no-build
-	./tests/test_security.sh --no-build
-	make -C tests/unit
+	@echo "── test (file integrity) ──"
+	@./tests/test_files.sh --no-build --quiet
+	@echo "── test (security) ──"
+	@./tests/test_security.sh --no-build --quiet
+	@echo "── test (unit) ──"
+	@$(MAKE) -s -C tests/unit

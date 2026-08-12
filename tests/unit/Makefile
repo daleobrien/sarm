@@ -42,24 +42,23 @@ TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE)
 all: test
 
 test: $(TESTS)
-	@echo ""
-	@echo "═══════════════════════════════════════════"
-	@echo "  Running all unit tests..."
-	@echo "═══════════════════════════════════════════"
 	@failures=0; \
+	logs=""; \
+	passed=0; \
 	for t in $(TESTS); do \
-		echo ""; \
-		echo "━━━ $$(basename $$t) ━━━"; \
-		if ./$$t; then \
-			:; \
+		out=$$(./$$t 2>&1); rc=$$?; \
+		if [ $$rc -eq 0 ]; then \
+			passed=$$((passed + 1)); \
 		else \
 			failures=$$((failures + 1)); \
+			logs="$${logs}$$(printf "\n━━━ %s ━━━\n%s\n" "$$(basename $$t)" "$$out")"; \
 		fi; \
 	done; \
-	echo ""; \
 	if [ $$failures -eq 0 ]; then \
-		echo "✅ All test suites passed."; \
+		printf "  \033[0;32m✓\033[0m all unit tests passed (%d suites)\n" "$$passed"; \
 	else \
+		printf '%s\n' "$$logs"; \
+		echo ""; \
 		echo "❌ $$failures test suite(s) failed."; \
 		exit 1; \
 	fi

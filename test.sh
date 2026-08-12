@@ -20,10 +20,16 @@ CLR='\033[0m'
 PASS=0
 FAIL=0
 SKIP=0
+QUIET=0
 
-ok()   { printf "  ${GRN}✓${CLR} %s\n" "$*";        PASS=$((PASS + 1)); }
-nope() { printf "  ${RED}✗${CLR} %s\n" "$*";        FAIL=$((FAIL + 1)); }
-skip() { printf "  ${YLW}—${CLR} %s (skipped)\n" "$*"; SKIP=$((SKIP + 1)); }
+# Accumulated log (printed only on failure in quiet mode)
+LOG=""
+
+_log() { printf -v _tmp "%s\n" "$*"; LOG+="$_tmp"; }
+
+ok()   { local _s; printf -v _s "  ${GRN}✓${CLR} %s" "$*"; PASS=$((PASS + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
+nope() { local _s; printf -v _s "  ${RED}✗${CLR} %s" "$*"; FAIL=$((FAIL + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
+skip() { local _s; printf -v _s "  ${YLW}—${CLR} %s (skipped)" "$*"; SKIP=$((SKIP + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
 
 # assert_status  LABEL  EXPECTED  METHOD  PATH  [extra-curl-args …]
 # EXPECTED can be a single HTTP code or pipe-separated alternatives
@@ -91,6 +97,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0 ;;
         --port)     HOST_PORT="$2"; shift ;;
+        --quiet)    QUIET=1 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0"; exit 0 ;;
         *) echo "$0: unknown flag $1"; exit 2 ;;
@@ -123,53 +130,57 @@ trap cleanup EXIT INT TERM
 
 # ── build ────────────────────────────────────────────────────────
 if [ "$DO_BUILD" -eq 1 ]; then
-    echo "━━━ BUILDING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    docker build --platform linux/arm64 -t "$IMAGE_TAG" .
-    echo ""
+    if [ $QUIET -eq 1 ]; then
+        docker build --platform linux/arm64 -t "$IMAGE_TAG" . >/dev/null 2>&1
+    else
+        echo "━━━ BUILDING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        docker build --platform linux/arm64 -t "$IMAGE_TAG" .
+        echo ""
+    fi
 fi
 
 # ── start ────────────────────────────────────────────────────────
-echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [ $QUIET -eq 0 ]; then echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; fi
 docker run -d --name "$CONTAINER_NAME" \
     -p "${HOST_PORT}:8080" "$IMAGE_TAG" >/dev/null
 
-echo -n "waiting for server …"
+if [ $QUIET -eq 0 ]; then echo -n "waiting for server …"; fi
 for i in $(seq 1 40); do
     if curl -s -o /dev/null "${BASE}/" 2>/dev/null; then
-        echo " ready"
+        if [ $QUIET -eq 0 ]; then echo " ready"; fi
         break
     fi
     if [ "$i" -eq 40 ]; then
-        echo " TIMEOUT"
+        if [ $QUIET -eq 0 ]; then echo " TIMEOUT"; fi
         nope "server did not start"
         cleanup; exit 1
     fi
-    echo -n .
+    if [ $QUIET -eq 0 ]; then echo -n .; fi
     sleep 0.25
 done
-echo ""
+if [ $QUIET -eq 0 ]; then echo ""; fi
 
 # ══════════════════════════════════════════════════════════════════
 #   TESTS
 # ══════════════════════════════════════════════════════════════════
 
-echo "── Static GET ──"
+if [ $QUIET -eq 1 ]; then _log "── Static GET ──"; else echo "── Static GET ──"; fi
 assert_status "GET /"                     200 GET  "/"
 assert_body   "index content"  "hello from arm64 assembly"  "/"
 assert_status "GET /index.html"           200 GET  "/index.html"
 assert_status "GET /rat/index.html"       200 GET  "/rat/index.html"
 assert_status "GET nonexistent"           404 GET  "/no_such_file_xyz"
 
-echo "── HEAD ──"
+if [ $QUIET -eq 1 ]; then _log "── HEAD ──"; else echo "── HEAD ──"; fi
 assert_status   "HEAD /"                  200 HEAD "/"
 assert_no_body  "HEAD body empty"         HEAD     "/"
 
-echo "── OPTIONS ──"
+if [ $QUIET -eq 1 ]; then _log "── OPTIONS ──"; else echo "── OPTIONS ──"; fi
 # OPTIONS on a real file returns 204 No Content; on the root directory
 # it returns 403 (directory listing is DISABLED for OPTIONS specifically).
 assert_status "OPTIONS /index.html"       204 OPTIONS "/index.html"
 
-echo "── Path traversal ──"
+if [ $QUIET -eq 1 ]; then _log "── Path traversal ──"; else echo "── Path traversal ──"; fi
 # The Linux port relies on openat2(RESOLVE_NO_SYMLINK) to prevent
 # symlink escapes.  The string-based ".." detection firewalls paths
 # that contain "../" with 400 Bad Request.  Bare ".." without a
@@ -180,7 +191,7 @@ assert_status "GET /..  (root dir)"       200 GET  "/.."
 # triggers the check.
 assert_status "dots in filename"          404 GET  "/hehe..txt"
 
-echo "── Range requests ──"
+if [ $QUIET -eq 1 ]; then _log "── Range requests ──"; else echo "── Range requests ──"; fi
 # index.html is >1 byte; request the first byte only.
 full_len=$(curl -s -o /dev/null -w '%{size_download}' "${BASE}/index.html" 2>/dev/null) || true
 if [ -n "$full_len" ] && [ "$full_len" -gt 10 ]; then
@@ -190,7 +201,7 @@ else
     skip "range requests (index.html too small)"
 fi
 
-echo "── Custom error pages ──"
+if [ $QUIET -eq 1 ]; then _log "── Custom error pages ──"; else echo "── Custom error pages ──"; fi
 # The builder ran build_err_pages.sh, so err/404.html should contain "rat".
 err_body=$(curl -s "${BASE}/nonexistent" 2>/dev/null) || true
 if echo "$err_body" | grep -qi "rat"; then
@@ -199,7 +210,7 @@ else
     nope "custom 404 page mentions rats"
 fi
 
-echo "── HTTP version handling ──"
+if [ $QUIET -eq 1 ]; then _log "── HTTP version handling ──"; else echo "── HTTP version handling ──"; fi
 # HTTP/1.1 without a Host header should be rejected (400 Bad Request).
 # curl always sends Host, so we fake a raw request with printf + nc.
 if command -v nc >/dev/null 2>&1; then
@@ -217,19 +228,38 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════
-echo ""
-echo "═══════════════════════════════════════════════════════════════"
-printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
-printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
-printf "  Skipped: ${YLW}%d${CLR}\n" "$SKIP"
-echo "═══════════════════════════════════════════════════════════════"
-
-if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo "${RED}Some tests failed!${CLR}"
-    exit 1
+if [ $QUIET -eq 1 ]; then
+    if [ "$FAIL" -gt 0 ]; then
+        echo ""
+        printf '%s' "$LOG"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
+        printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
+        printf "  Skipped: ${YLW}%d${CLR}\n" "$SKIP"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        echo "${RED}Some tests failed!${CLR}"
+        exit 1
+    else
+        printf "  ${GRN}✓${CLR} all integration tests passed (%d tests)\n" "$PASS"
+        exit 0
+    fi
 else
     echo ""
-    echo "${GRN}All tests passed.${CLR}"
-    exit 0
+    echo "═══════════════════════════════════════════════════════════════"
+    printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
+    printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
+    printf "  Skipped: ${YLW}%d${CLR}\n" "$SKIP"
+    echo "═══════════════════════════════════════════════════════════════"
+
+    if [ "$FAIL" -gt 0 ]; then
+        echo ""
+        echo "${RED}Some tests failed!${CLR}"
+        exit 1
+    else
+        echo ""
+        echo "${GRN}All tests passed.${CLR}"
+        exit 0
+    fi
 fi

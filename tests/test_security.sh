@@ -23,9 +23,14 @@ CLR='\033[0m'
 
 PASS=0
 FAIL=0
+QUIET=0
 
-ok()   { printf "  ${GRN}✓${CLR} %s\n" "$*";   PASS=$((PASS + 1)); }
-nope() { printf "  ${RED}✗${CLR} %s\n" "$*";   FAIL=$((FAIL + 1)); }
+LOG=""
+
+_log() { printf -v _tmp "%s\n" "$*"; LOG+="$_tmp"; }
+
+ok()   { local _s; printf -v _s "  ${GRN}✓${CLR} %s" "$*"; PASS=$((PASS + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
+nope() { local _s; printf -v _s "  ${RED}✗${CLR} %s" "$*"; FAIL=$((FAIL + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
 
 # ── check_http ───────────────────────────────────────────────────────
 # Usage: check_http  EXPECTED_CODE  DESCRIPTION  CURL_ARGS...
@@ -51,6 +56,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0 ;;
         --port)     HOST_PORT="$2"; shift ;;
+        --quiet)    QUIET=1 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0"; exit 0 ;;
         *) echo "$0: unknown flag $1"; exit 2 ;;
@@ -85,9 +91,13 @@ trap cleanup EXIT INT TERM
 
 # ── build ────────────────────────────────────────────────────────────
 if [ "$DO_BUILD" -eq 1 ]; then
-    echo "━━━ BUILDING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    make
-    echo ""
+    if [ $QUIET -eq 1 ]; then
+        make >/dev/null 2>&1
+    else
+        echo "━━━ BUILDING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        make
+        echo ""
+    fi
 fi
 
 if [ ! -x "./ymawky" ]; then
@@ -96,36 +106,40 @@ if [ ! -x "./ymawky" ]; then
 fi
 
 # ── start ────────────────────────────────────────────────────────────
-echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-./ymawky "$HOST_PORT" &
+if [ $QUIET -eq 0 ]; then echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; fi
+if [ $QUIET -eq 1 ]; then
+    ./ymawky "$HOST_PORT" >/dev/null 2>&1 &
+else
+    ./ymawky "$HOST_PORT" &
+fi
 SERVER_PID=$!
 
-echo -n "waiting for server (pid ${SERVER_PID}) …"
+if [ $QUIET -eq 0 ]; then echo -n "waiting for server (pid ${SERVER_PID}) …"; fi
 for i in $(seq 1 40); do
     if curl -s -o /dev/null "${BASE}/" 2>/dev/null; then
-        echo " ready"
+        if [ $QUIET -eq 0 ]; then echo " ready"; fi
         break
     fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo " DIED"
+        if [ $QUIET -eq 0 ]; then echo " DIED"; fi
         nope "server process exited unexpectedly"
         exit 1
     fi
     if [ "$i" -eq 40 ]; then
-        echo " TIMEOUT"
+        if [ $QUIET -eq 0 ]; then echo " TIMEOUT"; fi
         nope "server did not start within 10 seconds"
         cleanup; exit 1
     fi
-    echo -n .
+    if [ $QUIET -eq 0 ]; then echo -n .; fi
     sleep 0.25
 done
-echo ""
+if [ $QUIET -eq 0 ]; then echo ""; fi
 
 # ══════════════════════════════════════════════════════════════════════
 #   SECURITY TESTS
 # ══════════════════════════════════════════════════════════════════════
 
-echo "── Path traversal ──"
+if [ $QUIET -eq 1 ]; then _log "── Path traversal ──"; else echo "── Path traversal ──"; fi
 
 # Test 1: literal ".." traversal → 400
 # --path-as-is is needed to prevent curl from normalizing .. client-side
@@ -138,16 +152,14 @@ check_http 400 \
     "percent-encoded .." \
     --path-as-is "${BASE}/%2e%2e%2f"
 
-echo ""
-echo "── Normal access ──"
+if [ $QUIET -eq 1 ]; then _log ""; _log "── Normal access ──"; else echo ""; echo "── Normal access ──"; fi
 
 # Test 3: normal file access → 200
 check_http 200 \
     "normal root access" \
     "${BASE}/"
 
-echo ""
-echo "── Dangerous bytes ──"
+if [ $QUIET -eq 1 ]; then _log ""; _log "── Dangerous bytes ──"; else echo ""; echo "── Dangerous bytes ──"; fi
 
 # Test 4: null byte %00 → 400
 check_http 400 \
@@ -161,18 +173,36 @@ check_http 400 \
 
 # ══════════════════════════════════════════════════════════════════════
 
-echo ""
-echo "═══════════════════════════════════════════════════════════════"
-printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
-printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
-echo "═══════════════════════════════════════════════════════════════"
-
-if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo "${RED}Some security tests failed!${CLR}"
-    exit 1
+if [ $QUIET -eq 1 ]; then
+    if [ "$FAIL" -gt 0 ]; then
+        echo ""
+        printf '%s' "$LOG"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
+        printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        echo "${RED}Some security tests failed!${CLR}"
+        exit 1
+    else
+        printf "  ${GRN}✓${CLR} all security tests passed (%d tests)\n" "$PASS"
+        exit 0
+    fi
 else
     echo ""
-    echo "${GRN}All security tests passed.${CLR}"
-    exit 0
+    echo "═══════════════════════════════════════════════════════════════"
+    printf "  Passed:  ${GRN}%d${CLR}\n" "$PASS"
+    printf "  Failed:  ${RED}%d${CLR}\n" "$FAIL"
+    echo "═══════════════════════════════════════════════════════════════"
+
+    if [ "$FAIL" -gt 0 ]; then
+        echo ""
+        echo "${RED}Some security tests failed!${CLR}"
+        exit 1
+    else
+        echo ""
+        echo "${GRN}All security tests passed.${CLR}"
+        exit 0
+    fi
 fi
