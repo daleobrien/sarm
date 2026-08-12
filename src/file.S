@@ -23,8 +23,6 @@
     .space 96 - (. - 99b) // pad to offset 96 from entry start
 .endm
 
-.global stat_fd
-.global stat_path
 .global get_filetype
 .global check_path_traversal
 .global check_path_safety
@@ -153,103 +151,6 @@ unknown_ct: .ascii "text/plain; charset=utf-8"
 
 .text
 .align 2
-
-// run fstat64() on file descirptor, returning file size and type
-// input
-// x0 -> file descriptor
-//
-// returns
-// x0 -> 0 on success, otherwise, errno from stat64
-// w1 -> file type
-// x2 -> size
-stat_fd:
-    sub sp, sp, #160 // reserve stack buffer (stat requires 144 bytes, round up)
-    SCWINUM SYS_fstat64
-
-    mov x1, sp // stat buffer, on the stack
-    SCWISVC
-    SCERR
-    b.cs Lstat_fd_failed
-
-#ifdef __linux__
-    // Linux: st_mode is u32 at offset 16, st_size is u64 at offset 48
-    ldr w1, [sp, #16]
-#else
-    // macOS: st_mode is u16 at offset 4
-    ldrh w1, [sp, #4]
-#endif
-
-    and w1, w1, #0xF000 // mask S_IFMT
-#ifdef __linux__
-    ldr x2, [sp, #48] // load st_size into x2
-#else
-    ldr x2, [sp, #96] // load st_size into x2
-#endif
-
-    mov x0, #0
-    b Lstat_fd_end
-
-Lstat_fd_failed:
-    // x0 is already errno
-    mov x1, #0
-    mov x2, #0
-    // fallthrough
-Lstat_fd_end:
-    add sp, sp, #160
-    ret
-
-
-// run stat64() on file path, returning file size and type
-// input
-// x0 -> file path
-//
-// returns
-// x0 -> 0 on success, otherwise, errno from stat64
-// w1 -> file type
-// x2 -> size
-stat_path:
-    sub sp, sp, #160 // reserve stack buffer (stat requires 144 bytes, round up)
-#ifdef __linux__
-    SCWINUM SYS_newfstatat
-    mov x3, #0              // flags = 0
-    mov x2, sp              // buf = stack buffer
-    mov x1, x0              // path (was in x0)
-    mov x0, #AT_FDCWD       // dirfd = AT_FDCWD
-#else
-    SCWINUM SYS_stat64
-    // x0 is already set (path)
-    mov x1, sp // stat buffer, on the stack
-#endif
-    SCWISVC
-    SCERR
-    b.cs Lstat_path_failed
-
-#ifdef __linux__
-    // Linux: st_mode is u32 at offset 16, st_size is u64 at offset 48
-    ldr w1, [sp, #16]
-#else
-    // macOS: st_mode is u16 at offset 4
-    ldrh w1, [sp, #4]
-#endif
-
-    and w1, w1, #0xF000 // mask S_IFMT
-#ifdef __linux__
-    ldr x2, [sp, #48] // load st_size into x2
-#else
-    ldr x2, [sp, #96] // load st_size into x2
-#endif
-    mov x0, #0
-    b Lstat_path_end
-
-Lstat_path_failed:
-    // x0 is already errno
-    mov x1, #0
-    mov x2, #0
-    // fallthrough
-Lstat_path_end:
-    add sp, sp, #160
-    ret
-
 
 // checks for path traversal: GET /../../file.txt
 // it does not do anything else. one "." is fine. more than two "..." is fine.
