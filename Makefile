@@ -36,4 +36,6 @@ clean:
 
 .PHONY: test
 test: ymawky
-	./test_files.sh --no-build
+	./tests/test_files.sh --no-build
+	./tests/test_security.sh --no-build
+	make -C tests/unit
