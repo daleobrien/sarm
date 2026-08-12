@@ -11,4 +11,5 @@ www/cgi-bin/*
 src/embedded.S
 www_gz/
 *.o
+tests/unit/_obj/
 IMPROVEMENTS-3.md
