@@ -17,6 +17,7 @@
 
 .global get
 .global head
+.global response_code
 
 // ═══════════════════════════════════════════════════════════════
 //  Stage 5: Register Convention for the GET hot path
@@ -127,6 +128,7 @@ head:
     mov x1, #-1
     mov x2, #-1
     mov x3, #200 // 200 OK
+    str_l x3, response_code
     bl build_header
     b.cs L500
 
@@ -241,6 +243,7 @@ Lno_range:
     mov x1, #-1
     mov x2, #-1
     mov x3, #200 // 200 OK
+    str_l x3, response_code
     bl build_header
     b.cs L500
 
@@ -255,6 +258,7 @@ Lbuild_ranged_header:
     mov x1, x22
     mov x2, x23
     mov x3, #206 // 206 Partial Content
+    str_l x3, response_code
     bl build_header
     b.cs L500
     // fallthrough

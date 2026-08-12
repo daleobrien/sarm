@@ -92,6 +92,7 @@
 .equ SYS_fstat64,      80   // Linux fstat = 80
 .equ SYS_nanosleep,    101
 .equ SYS_writev,       66
+.equ SYS_gettimeofday, 169
 
 // socket stuff
 .equ AF_INET,          2
@@ -314,6 +315,10 @@
 
 .equ BUF_SIZE,   16384
 
+// struct timeval offsets (64-bit)
+.equ OFF_TV_SEC,  0
+.equ OFF_TV_USEC, 8
+
 #else
 // ── macOS / Apple ARM64 ───────────────────────────────────────
 
@@ -363,6 +368,7 @@
 .equ SYS_unlinkat,     472
 .equ SYS_renameatx_np, 488
 .equ SYS_writev,       121
+.equ SYS_gettimeofday, 116
 
 // socket
 .equ AF_INET,          2
@@ -472,5 +478,9 @@
 .equ REQUEST_CTX_SIZE,    136
 
 .equ BUF_SIZE,   16384
+
+// struct timeval offsets (64-bit)
+.equ OFF_TV_SEC,  0
+.equ OFF_TV_USEC, 8
 
 #endif

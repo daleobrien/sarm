@@ -19,6 +19,7 @@
 .global build_header
 .global reply_status
 .global header_buf
+.global response_code
 
 .data
 header_200: .ascii "HTTP/1.1 200 OK"
@@ -449,6 +450,9 @@ Lbh_epilogue:
 // Serves error pages from the embedded table (www/err/<code>.html).
 // No filesystem access — all content is embedded at build time.
 reply_status:
+    // save status code for request timing log
+    str_l x0, response_code
+
     cbz x1, 1f // skip the stack pushing shit if we're just gonna b child_end
 
     stp x29, x30, [sp, #-96]!

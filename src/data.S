@@ -11,6 +11,7 @@
 .global query_len
 .global request_id
 .global resource_type
+.global response_code
 
 .global embedded_content
 .global embedded_ct
@@ -18,6 +19,8 @@
 .global embedded_gzip
 .global embedded_etag
 .global embedded_etag_len
+.global req_start
+.global req_end
 .global request_ctx
 
 .data
@@ -49,3 +52,10 @@ embedded_ct_len:  .skip 8  // CTX_EMBED_CT_LEN
 embedded_gzip:    .skip 8  // CTX_EMBED_GZIP
 embedded_etag:    .skip 8  // CTX_EMBED_ETAG
 embedded_etag_len:.skip 8  // CTX_EMBED_ETAG_LEN
+
+.align 3
+req_start:    .skip 16 // struct timeval for request start
+.align 3
+req_end:      .skip 16 // struct timeval for request end
+.align 3
+response_code: .skip 8 // HTTP status code for log
