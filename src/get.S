@@ -17,6 +17,7 @@
 
 .global get
 .global head
+.global create_response
 .global response_code
 
 // ═══════════════════════════════════════════════════════════════
@@ -28,48 +29,82 @@
 //    x21  — request header length
 //    x22  — range start offset
 //    x23  — range end offset
-//    x26  — client file descriptor (loaded once at entry)
+//    x24  — response status (200/206)
+//    x25  — response range_start (-1 = no range)
+//    x26  — response range_end (-1 = no range)
 //
 //  Caller-saved / scratch registers (may be clobbered by calls):
-//    x12  — embedded content pointer (loaded at Lmmap_start)
 //    x0–x7, x9–x15, x16–x18  — general scratch
 //
 //  Global memory is only accessed via ldr_l/str_l macros
 //  when a value cannot be kept in a callee-saved register.
 //  Key globals accessed in the hot path:
-//    embedded_content   → cached in x12 before writev
-//    header_len         → read once for writev iovec
-//    header_buf         → read once for writev iovec
+//    embedded_content → copied into the response struct before writev
+//    response         → filled by create_response, read by the encoder
 // ═══════════════════════════════════════════════════════════════
-
-.data
-.align 3
-
-head_200:
-    .ascii "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: "
-.equ head_200_len, . - head_200
-
-head_206:
-    .ascii "HTTP/1.1 206 Partial Content\r\nConnection: close\r\nContent-Length: "
-.equ head_206_len, . - head_206
-
-head_content_range:
-    .ascii "\r\nContent-Range: bytes "
-.equ head_content_range_len, . - head_content_range
-
-head_content_type:
-    .ascii "\r\nContent-Type: "
-.equ head_content_type_len, . - head_content_type
-
-good_response_tail:
-    .ascii "\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
-.equ good_response_tail_len, . - good_response_tail
 
 .text
 .align 2
 
-// setup for the "GET" and "HEAD" methods. pretty much just writes the header
-// after getting content length and such.
+// fill a protocol-neutral response struct from the resolved resource
+// globals (embedded_content, embedded_ct, ...) and explicit arguments.
+//
+// This is the "create response" step: resolve resource → create response
+// → HTTP/1 encoder. The encoder (http1_write_response in header.S) — and
+// a future HTTP/2 encoder — consume the same struct.
+//
+// input
+// x0 -> response struct ptr
+// x1 -> status code
+// x2 -> content_length (total resource length)
+// x3 -> range_start (-1 = no range)
+// x4 -> range_end   (-1 = no range)
+// x5 -> body ptr
+// x6 -> body length
+//
+// output
+// x0 -> response struct ptr (unchanged)
+//
+// clobbers x0–x6, x9–x14
+create_response:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    mov x19, x0
+
+    str x1, [x19, #RESP_STATUS]
+    str x2, [x19, #RESP_CONTENT_LENGTH]
+    str x3, [x19, #RESP_RANGE_START]
+    str x4, [x19, #RESP_RANGE_END]
+    str x5, [x19, #RESP_BODY]
+    str x6, [x19, #RESP_BODY_LENGTH]
+
+    // record the status for the request timing log
+    str_l x1, response_code
+
+    // content type: embedded_ct if the resource provides one, else derive
+    // it from the request path (filesystem fallback).
+    ldr_l x0, embedded_ct
+    cbz x0, 1f
+    ldr_l x1, embedded_ct_len
+    b 2f
+1:
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
+    bl get_filetype
+2:
+    str x0, [x19, #RESP_CONTENT_TYPE]
+    str x1, [x19, #RESP_CONTENT_TYPE_LEN]
+
+    mov x0, x19
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+
+// setup for the "GET" and "HEAD" methods. resolves the resource (embedded
+// table lookup) and fills the embedded_* globals the response builders
+// read.
 // none, uses .bss data
 //
 // output
@@ -125,22 +160,19 @@ Lembedded_found:
 head:
     bl get_setup // this does basically everything we want.
 
-    // x0 is already set from get_setup
-    mov x1, #-1
-    mov x2, #-1
-    mov x3, #200 // 200 OK
-    str_l x3, response_code
-    bl build_header
+    // HEAD sends headers only: body_length = 0. Content-Length still
+    // reflects the full resource (what GET would send).
+    mov x19, x0 // content_size
+    adr_l x0, response
+    mov x1, #200 // 200 OK
+    mov x2, x19 // content_length
+    mov x3, #-1 // range start — no range
+    mov x4, #-1 // range end
+    ldr_l x5, embedded_content // body ptr (not sent)
+    mov x6, #0  // body length — headers only
+    bl create_response
+    bl http1_write_response
     b.cs L500
-
-    ldr_l x0, clientfd
-    adr_l x1, header_buf
-    ldr_l x2, header_len
-    bl write_all
-    // it's ok to ignore write errors here, since if we get an error the way to
-    // handle it would be to close the file descriptor and b child_end, which
-    // is what we're doing here anyway. can't write 500 Internal Server Error
-    // in the middle of another header, lol.
 
     // child_end will close the file descriptor
     b child_end
@@ -156,9 +188,6 @@ head:
 get:
     mov x20, x0
     mov x21, x1
-
-    // Load clientfd once into x26 — reused in writev below
-    ldr_l x26, clientfd
 
     bl get_setup
 
@@ -240,69 +269,39 @@ Lno_range:
     mov x22, #0
     sub x23, x19, #1
 
-    mov x0, x19
-    mov x1, #-1
-    mov x2, #-1
-    mov x3, #200 // 200 OK
-    str_l x3, response_code
-    bl build_header
-    b.cs L500
-
-    b Lmmap_start
+    // response metadata: 200 OK, no range
+    mov x24, #200
+    mov x25, #-1 // range start
+    mov x26, #-1 // range end
+    b Lcreate_response
 
 Lbuild_ranged_header:
     // if start range >= filesize, that's unsatisfiable
     cmp x22, x19
     b.hs L416
 
-    mov x0, x19
-    mov x1, x22
-    mov x2, x23
-    mov x3, #206 // 206 Partial Content
-    str_l x3, response_code
-    bl build_header
-    b.cs L500
+    // response metadata: 206 Partial Content, with the range
+    mov x24, #206
+    mov x25, x22 // range start
+    mov x26, x23 // range end
     // fallthrough
 
-Lmmap_start:
-    // use embedded content pointer directly
-    ldr_l x12, embedded_content
-Lwrite_header_body:
-    // Zero-copy response: use writev to send header + body in one syscall.
-    // This avoids copying the embedded asset data through user space.
-    // Set up 2 iovecs on the stack (16 bytes each = 32 bytes total).
-    sub sp, sp, #32
-
-    adr_l x0, header_buf
-    str x0, [sp, #0]       // iov[0].iov_base = header_buf
-    ldr_l x0, header_len
-    str x0, [sp, #8]       // iov[0].iov_len  = header_len
-
-    cbz x19, 1f             // empty body? only send the header
-
-    add x0, x12, x22        // iov[1].iov_base = embedded_content + start_range
-    str x0, [sp, #16]
-    sub x0, x23, x22        // iov[1].iov_len  = end_range - start_range
-    add x0, x0, #1
-    str x0, [sp, #24]
-    mov x2, #2              // 2 iovecs
-    b 2f
-
-1:
-    mov x2, #1              // 1 iovec (header only, empty body)
-
-2:
-    mov x0, x26              // clientfd (loaded once at get entry)
-    mov x1, sp              // pointer to iovec array
-    SCWINUM SYS_writev
-    SCWISVC
-    SCERR
-    add sp, sp, #32
-    b Lget_end
-
-// close the file
-Lget_end:
-    // child_end will close the file descriptor
+Lcreate_response:
+    // resolve resource → create response → HTTP/1 encoder.
+    // x19 = content_size, x22/x23 = body window, x24 = status,
+    // x25/x26 = response range (-1/-1 = no range)
+    adr_l x0, response
+    mov x1, x24 // status
+    mov x2, x19 // content_length
+    mov x3, x25 // range_start
+    mov x4, x26 // range_end
+    ldr_l x5, embedded_content
+    add x5, x5, x22 // body = content + start
+    sub x6, x23, x22
+    add x6, x6, #1  // body_length = end - start + 1
+    bl create_response
+    bl http1_write_response
+    b.cs L500
     b child_end
 
 

@@ -30,15 +30,19 @@ util_o     := $(OBJ_DIR)/util.o
 data_o     := $(OBJ_DIR)/data.o
 parse_o    := $(OBJ_DIR)/parse.o
 file_o     := $(OBJ_DIR)/file.o
+header_o   := $(OBJ_DIR)/header.o
+get_o      := $(OBJ_DIR)/get.o
 stubs_o    := $(OBJ_DIR)/stubs.o
+stubs_resp_o := $(OBJ_DIR)/stubs_response.o
 
 # ── test executables ────────────────────────────────────────────────
 TEST_UTIL  := $(OBJ_DIR)/test_util
 TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
+TEST_RESPONSE := $(OBJ_DIR)/test_response
 
-TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST)
+TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE)
 
 all: test
 
@@ -83,7 +87,18 @@ $(parse_o): ../../src/parse.S | $(OBJ_DIR)
 $(file_o): ../../src/file.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
+# header.o and get.o are only linked by test_response; the other suites
+# use the function stubs in stubs.o instead.
+$(header_o): ../../src/header.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(get_o): ../../src/get.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
 $(stubs_o): stubs.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(stubs_resp_o): stubs_response.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 # ── test executable link rules ─────────────────────────────────────
@@ -114,6 +129,15 @@ $(TEST_FILE): test_file.c $(util_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 # (file.o), with error paths going to reply_status (stubs.o).
 $(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
+
+# test_response: Stage 2 response abstraction. Links the REAL header.o
+# (http1_write_response, reply_status) and get.o (create_response) so
+# the response struct is exercised through the real encoder, plus
+# parse.o/file.o for parse_range/get_filetype. stubs_response.o replaces
+# stubs.o (no duplicate reply_status/build_header stubs) and adds a
+# child_end stub.
+$(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────
 

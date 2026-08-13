@@ -18,6 +18,7 @@
 .global req_end
 .global request_ctx
 .global request
+.global response
 
 .data
 file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
@@ -33,6 +34,13 @@ buf:          .skip BUF_SIZE + 1
 // decoder will fill the same struct later.
 .align 3
 request:      .skip REQUEST_SIZE
+
+// response — protocol-neutral response representation (the seam the
+// HTTP/1 and future HTTP/2 encoders share). Fixed layout; offsets in
+// defs.S (RESP_STATUS, RESP_CONTENT_TYPE, ...). Filled by the handlers
+// (get/head/reply_status), consumed by http1_write_response.
+.align 3
+response:     .skip RESPONSE_SIZE
 
 // request_ctx — unified per-request state block.
 // Note: the protocol-neutral request fields (path, query, authority,

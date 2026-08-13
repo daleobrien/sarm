@@ -16,7 +16,7 @@
 #include "defs.S"
 
 .global handle_fs_error
-.global build_header
+.global http1_write_response
 .global reply_status
 .global header_buf
 .global response_code
@@ -184,40 +184,41 @@ find_http_code:
     ret
 
 .align 2
-// build a header, store it into header_buf, and then write it to the socket
-// in a loop, accounting for partial-writes.
+// Encode a protocol-neutral response struct as an HTTP/1.1 response and
+// write it (header + body) to the client socket.
+//
+// This is the HTTP/1 half of the protocol encoder split: handlers fill a
+// `response` struct (resolve resource → create response) and this turns
+// it into wire bytes. A future HTTP/2 encoder consumes the same struct.
+//
 // input
-// x0 -> file length
-// x1 -> start range (or -1 if no range)
-// x2 -> end range
-// x3 -> header type (#200, #404, #431, etc. literal number)
+// x0 -> response struct pointer
 //
 // output
-// x0 -> header buffer
-// x1 -> header length
-build_header:
+// carry clear on success, carry set if the header didn't fit in
+// header_buf (the caller should reply 500).
+//
+// clobbers x0–x7, x9–x15
+http1_write_response:
     stp x29, x30, [sp, #-64]!
-    stp x20, x21, [sp, #16]
-    stp x22, x23, [sp, #32]
-    str x24, [sp, #48]
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
 
-    mov x20, x0
-    mov x22, x1 // start range
-    mov x23, x2 // end range
-    mov x24, x3 // header type
+    mov x19, x0 // response pointer
 
     adr_l x13, header_buf
-    mov x14, #0 // counter of bytes writteen to header_buf
+    mov x14, #0 // counter of bytes written to header_buf
 
-    mov x0, x24
+    // ── status line ──
+    ldr x0, [x19, #RESP_STATUS]
     bl find_http_code
     cmp x1, #0
     b.ne 1f
 
-    // if we're here, find header returned 0, which is... odd.
+    // if we're here, find_http_code returned 0, which is... odd.
     // let's actually reply with 500, since that shouldn't happen - it means
-    // build_header was called with an inaccurate HTTP statusl, which is our
-    // fault.
+    // we were given an unknown HTTP status, which is our fault.
     adr_l x1, header_500
     mov x2, #header_500_len
 
@@ -231,9 +232,10 @@ build_header:
     bl memcpy
     mov x13, x0 // store header_buf + offset, memcpy increments the pointer
 
-    b Lbh_content_length
+    b Lhw_content_length
 
-Lbh_content_length:
+Lhw_content_length:
+    ldr x24, [x19, #RESP_STATUS]
     // we don't want to write a content-length or content-type on a 204.
     cmp x24, #204
     b.eq Lheader_tail
@@ -248,17 +250,19 @@ Lbh_content_length:
     bl memcpy
     mov x13, x0
 
+    // content-length value: end - start + 1 for a ranged response, else
+    // the total content length.
+    ldr x22, [x19, #RESP_RANGE_START]
     cmn x22, #1
     b.eq 1f
 
-    // if we're sending a range, content-length should be end - start instead
+    ldr x23, [x19, #RESP_RANGE_END]
     sub x0, x23, x22
     add x0, x0, #1
     b 2f
 
 1:
-    // but if it's just a file, just grab the total file length.
-    mov x0, x20
+    ldr x0, [x19, #RESP_CONTENT_LENGTH]
 
 2:
     bl itoa
@@ -269,10 +273,11 @@ Lbh_content_length:
     add x14, x14, x2
     cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
+    mov x13, x0
 
     // skip all this stuff for no range
     cmn x22, #1
-    b.eq Lbh_content_type
+    b.eq Lhw_content_type
 
     // 206 path
     // write Content-Range: bytes
@@ -322,7 +327,7 @@ Lbh_content_length:
     add x13, x13, #1
 
     // total size
-    mov x0, x20
+    ldr x0, [x19, #RESP_CONTENT_LENGTH]
     bl itoa
 
     mov x2, x1  // content_length_len (length of string)
@@ -331,14 +336,15 @@ Lbh_content_length:
     add x14, x14, x2
     cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
+    mov x13, x0
 
-Lbh_content_type:
-    // if it's an empty file, don't bother with Content-Type.
-    cmp x20, #0
-    b.eq Lheader_tail
+Lhw_content_type:
+    // if it's an empty resource, don't bother with Content-Type.
+    ldr x0, [x19, #RESP_CONTENT_LENGTH]
+    cbz x0, Lheader_tail
 
     // copy "\r\nContent-Type:" to buffer
-    // x0 is already set from previous memcpy
+    mov x0, x13 // destination, header_buf + offset
     adr_l x1, header_content_type
     mov x2, header_content_type_len
     add x14, x14, x2
@@ -346,27 +352,14 @@ Lbh_content_type:
     bl memcpy
     mov x13, x0
 
-    // check if we have an embedded content-type to use
-    ldr_l x0, embedded_ct
-    cbz x0, Lbh_ct_filesystem
-    ldr_l x1, embedded_ct_len
-    b Lbh_ct_write
-
-Lbh_ct_filesystem:
-    // safety fallback: derive content-type from the request path
-    adr_l x9, request
-    ldr x0, [x9, #REQ_PATH]
-    ldr x1, [x9, #REQ_PATH_LENGTH]
-    bl get_filetype
-
-Lbh_ct_write:
-    // write content-type to header_buf
-    mov x2, x1 // ct_len
-    mov x1, x0 // source string, ct_str
+    // write the content-type from the response struct
+    ldr x1, [x19, #RESP_CONTENT_TYPE]
+    ldr x2, [x19, #RESP_CONTENT_TYPE_LEN]
     mov x0, x13 // destination, header_buf
     add x14, x14, x2
     cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
+    mov x13, x0
 
 Lheader_tail:
     // Check if embedded content is gzipped — add Content-Encoding header
@@ -377,7 +370,7 @@ Lheader_tail:
     cbz x9, 1f
 
     // write "\r\nContent-Encoding: gzip"
-    // x0 still points past the last written byte (from memcpy in Lbh_ct_write)
+    mov x0, x13 // destination, header_buf + offset
     adr_l x1, header_content_encoding
     mov x2, header_content_encoding_len
     add x14, x14, x2
@@ -396,6 +389,7 @@ Lheader_tail:
     cbz x11, 2f
 
     // write "\r\nETag: "
+    mov x0, x13 // destination, header_buf + offset
     adr_l x1, header_etag
     mov x2, header_etag_len
     add x14, x14, x2
@@ -414,29 +408,60 @@ Lheader_tail:
 
 2:
     // write the \r\n\r\n
-    // x0 is still set from memcpy
+    mov x0, x13 // destination, header_buf + offset
     adr_l x1, header_tail
     mov x2, header_tail_len
     add x14, x14, x2
     cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy
 
-    b Lbh_done
+    b Lhw_done
 Lheader_too_big:
-    mov x0, #0
-    str_l x0, header_len
+    str_l xzr, header_len
     cmp xzr, xzr // set carry
-    b Lbh_epilogue
+    b Lhw_epilogue
 
-Lbh_done:
+Lhw_done:
     str_l x14, header_len
-    cmn xzr, xzr // clear carry
-    b Lbh_epilogue
 
-Lbh_epilogue:
-    ldr x24, [sp, #48]
-    ldp x22, x23, [sp, #32]
-    ldp x20, x21, [sp, #16]
+    // ── write header + body to the client ──
+    // Zero-copy response: header_buf + body via one writev syscall.
+    // Set up 2 iovecs on the stack (16 bytes each = 32 bytes total).
+    sub sp, sp, #32
+
+    adr_l x0, header_buf
+    str x0, [sp, #0]       // iov[0].iov_base = header_buf
+    ldr_l x0, header_len
+    str x0, [sp, #8]       // iov[0].iov_len  = header_len
+
+    ldr x0, [x19, #RESP_BODY_LENGTH]
+    cbz x0, 1f              // no body? only send the header
+
+    ldr x1, [x19, #RESP_BODY]
+    str x1, [sp, #16]      // iov[1].iov_base = response body
+    str x0, [sp, #24]      // iov[1].iov_len  = body_length
+    mov x2, #2             // 2 iovecs
+    b 2f
+
+1:
+    mov x2, #1             // 1 iovec (header only, empty body)
+
+2:
+    ldr_l x0, clientfd
+    mov x1, sp              // pointer to iovec array
+    SCWINUM SYS_writev
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+    // write errors are ignored — child_end closes the connection anyway.
+    // only a header that didn't fit reports failure (carry set above).
+    cmn xzr, xzr           // clear carry
+    b Lhw_epilogue
+
+Lhw_epilogue:
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
     ret
 
@@ -548,40 +573,31 @@ reply_status:
     mov x24, x1  // save content_size
     mov x25, x0  // save content_ptr
 
-    // Build the response header
-    mov x0, x24  // file length
-    mov x1, #-1  // no range
-    mov x2, #-1
-    mov x3, x19  // status code
-    bl build_header
-
-    // Write the header to client
-    ldr_l x0, clientfd
-    adr_l x1, header_buf
-    ldr_l x2, header_len
-    bl write_all
-
-    // Write the embedded body to client
-    ldr_l x0, clientfd
-    mov x1, x25
-    mov x2, x24
-    bl write_all
+    // Build the response and hand it to the HTTP/1 encoder.
+    adr_l x0, response
+    mov x1, x19  // status
+    mov x2, x24  // content_length
+    mov x3, #-1  // range start
+    mov x4, #-1  // range end
+    mov x5, x25  // body ptr
+    mov x6, x24  // body length
+    bl create_response
+    bl http1_write_response
     b sc_epilogue
 
 sc_err:
     // if something went wrong during this function, just send the header by
     // itself -- with no body. no custom pages if embedded lookup failed.
     str_l xzr, resource_type
-    mov x0, #0
-    mov x1, #-1
-    mov x2, #-1
-    mov x3, x19
-    bl build_header
-
-    ldr_l x0, clientfd
-    adr_l x1, header_buf
-    ldr_l x2, header_len
-    bl write_all
+    adr_l x0, response
+    mov x1, x19  // status
+    mov x2, #0   // content_length
+    mov x3, #-1  // range start
+    mov x4, #-1  // range end
+    mov x5, #0   // body ptr
+    mov x6, #0   // body length
+    bl create_response
+    bl http1_write_response
 
 sc_epilogue:
     // write the \n\n>>>\n to indicate data we're sending

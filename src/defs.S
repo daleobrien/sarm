@@ -503,3 +503,19 @@
 .equ REQ_AUTHORITY,    40   // ptr to authority (Host) value, or 0 if none
 .equ REQ_STREAM_ID,    48   // HTTP/2 stream id; HTTP/1 is always 0
 .equ REQUEST_SIZE,     56
+
+// ── Protocol-neutral response representation ─────────────────────────
+// The seam between response generation and the protocol encoders. A
+// handler (get/head/reply_status today, an HTTP/2 encoder later) fills
+// this fixed-layout struct — resolve resource → create response — and
+// the encoders (http1_write_response today) consume it. Offsets are
+// platform-independent. Storage lives in data.S as the `response` symbol.
+.equ RESP_STATUS,           0    // HTTP status code
+.equ RESP_CONTENT_TYPE,     8    // ptr to content-type string
+.equ RESP_CONTENT_TYPE_LEN, 16   // content-type string length
+.equ RESP_CONTENT_LENGTH,   24   // total resource length (Content-Length, Content-Range total)
+.equ RESP_BODY,             32   // ptr to body bytes to send
+.equ RESP_BODY_LENGTH,      40   // body bytes to send (0 = headers only, e.g. HEAD)
+.equ RESP_RANGE_START,      48   // inclusive start offset, -1 = no range
+.equ RESP_RANGE_END,        56   // inclusive end offset, -1 = no range
+.equ RESPONSE_SIZE,         64
