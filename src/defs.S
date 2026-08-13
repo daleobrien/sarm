@@ -600,7 +600,7 @@
 .equ H2F_STREAM_ID,  12  // u32 stream id (31-bit, R bit masked off)
 .equ H2F_SIZE,       16
 
-// HTTP/2 connection state struct (h2_conn, 88 bytes)
+// HTTP/2 connection state struct (h2_conn, 112 bytes)
 .equ H2C_LAST_FRAME_TYPE,                0   // last dispatched frame type
 .equ H2C_MAX_RX_FRAME_SIZE,              8   // max payload we accept (2^14 default)
 .equ H2C_SETTINGS_HEADER_TABLE_SIZE,     16  // peer's settings — RFC 9113 §6.5.2 defaults
@@ -612,7 +612,12 @@
 .equ H2C_ACK_RECEIVED,                   64  // 1 once a SETTINGS ACK arrives
 .equ H2C_LAST_STREAM_ID,                 72  // largest client-initiated stream id seen (§5.1.1)
 .equ H2C_WINDOW,                         80  // u64 connection-level send window (§5.2; Stage 11)
-.equ H2C_SIZE,                           88
+.equ H2C_FD,                             88  // u64 client fd — the PING ACK / GOAWAY reply
+                                            //   writers use (Stage 13; -1 when idle)
+.equ H2C_GOAWAY_RECEIVED,                96  // u64 1 once a GOAWAY arrives from the client
+                                            //   (§6.8; Stage 13) — new streams then refused
+.equ H2C_GOAWAY_LAST_STREAM_ID,          104 // u64 the peer's last processed client stream id
+.equ H2C_SIZE,                           112
 
 // the largest a flow-control window may reach: 2^31 - 1 (RFC 9113 §5.2,
 // §6.9). A WINDOW_UPDATE that would push a window above this is a

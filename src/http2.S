@@ -92,6 +92,15 @@
 // enforced with GOAWAY(ENHANCE_YOUR_CALM) when a client opens more
 // streams than that (§5.1.2).
 //
+// Stage 13 — connection management (RFC 9113 §6.7, §6.8). PING becomes
+// real: an 8-octet PING without the ACK flag is answered with a PING ACK
+// carrying the identical payload (§6.7), and a GOAWAY from the client
+// marks the connection as going away — the server answers with its own
+// GOAWAY(NO_ERROR) and refuses any brand-new stream with REFUSED_STREAM
+// (§6.8) while already-accepted streams run to completion, so a
+// connection shuts down gracefully. Both replies go out over the
+// connection's client fd, stored in the connection state (H2C_FD).
+//
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
 //   carry set   = failure, x0 = HTTP/2 error code (H2_ERR_*)
@@ -144,6 +153,9 @@ h2_conn:
     .quad 0                               // H2C_ACK_RECEIVED
     .quad 0                               // H2C_LAST_STREAM_ID
     .quad H2_DEFAULT_INITIAL_WINDOW_SIZE   // H2C_WINDOW — connection window (§5.2)
+    .quad -1                              // H2C_FD — no connection yet (Stage 13)
+    .quad 0                               // H2C_GOAWAY_RECEIVED (Stage 13)
+    .quad 0                               // H2C_GOAWAY_LAST_STREAM_ID (Stage 13)
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
 // §3.5, §6.5): SETTINGS_HEADER_TABLE_SIZE = 0 (§6.5.2) tells the client
@@ -441,6 +453,13 @@ h2_handle_headers:
     ldr w0, [x10, #H2F_STREAM_ID]
     bl h2_stream_find
     cbnz x0, .Lh2_headers_count_done
+    // ── Stage 13 — GOAWAY received: no brand-new streams (§6.8) ──
+    // The connection is winding down; a HEADERS that would open a stream
+    // that doesn't exist yet is refused with REFUSED_STREAM (a stream
+    // error the loop answers with RST_STREAM). Streams already in the
+    // table — accepted before the GOAWAY — run to completion.
+    ldr x14, [x11, #H2C_GOAWAY_RECEIVED]
+    cbnz x14, .Lh2_headers_refused
     adr_l x9, h2_streams
     mov x13, #H2_MAX_STREAMS
     mov x14, #0             // open-stream count
@@ -493,6 +512,10 @@ h2_handle_headers:
 .Lh2_headers_too_many:
     cmp xzr, xzr             // failure — carry set
     mov x0, #H2_ERR_ENHANCE_YOUR_CALM
+    b .Lh2_headers_err       // don't fall through into the refused path
+.Lh2_headers_refused:
+    cmp xzr, xzr             // failure — carry set
+    mov x0, #H2_ERR_REFUSED_STREAM
 .Lh2_headers_err:
     ldp x19, x30, [sp], #32
     ret                      // x0 = error, carry set
@@ -580,16 +603,138 @@ h2_handle_rst_stream:
     ret
 
 // Handlers not yet implemented — acknowledge receipt and do nothing:
-// PRIORITY, PUSH_PROMISE, PING, GOAWAY, CONTINUATION (WINDOW_UPDATE
-// landed in Stage 11, below).
+// PRIORITY, PUSH_PROMISE, CONTINUATION (PING and GOAWAY landed in
+// Stage 13, below).
 h2_handle_priority:
 h2_handle_push_promise:
-h2_handle_ping:
-h2_handle_goaway:
 h2_handle_continuation:
 .Lh2_handler_ok:
     cmn xzr, xzr // success — carry clear
     mov x0, #0
+    ret
+
+// ── 6.7 — PING ──────────────────────────────────────────────────────
+// PING is a connection liveness probe (RFC 9113 §6.7). The payload is
+// exactly 8 opaque octets — any other length is a FRAME_SIZE_ERROR
+// connection error — and the frame is connection-scoped: a stream id
+// other than 0 is a PROTOCOL_ERROR. A PING without the ACK flag is
+// answered with a PING ACK carrying the identical 8 octets (§6.7: "an
+// endpoint MUST NOT respond to PING frames containing this flag" — so
+// an ACK is never answered). The ACK goes out over the connection's
+// client fd, which the connection loop stores in H2C_FD; a write
+// failure is ignored (the connection is dead anyway).
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x4, x30 (saved/restored)
+h2_handle_ping:
+    str x30, [sp, #-16]!   // save the return address
+    // exactly 8 payload octets (§6.7)
+    ldr w3, [x0, #H2F_LENGTH]
+    cmp w3, #8
+    b.ne .Lh2ping_size_error
+    // connection-scoped — stream id must be 0 (§6.7)
+    ldr w3, [x0, #H2F_STREAM_ID]
+    cbnz w3, .Lh2ping_protocol_error
+    // an ACK is never answered (§6.7)
+    ldr w3, [x0, #H2F_FLAGS]
+    tst w3, #H2_FLAG_ACK
+    b.ne .Lh2ping_ok
+    // build the ACK frame on the stack: 9-byte header + the same 8 octets
+    sub sp, sp, #32
+    mov x3, x1              // payload — survives the header build below
+    mov w4, #8
+    strb wzr, [sp, #0]
+    strb wzr, [sp, #1]
+    strb w4, [sp, #2]
+    mov w4, #H2_FRAME_PING
+    strb w4, [sp, #3]
+    mov w4, #H2_FLAG_ACK
+    strb w4, [sp, #4]
+    strb wzr, [sp, #5]
+    strb wzr, [sp, #6]
+    strb wzr, [sp, #7]
+    strb wzr, [sp, #8]
+    ldr x4, [x3]            // the 8 opaque octets, echoed verbatim
+    str x4, [sp, #9]
+    ldr x0, [x2, #H2C_FD]   // the connection's client fd
+    mov x1, sp
+    mov x2, #17             // header + payload, one write
+    bl write_all
+    add sp, sp, #32
+.Lh2ping_ok:
+    ldr x30, [sp], #16
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    ret
+.Lh2ping_protocol_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+.Lh2ping_size_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_FRAME_SIZE_ERROR
+    ret
+
+// ── 6.8 — GOAWAY (received from the client) ─────────────────────────
+// A GOAWAY frame begins connection teardown (RFC 9113 §6.8): the sender
+// will not open new streams, and the peer should wrap up. It is
+// connection-scoped (a stream id other than 0 is a PROTOCOL_ERROR
+// connection error) and carries at least 8 payload octets — the last
+// client-initiated stream id the sender might process plus an error
+// code; a shorter frame is a FRAME_SIZE_ERROR (debug data may follow
+// the 8). The server records the peer's last stream id and marks the
+// connection as going away — the HEADERS handler then refuses any
+// brand-new stream with REFUSED_STREAM — and answers with its own
+// GOAWAY(NO_ERROR) so the client knows the server will not open streams
+// either. Already-accepted streams run to completion, which is what
+// makes the shutdown graceful.
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x7, x30 (saved/restored)
+h2_handle_goaway:
+    str x30, [sp, #-16]!   // save the return address
+    // connection-scoped — stream id must be 0 (§6.8)
+    ldr w3, [x0, #H2F_STREAM_ID]
+    cbnz w3, .Lh2goaway_protocol_error
+    // at least the 8 required octets (§6.8)
+    ldr w3, [x0, #H2F_LENGTH]
+    cmp w3, #8
+    b.lo .Lh2goaway_size_error
+    // last processed client stream id — 31-bit, big-endian (§6.8)
+    ldrb w4, [x1]
+    ldrb w5, [x1, #1]
+    ldrb w6, [x1, #2]
+    ldrb w7, [x1, #3]
+    lsl w4, w4, #24
+    orr w4, w4, w5, lsl #16
+    orr w4, w4, w6, lsl #8
+    orr w4, w4, w7
+    and w4, w4, #0x7fffffff
+    str w4, [x2, #H2C_GOAWAY_LAST_STREAM_ID]
+    mov w3, #1
+    str w3, [x2, #H2C_GOAWAY_RECEIVED]
+    // answer with our own GOAWAY(NO_ERROR) — we will not open streams
+    // either; the error code and our high-water mark go in the frame
+    ldr x0, [x2, #H2C_FD]
+    mov x1, #H2_ERR_NO_ERROR
+    bl h2_send_goaway
+    ldr x30, [sp], #16
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    ret
+.Lh2goaway_protocol_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+.Lh2goaway_size_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_FRAME_SIZE_ERROR
     ret
 
 // ── 6.9 — WINDOW_UPDATE ─────────────────────────────────────────────
@@ -1642,6 +1787,11 @@ h2_connection_loop:
     str xzr, [x9, #H2C_LAST_STREAM_ID]
     mov x10, #H2_DEFAULT_INITIAL_WINDOW_SIZE
     str x10, [x9, #H2C_WINDOW]
+    // Stage 13 — the fd the PING ACK / GOAWAY reply writers use, and a
+    // clean going-away state (a new connection is not going away)
+    str x19, [x9, #H2C_FD]
+    str xzr, [x9, #H2C_GOAWAY_RECEIVED]
+    str xzr, [x9, #H2C_GOAWAY_LAST_STREAM_ID]
     adr_l x9, h2_streams
     mov x10, #(H2_MAX_STREAMS * H2S_SIZE) / 16
 1:
@@ -1776,12 +1926,17 @@ h2_connection_loop:
     // consume the frame regardless, so the connection stays in sync
     add x22, x22, x23
     sub x21, x21, x23
-    // STREAM_CLOSED is a stream error — RST_STREAM and keep serving;
-    // anything else poisons the connection — GOAWAY and close
+    // STREAM_CLOSED and REFUSED_STREAM are stream errors — RST_STREAM
+    // that stream and keep serving; anything else poisons the
+    // connection — GOAWAY and close (REFUSED_STREAM is how the HEADERS
+    // handler answers a brand-new stream after GOAWAY, §6.8)
     cmp x0, #H2_ERR_STREAM_CLOSED
+    b.eq .Lh2cl_rst_stream
+    cmp x0, #H2_ERR_REFUSED_STREAM
     b.eq .Lh2cl_rst_stream
     mov x1, x0
     mov x0, x19
+    adr_l x2, h2_conn
     bl h2_send_goaway
     b .Lh2cl_end
 .Lh2cl_rst_stream:
@@ -1797,6 +1952,7 @@ h2_connection_loop:
     // frame validation failed — GOAWAY with the reason, then close
     mov x1, x0
     mov x0, x19
+    adr_l x2, h2_conn
     bl h2_send_goaway
     b .Lh2cl_end
 
@@ -2671,7 +2827,25 @@ h2_write_body:
     adr_l x1, buf
     mov x2, x26
     bl h2_dispatch_frame
-    b.cs .Lh2wb_err
+    b.cs .Lh2wb_dispatch_error
+    b .Lh2wb_loop
+.Lh2wb_dispatch_error:
+    // stream errors (STREAM_CLOSED, and the REFUSED_STREAM a HEADERS
+    // after GOAWAY answers with) — RST_STREAM that stream and keep
+    // waiting for credit; anything else poisons the connection and
+    // aborts the response
+    cmp x0, #H2_ERR_STREAM_CLOSED
+    b.eq .Lh2wb_rst_stream
+    cmp x0, #H2_ERR_REFUSED_STREAM
+    b.eq .Lh2wb_rst_stream
+    b .Lh2wb_err
+.Lh2wb_rst_stream:
+    adr_l x9, h2_frame_header
+    ldr w1, [x9, #H2F_STREAM_ID]
+    cbz w1, .Lh2wb_loop       // stream 0 is never RST_STREAM'd — keep waiting
+    mov x2, x0
+    mov x0, x19
+    bl h2_send_rst_stream
     b .Lh2wb_loop
 .Lh2wb_err:
     // x0 = errno (or H2_ERR_*), carry set
@@ -2685,10 +2859,11 @@ h2_write_body:
 
 // ── 6.8 — h2_send_goaway: send a GOAWAY frame and let the caller ───
 // close the connection. Carries the connection's high-water stream id
-// and the given error code (RFC 9113 §6.8).
+// (read from the passed connection state) and the given error code
+// (RFC 9113 §6.8).
 //
 // input
-// x0 = fd, x1 = error code
+// x0 = fd, x1 = error code, x2 -> connection state
 //
 // output
 // (none — write failures are ignored; the connection is closing anyway)
@@ -2711,8 +2886,7 @@ h2_send_goaway:
     strb wzr, [sp, #7]
     strb wzr, [sp, #8]
     // payload: last client-initiated stream id (4 bytes, big-endian)
-    adr_l x9, h2_conn
-    ldr w3, [x9, #H2C_LAST_STREAM_ID]
+    ldr w3, [x2, #H2C_LAST_STREAM_ID]
     lsr w4, w3, #24
     strb w4, [sp, #9]
     lsr w4, w3, #16
