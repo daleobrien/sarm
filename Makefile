@@ -46,5 +46,7 @@ test: ymawky
 	@./tests/test_files.sh --no-build --quiet
 	@echo "── test (security) ──"
 	@./tests/test_security.sh --no-build --quiet
+	@echo "── test (protocol detection) ──"
+	@./tests/test_protocols.sh --no-build --quiet
 	@echo "── test (unit) ──"
 	@$(MAKE) -s -C tests/unit

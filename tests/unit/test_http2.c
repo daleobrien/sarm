@@ -55,6 +55,15 @@
 // REFUSED_STREAM — while already-accepted streams (13.3) run to
 // completion, so a connection shut down mid-response drains gracefully
 // before termination.
+// Stage 14: protocol detection — HTTP/1 and HTTP/2 share one port.
+// h2_probe reads the first bytes of a connection and decides: a prefix
+// of the "PRI * HTTP/2.0" client connection preface is HTTP/2 (14.1,
+// every 1..24-byte prefix matches, any single-byte deviation fails),
+// and the probe never consumes or alters the bytes it looked at (14.2)
+// — the very same buffer is what the HTTP/1 parser sees. The
+// connection loop consumes the probe's buffered bytes (a partial
+// preface read) and reads the rest from the socket before serving
+// frames.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -796,7 +805,7 @@ static inline int64_t h2_probe_wrapper(const uint8_t *buf, int64_t n) {
 		"mov %0, x0\n"
 		: "=r"(rc)
 		: "r"(buf), "r"(n)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "x30", "memory");
 	return rc;
 }
 
@@ -2884,6 +2893,74 @@ static void test_h2_probe(void) {
 	ASSERT_EQ("empty buffer rejected", 0, h2_probe_wrapper(H2_PREFACE, 0));
 }
 
+// ── 14.1 — every preface prefix is detected, any deviation is not ──
+// An HTTP/2 client may deliver the preface across any number of reads;
+// whatever prefix has arrived by the time the server first reads must
+// be enough to identify the protocol. Conversely, a single wrong byte
+// anywhere in the 24 must fail the probe (RFC 9113 §3.4).
+static void test_h2_probe_prefixes(void) {
+	TEST_SUITE("14.1 h2_probe — every preface prefix detected, deviations rejected");
+
+	int ok = 1;
+	for (int k = 1; k <= H2_PREFACE_LEN; k++)
+		ok &= (h2_probe_wrapper(H2_PREFACE, k) == 1);
+	ASSERT_EQ("every 1..24-byte preface prefix detected", 1, ok);
+
+	ok = 1;
+	uint8_t bad[H2_PREFACE_LEN];
+	for (int i = 0; i < H2_PREFACE_LEN; i++) {
+		memcpy(bad, H2_PREFACE, H2_PREFACE_LEN);
+		bad[i] ^= 0xff;             // flip one byte at position i
+		ok &= (h2_probe_wrapper(bad, H2_PREFACE_LEN) == 0);
+	}
+	ASSERT_EQ("single-byte deviation at every position rejected", 1, ok);
+
+	// a wrong minor version is not the HTTP/2 preface
+	static const char h21[] = "PRI * HTTP/2.1\r\n\r\nSM\r\n\r\n";
+	ASSERT_EQ("HTTP/2.1 preface rejected", 0,
+	          h2_probe_wrapper((const uint8_t *)h21, LITLEN(h21)));
+
+	// common HTTP/1 requests are never mistaken for the preface
+	static const char *reqs[] = {
+		"GET / HTTP/1.1\r\n",
+		"HEAD / HTTP/1.1\r\n",
+		"POST / HTTP/1.1\r\n",
+		"OPTIONS / HTTP/1.1\r\n",
+		"PUT / HTTP/1.1\r\n",
+		"DELETE / HTTP/1.1\r\n",
+	};
+	ok = 1;
+	for (int i = 0; i < 6; i++)
+		ok &= (h2_probe_wrapper((const uint8_t *)reqs[i], LITLEN(reqs[i])) == 0);
+	ASSERT_EQ("common HTTP/1 requests rejected", 1, ok);
+}
+
+// ── 14.2 — the probe preserves the bytes it examined ────────────────
+// The main loop hands the very same buffer to the HTTP/1 parser after
+// the probe says "not HTTP/2", so the probe must leave it untouched:
+// copy → probe → compare, and prove the probed buffer still parses.
+static void test_h2_probe_preserves(void) {
+	TEST_SUITE("14.2 h2_probe — buffer preserved byte-for-byte (HTTP/1 sees all bytes)");
+
+	uint8_t buf[64];
+	memcpy(buf, H2_PREFACE, H2_PREFACE_LEN);
+	ASSERT_EQ("HTTP/2 preface detected", 1,
+	          h2_probe_wrapper(buf, H2_PREFACE_LEN));
+	ASSERT_TRUE("preface buffer unchanged by the probe",
+	            memcmp(buf, H2_PREFACE, H2_PREFACE_LEN) == 0);
+
+	static const char get[] = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	memcpy(buf, get, LITLEN(get));
+	ASSERT_EQ("HTTP/1 request rejected by the probe", 0,
+	          h2_probe_wrapper(buf, LITLEN(get)));
+	ASSERT_TRUE("HTTP/1 buffer unchanged by the probe",
+	            memcmp(buf, get, (unsigned long)LITLEN(get)) == 0);
+
+	// the same buffer, byte-for-byte, is what the HTTP/1 parser sees
+	ASSERT_EQ("probed buffer still parses as HTTP/1", 0,
+	          parse_request_wrapper((const char *)buf, LITLEN(get)));
+}
+
 // ── 9.2 — the HEADERS response encoder, raw wire bytes ──────────────
 static void test_h2_write_headers(void) {
 	TEST_SUITE("9.2 h2_write_headers — HEADERS frame (200, content-type, content-length)");
@@ -3356,6 +3433,92 @@ static void test_h2_connection_loop(void) {
 	// the child's exit code doubles as the verification result
 	int exit_code = (status >> 8) & 0xff;
 	ASSERT_EQ("client verified preface + SETTINGS + HEADERS + DATA", 0, exit_code);
+}
+
+// ── 14.1/14.2 — the probe's buffered bytes reach the connection loop ──
+// The main loop passes whatever the first read() returned to
+// h2_connection_loop along with the probe decision; this is that
+// hand-off: 10 preface bytes already in the buffer, the remaining 14
+// arriving from the socket after a pause. The loop must read the rest
+// of the preface, verify it, and serve the request exactly as a fully
+// buffered connection would.
+static long put_request_headers(uint8_t *out, const char *path, long path_len,
+                                uint8_t flags, uint32_t stream_id);
+
+static void test_h2_connection_loop_partial_preface(void) {
+	TEST_SUITE("14.2 h2_connection_loop — 10 pre-buffered preface bytes + socket");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		// ── client side: the preface arrives in two fragments ──
+		close(sv[0]);
+		uint8_t out[128], in[128];
+		long out_len = 0;
+
+		// fragment 1: the first 10 bytes — what the main loop's first
+		// read() buffered before the probe fired
+		if (write(sv[1], H2_PREFACE, 10) != 10) _exit(1);
+		usleep(20000); // 20ms — the server is blocked reading the rest
+
+		// fragment 2: the remaining preface + client SETTINGS + HEADERS
+		memcpy(out + out_len, H2_PREFACE + 10, H2_PREFACE_LEN - 10);
+		out_len += H2_PREFACE_LEN - 10;
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		out_len += put_request_headers(out + out_len, "/", 1,
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+		long w = 0;
+		while (w < out_len) {
+			long r = write(sv[1], out + w, (unsigned long)(out_len - w));
+			if (r <= 0) _exit(2);
+			w += r;
+		}
+
+		// the same 89-byte response as the unfragmented loop:
+		// SETTINGS (21) + HEADERS (42) + DATA (26, "<h1>hello h2</h1>")
+		long n = 0;
+		while (n < 89) {
+			long r = read(sv[1], in + n, (unsigned long)(89 - n));
+			if (r <= 0) break;
+			n += r;
+		}
+		if (n != 89) _exit(3);
+		if (in[0] != 0 || in[1] != 0 || in[2] != 12 ||
+		    in[3] != H2_FRAME_SETTINGS || in[4] != 0) _exit(4);
+		if (in[24] != H2_FRAME_HEADERS || in[29] != 1) _exit(5);
+		if (in[66] != H2_FRAME_DATA || in[71] != 1) _exit(6);
+		if (memcmp(in + 72, "<h1>hello h2</h1>", 17) != 0) _exit(7);
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side: consume the first 10 bytes like the main loop's ──
+	// first read(), then hand the buffer + count to the connection loop
+	close(sv[1]);
+	uint8_t in[512];
+	long n0 = 0;
+	while (n0 < 10) {
+		long r = read(sv[0], in + n0, (unsigned long)(10 - n0));
+		if (r <= 0) break;
+		n0 += r;
+	}
+	if (n0 != 10) {
+		printf("  ✗ server's first read() did not get the 10 preface bytes\n");
+		exit(2);
+	}
+	h2_connection_loop_wrapper(sv[0], in, 10);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("partial preface (10 buffered + 14 from socket) served", 0, exit_code);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -5287,6 +5450,10 @@ int main(void) {
 	test_h2_ping_loop();
 	test_h2_goaway_loop();
 	test_h2_goaway_graceful();
+	// Stage 14 — protocol detection (HTTP/1 and HTTP/2 share one port)
+	test_h2_probe_prefixes();
+	test_h2_probe_preserves();
+	test_h2_connection_loop_partial_preface();
 	test_summary();
 	return 0;
 }
