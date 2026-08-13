@@ -15,7 +15,7 @@
 
 #include "defs.S"
 
-// HTTP/2 frame engine (RFC 9113 §4-§6.5).
+// HTTP/2 frame engine (RFC 9113 §3.4-§6.5).
 //
 // Stage 4 — the frame layer: 9-byte frame header decoding (§4.1), frame
 // size validation (§4.2), frame dispatch (§5.5) and SETTINGS handling
@@ -23,6 +23,13 @@
 // a later stage; these functions are the protocol-neutral heart of the
 // engine and take a parsed frame header plus the h2_conn connection
 // state, so they are testable in isolation.
+//
+// Stage 5 — the connection preface: h2_verify_preface reads exactly
+// 24 bytes from a new connection and compares them with the HTTP/2
+// connection preface (§3.4), recording the connection mode;
+// h2_send_settings then emits the server's opening SETTINGS frame (§3.5),
+// the first frame the server sends. The connection read loop that calls
+// them in sequence arrives in a later stage.
 //
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
@@ -34,8 +41,11 @@
 .global h2_validate_frame
 .global h2_dispatch_frame
 .global h2_handle_settings
+.global h2_verify_preface
+.global h2_send_settings
 .global h2_conn
 .global h2_frame_header
+.global h2_settings_frame
 
 .data
 .align 3
@@ -54,6 +64,17 @@ h2_conn:
     .quad H2_DEFAULT_MAX_FRAME_SIZE        // H2C_SETTINGS_MAX_FRAME_SIZE
     .quad 0xffffffff                      // H2C_SETTINGS_MAX_HEADER_LIST_SIZE (unlimited)
     .quad 0                               // H2C_ACK_RECEIVED
+
+// h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
+// §3.5, §6.5): a potentially empty SETTINGS frame, so it is just the
+// 9-byte frame header. Empty is valid; real parameters (e.g.
+// MAX_CONCURRENT_STREAMS) arrive in the SETTINGS stage.
+h2_settings_frame:
+    .byte 0x00, 0x00, 0x00            // payload length (24-bit) = 0
+    .byte H2_FRAME_SETTINGS           // type = SETTINGS
+    .byte 0x00                        // flags = 0
+    .byte 0x00, 0x00, 0x00, 0x00      // stream id = 0
+.equ h2_settings_frame_len, . - h2_settings_frame
 
 // frame-type dispatch table, indexed by frame type (§6). The dispatcher
 // tail-calls the selected handler, so the handler returns directly to
@@ -342,3 +363,115 @@ h2_handle_settings:
     cmp xzr, xzr
     mov x0, #H2_ERR_FLOW_CONTROL_ERROR
     ret
+
+// ── 3.4/3.5 — the connection preface ────────────────────────────────
+// Stage 5. An HTTP/2 client opens the connection by sending the 24-byte
+// connection preface (RFC 9113 §3.4):
+//
+//     PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n
+//
+// The server must read it byte-for-byte, then answer with its own
+// connection preface: a SETTINGS frame, which must be the first frame
+// the server sends (§3.5). h2_verify_preface performs the read+compare
+// and records the connection mode; h2_send_settings emits the SETTINGS
+// frame. The connection loop (a later stage) calls them in sequence:
+//
+//     bl h2_verify_preface   // (fd, buf) -> CONNECTION_HTTP2 on success
+//     b.cs  reject_connection
+//     bl h2_send_settings    // (fd) -> the opening SETTINGS frame
+//     b.cs  reject_connection
+
+// ── 3.4 — verify the client connection preface ──────────────────────
+// Read exactly H2_PREFACE_LEN (24) bytes from the client and compare
+// them against h2_preface. read() on a stream socket may return fewer
+// bytes than requested, so the read loops until all 24 arrive; EINTR is
+// retried. On success connection_mode is set to CONNECTION_HTTP2.
+//
+// input
+// x0 -> client file descriptor
+// x1 -> buffer of at least H2_PREFACE_LEN bytes to read into
+//
+// output
+// success — carry clear, x0 = CONNECTION_HTTP2
+// failure — carry set, x0 = reason:
+//     H2_ERR_PROTOCOL_ERROR  the bytes aren't the preface (or EOF)
+//     errno                  read() failed (ECONNRESET, ETIMEDOUT, ...)
+// Either way the connection is rejected and must be closed.
+//
+// clobbers x0-x8, x9 (via str_l), x19, x20, x21, x29, x30
+h2_verify_preface:
+    stp x29, x30, [sp, #-32]!
+    stp x19, x20, [sp, #16]
+    mov x19, x0            // fd
+    mov x20, x1            // buffer
+    mov x21, #0            // bytes read so far
+.Lh2_preface_read:
+    SCWINUM SYS_read
+    mov x0, x19
+    add x1, x20, x21       // append at the end of what we already have
+    mov x2, #H2_PREFACE_LEN
+    sub x2, x2, x21
+    SCWISVC
+    SCERR
+    b.cs .Lh2_preface_read_failed
+    cbz x0, .Lh2_preface_bad       // EOF before the full preface
+    add x21, x21, x0
+    cmp x21, #H2_PREFACE_LEN
+    b.lo .Lh2_preface_read
+
+    // 24 bytes = three 8-byte words; the buffer and the constant are
+    // both read little-endian, so plain word compares are exact.
+    adr_l x9, h2_preface
+    ldr x2, [x20]
+    ldr x3, [x9]
+    cmp x2, x3
+    b.ne .Lh2_preface_bad
+    ldr x2, [x20, #8]
+    ldr x3, [x9, #8]
+    cmp x2, x3
+    b.ne .Lh2_preface_bad
+    ldr x2, [x20, #16]
+    ldr x3, [x9, #16]
+    cmp x2, x3
+    b.ne .Lh2_preface_bad
+
+    // preface confirmed — the connection speaks HTTP/2
+    mov x0, #CONNECTION_HTTP2
+    str_l x0, connection_mode
+    cmn xzr, xzr           // success — carry clear
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+.Lh2_preface_read_failed:
+    cmp x0, #EINTR
+    b.eq .Lh2_preface_read  // interrupted — retry, nothing was read
+    cmp xzr, xzr            // failure — carry set
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret                     // x0 = errno
+
+.Lh2_preface_bad:
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// ── 3.5 — send the server's opening SETTINGS frame ──────────────────
+// Emit h2_settings_frame — an empty SETTINGS frame, valid as the first
+// frame of the server connection preface (§3.5, §6.5). Delegates to
+// write_all (util.S) so partial writes are completed.
+//
+// input
+// x0 -> client file descriptor
+//
+// output
+// success — carry clear, x0 = bytes written (H2_WIRE_HEADER_LEN)
+// failure — carry set, x0 = errno (EPIPE, ECONNRESET, ...)
+//
+// clobbers x0, x1, x2, x8, x16 (syscall registers; see write_all)
+h2_send_settings:
+    adr_l x1, h2_settings_frame
+    mov x2, #H2_WIRE_HEADER_LEN
+    b write_all

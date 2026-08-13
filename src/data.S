@@ -19,10 +19,25 @@
 .global request_ctx
 .global request
 .global response
+.global connection_mode
+.global h2_preface
 
 .data
 file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
                        // initialized to -1 so we can check if it's set.
+
+// connection_mode — protocol in use on the current connection
+// (CONNECTION_HTTP1 / CONNECTION_HTTP2, see defs.S). Defaults to HTTP/1,
+// which keeps existing connections untouched; h2_verify_preface sets it
+// to CONNECTION_HTTP2 once the client preface checks out.
+.align 3
+connection_mode: .quad CONNECTION_HTTP1
+
+// h2_preface — the 24-byte HTTP/2 client connection preface
+// (RFC 9113 §3.4), compared byte-for-byte by h2_verify_preface.
+h2_preface:
+    .ascii "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+.equ h2_preface_len, . - h2_preface
 .bss
 // + 1 so we can NULL terminate, even if content is BUF_SIZE bytes long
 buf:          .skip BUF_SIZE + 1

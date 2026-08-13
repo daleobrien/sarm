@@ -1,8 +1,12 @@
-// Unit tests for src/http2.S — Stage 4: the HTTP/2 frame engine.
-// Tests: h2_parse_frame_header (4.1), h2_validate_frame (4.2),
-// h2_dispatch_frame (4.3), h2_handle_settings (4.4) and SETTINGS ACK
-// (4.5). SETTINGS tests go through h2_dispatch_frame so the full
-// header → handler path is exercised.
+// Unit tests for src/http2.S — Stages 4 & 5.
+// Stage 4: the HTTP/2 frame engine — h2_parse_frame_header (4.1),
+// h2_validate_frame (4.2), h2_dispatch_frame (4.3), h2_handle_settings
+// (4.4) and SETTINGS ACK (4.5). SETTINGS tests go through
+// h2_dispatch_frame so the full header → handler path is exercised.
+// Stage 5: the connection preface — h2_verify_preface reads exactly 24
+// bytes and compares them with the HTTP/2 preface (3.4), flipping
+// connection_mode; h2_send_settings emits the server's opening SETTINGS
+// frame (3.5), captured over a real socketpair and verified byte-for-byte.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -19,6 +23,11 @@
 #define H2_FRAME_GOAWAY        7
 #define H2_FRAME_WINDOW_UPDATE 8
 #define H2_FRAME_CONTINUATION  9
+
+#define CONNECTION_HTTP1 0
+#define CONNECTION_HTTP2 1
+
+#define H2_PREFACE_LEN 24
 
 #define H2_SETTINGS_HEADER_TABLE_SIZE       1
 #define H2_SETTINGS_ENABLE_PUSH             2
@@ -40,6 +49,21 @@
 #define H2_DEF_INITIAL_WINDOW_SIZE     65535
 #define H2_DEF_MAX_FRAME_SIZE          16384
 #define H2_DEF_MAX_HEADER_LIST_SIZE    0xffffffff
+
+// ── the 24-byte client connection preface (RFC 9113 §3.4) ─────────
+// 25 bytes with the NUL terminator; only the first 24 are sent.
+static const uint8_t H2_PREFACE[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+// ── libc declarations (avoid <unistd.h>/<sys/socket.h> per harness) ─
+extern int socketpair(int domain, int type, int protocol, int sv[2]);
+extern long read(int fd, void *buf, unsigned long n);
+extern int close(int fd);
+extern int fork(void);
+extern int waitpid(int pid, int *status, int options);
+extern int usleep(unsigned int usec);
+
+#define AF_UNIX   1
+#define SOCK_STREAM 1
 
 // ── structs, mirroring the H2F_*/H2C_* offsets in defs.S ───────────
 typedef struct {
@@ -164,6 +188,94 @@ static inline h2_conn_t *h2_conn_addr(void) {
 		: "=r"(p)
 		:: "x0");
 	return p;
+}
+
+// ── connection_mode / h2_preface accessors (data.S) ────────────────
+
+static inline int64_t connection_mode_value(void) {
+	int64_t v;
+	asm volatile(
+		"adrp x0, connection_mode@PAGE\n"
+		"add  x0, x0, connection_mode@PAGEOFF\n"
+		"ldr  %0, [x0]\n"
+		: "=r"(v)
+		:: "x0", "memory");
+	return v;
+}
+
+static inline void set_connection_mode(int64_t mode) {
+	asm volatile(
+		"adrp x0, connection_mode@PAGE\n"
+		"add  x0, x0, connection_mode@PAGEOFF\n"
+		"str  %0, [x0]\n"
+		:: "r"(mode)
+		: "x0", "memory");
+}
+
+static inline const uint8_t *h2_preface_addr(void) {
+	const uint8_t *p;
+	asm volatile(
+		"adrp x0, h2_preface@PAGE\n"
+		"add  x0, x0, h2_preface@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+static inline const uint8_t *h2_settings_frame_addr(void) {
+	const uint8_t *p;
+	asm volatile(
+		"adrp x0, h2_settings_frame@PAGE\n"
+		"add  x0, x0, h2_settings_frame@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+// ── Stage 5 wrappers for asm functions ─────────────────────────────
+
+// h2_verify_preface(fd=x0, buf=x1) → (rc=x0, carry)
+static inline int64_t h2_verify_preface_wrapper(int64_t fd, uint8_t *buf,
+                                                int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_verify_preface\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(fd), "r"(buf)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+		  "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
+		  "memory");
+	*carry_out = carry;
+	return rc;
+}
+
+// h2_send_settings(fd=x0) → (rc=x0, carry)
+static inline int64_t h2_send_settings_wrapper(int64_t fd, int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"bl h2_send_settings\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(fd)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+		  "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
+		  "memory");
+	*carry_out = carry;
+	return rc;
 }
 
 static void test_h2_conn_defaults(void) {
@@ -494,9 +606,191 @@ static void test_h2_malformed_rejected(void) {
 	ASSERT_EQ("carry set", 1, carry);
 }
 
+// ── 5.1 — connection mode ──────────────────────────────────────────
+
+static void test_connection_mode_default(void) {
+	TEST_SUITE("connection_mode — 5.1 default is HTTP/1");
+
+	// HTTP/1 is the default; nothing in the server changes that unless
+	// the HTTP/2 preface is verified, so existing HTTP/1 connections are
+	// untouched.
+	ASSERT_EQ("connection_mode defaults to CONNECTION_HTTP1",
+	          CONNECTION_HTTP1, connection_mode_value());
+}
+
+// ── 5.2 — preface verification ─────────────────────────────────────
+
+static void test_h2_preface_verify(void) {
+	TEST_SUITE("h2_verify_preface — 3.4 correct preface");
+
+	int sv[2];
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	uint8_t buf[H2_PREFACE_LEN + 8];
+	int64_t carry;
+
+	// correct preface, single write
+	write(sv[0], H2_PREFACE, H2_PREFACE_LEN);
+	set_connection_mode(CONNECTION_HTTP1);
+	ASSERT_EQ("correct preface → CONNECTION_HTTP2", CONNECTION_HTTP2,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("connection_mode flipped to HTTP/2", CONNECTION_HTTP2,
+	          connection_mode_value());
+
+	// correct preface arriving as partial reads (10 + 14)
+	set_connection_mode(CONNECTION_HTTP1);
+	write(sv[0], H2_PREFACE, 10);
+	write(sv[0], H2_PREFACE + 10, 14);
+	ASSERT_EQ("preface across two writes still verifies", CONNECTION_HTTP2,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	close(sv[0]);
+	close(sv[1]);
+}
+
+// The read loop's whole point is that a stream socket may deliver the
+// 24 bytes across several read()s. Force exactly that: the first 10
+// bytes are waiting before the call, the remaining 14 arrive from a
+// child after the parent is blocked inside h2_verify_preface.
+static void test_h2_preface_partial_reads(void) {
+	TEST_SUITE("h2_verify_preface — read exactly 24 bytes across partial reads");
+
+	int sv[2];
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	uint8_t buf[H2_PREFACE_LEN];
+	int64_t carry;
+
+	write(sv[0], H2_PREFACE, 10);
+	int pid = fork();
+	if (pid == 0) {
+		// child: deliver the rest once the parent is blocked in read()
+		usleep(50000); // 50ms
+		write(sv[0], H2_PREFACE + 10, 14);
+		_exit(0);
+	}
+
+	set_connection_mode(CONNECTION_HTTP1);
+	ASSERT_EQ("10 + 14 byte deliveries verify", CONNECTION_HTTP2,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	int status;
+	waitpid(pid, &status, 0);
+	close(sv[0]);
+	close(sv[1]);
+}
+
+static void test_h2_preface_rejected(void) {
+	TEST_SUITE("h2_verify_preface — 3.4 incorrect preface rejected");
+
+	int sv[2];
+	uint8_t buf[H2_PREFACE_LEN];
+	int64_t carry;
+
+	// 24 bytes that are not the preface
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	for (int i = 0; i < H2_PREFACE_LEN; i++)
+		buf[i] = (uint8_t)('A' + i);
+	write(sv[0], buf, H2_PREFACE_LEN);
+	set_connection_mode(CONNECTION_HTTP1);
+	ASSERT_EQ("garbage → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry set (connection rejected)", 1, carry);
+	ASSERT_EQ("mode stays HTTP/1", CONNECTION_HTTP1, connection_mode_value());
+	close(sv[0]);
+	close(sv[1]);
+
+	// a near-miss: identical except the final byte — every word compare
+	// must hold for the preface to verify
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	write(sv[0], H2_PREFACE, H2_PREFACE_LEN - 1);
+	uint8_t bad = 0x41; // 'A' instead of '\n'
+	write(sv[0], &bad, 1);
+	ASSERT_EQ("last byte wrong → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+	close(sv[0]);
+	close(sv[1]);
+
+	// EOF before the preface completes
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	close(sv[0]); // peer closes without sending anything
+	ASSERT_EQ("EOF → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+	close(sv[1]);
+
+	// a read() failure (fd already closed → EBADF) rejects too
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	close(sv[1]); // now sv[1] is not an open fd
+	set_connection_mode(CONNECTION_HTTP1);
+	int64_t rc = h2_verify_preface_wrapper(sv[1], buf, &carry);
+	ASSERT_EQ("read error → errno EBADF", 9, rc);
+	ASSERT_EQ("carry set (connection rejected)", 1, carry);
+	ASSERT_EQ("mode stays HTTP/1", CONNECTION_HTTP1, connection_mode_value());
+	close(sv[0]);
+}
+
+// ── 5.3 — the opening SETTINGS frame ───────────────────────────────
+
+static void test_h2_send_settings(void) {
+	TEST_SUITE("h2_send_settings — 3.5 opening SETTINGS frame");
+
+	int sv[2];
+	socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+	uint8_t buf[H2_PREFACE_LEN];
+	int64_t carry;
+
+	// full flow: client preface → verified → server sends SETTINGS
+	write(sv[0], H2_PREFACE, H2_PREFACE_LEN);
+	ASSERT_EQ("preface verified", CONNECTION_HTTP2,
+	          h2_verify_preface_wrapper(sv[1], buf, &carry));
+	ASSERT_EQ("settings sent — 9 bytes written", 9,
+	          h2_send_settings_wrapper(sv[1], &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// capture the frame from the client side and check every header field
+	uint8_t frame[9];
+	long n = read(sv[0], frame, 9);
+	ASSERT_EQ("9-byte frame captured", 9, n);
+
+	uint32_t length = ((uint32_t)frame[0] << 16) |
+	                  ((uint32_t)frame[1] << 8) | frame[2];
+	ASSERT_EQ("payload length = 0 (empty SETTINGS)", 0, length);
+	ASSERT_EQ("type = SETTINGS", H2_FRAME_SETTINGS, frame[3]);
+	ASSERT_EQ("flags = 0", 0, frame[4]);
+	uint32_t stream = ((uint32_t)frame[5] << 24) |
+	                  ((uint32_t)frame[6] << 16) |
+	                  ((uint32_t)frame[7] << 8) | frame[8];
+	ASSERT_EQ("stream id = 0", 0, stream);
+
+	// the captured frame matches the asm constant byte-for-byte
+	ASSERT_STR_EQ("frame matches h2_settings_frame constant",
+	              h2_settings_frame_addr(), frame, 9);
+
+	close(sv[0]);
+	close(sv[1]);
+}
+
+// The data.S preface constant itself must be exactly the 24 bytes of
+// RFC 9113 §3.4 — a typo there would let a wrong preface through.
+static void test_h2_preface_constant(void) {
+	TEST_SUITE("h2_preface constant — byte-for-byte (3.4)");
+
+	const uint8_t *p = h2_preface_addr();
+	ASSERT_STR_EQ("matches the spec string", H2_PREFACE, p, H2_PREFACE_LEN);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
+	test_connection_mode_default();
+	test_h2_preface_constant();
+	test_h2_preface_verify();
+	test_h2_preface_partial_reads();
+	test_h2_preface_rejected();
+	test_h2_send_settings();
 	test_h2_conn_defaults();
 	test_h2_parse_frame_header();
 	test_h2_validate_frame();

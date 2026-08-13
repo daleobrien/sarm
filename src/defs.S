@@ -524,6 +524,16 @@
 // Constants, struct offsets and defaults shared between the frame engine
 // (http2.S) and the later stages (stream engine, HPACK, connection loop).
 
+// connection modes — the protocol in use on a connection. HTTP/1 is the
+// default (existing behaviour stays untouched); h2_verify_preface flips a
+// connection to HTTP/2 once the client preface is confirmed.
+.equ CONNECTION_HTTP1, 0
+.equ CONNECTION_HTTP2, 1
+
+// the 24-byte HTTP/2 client connection preface (RFC 9113 §3.4):
+// "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+.equ H2_PREFACE_LEN, 24
+
 // frame types (§6)
 .equ H2_FRAME_DATA,          0
 .equ H2_FRAME_HEADERS,       1
