@@ -185,6 +185,26 @@ static void test_streqn_i(void) {
 	ASSERT_EQ("streqn_i null terminates",  1, streqn_i("HOST", "host", 10));
 	ASSERT_EQ("streqn_i limited exact",    1, streqn_i("range", "RANGE", 5));
 	ASSERT_EQ("streqn_i prefix",           1, streqn_i("HEADERS", "header", 6));
+
+	// ── NEON vector path (maxlen >= 16) ────────────────────────────
+	ASSERT_EQ("streqn_i neon 16 exact",       1, streqn_i("abcdefghijklmnop", "ABCDEFGHIJKLMNOP", 16));
+	// Limit hit exactly at a 16-byte boundary; the second string is
+	// longer, so a correct implementation must NOT compare the byte past
+	// the limit (regression test: the old NEON loop fell into the byte
+	// loop with x2 == 0 and compared past the end).
+	ASSERT_EQ("streqn_i neon 16 limit",       1, streqn_i("abcdefghijklmnop", "abcdefghijklmnopXYZ", 16));
+	ASSERT_EQ("streqn_i neon 17",             1, streqn_i("abcdefghijklmnopq", "ABCDEFGHIJKLMNOPQ", 17));
+	ASSERT_EQ("streqn_i neon mismatch@0",     0, streqn_i("abcdefghijklmnop", "xbcdefghijklmnop", 16));
+	ASSERT_EQ("streqn_i neon mismatch@5",     0, streqn_i("abcdefghijklmnop", "abcdexghijklmnop", 16));
+	ASSERT_EQ("streqn_i neon mismatch@15",    0, streqn_i("abcdefghijklmnop", "abcdefghijklmnox", 16));
+	ASSERT_EQ("streqn_i neon 32 match",       1, streqn_i("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF", "abcdefghijklmnopqrstuvwxyzabcdef", 32));
+	ASSERT_EQ("streqn_i neon 32 mismatch",    0, streqn_i("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF", "abcdefghijklmnopqrstuvwxyzabXdef", 32));
+	ASSERT_EQ("streqn_i neon 33 match",       1, streqn_i("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFG", "abcdefghijklmnopqrstuvwxyzabcdefg", 33));
+	ASSERT_EQ("streqn_i neon null@20",        1, streqn_i("AAAAAAAAAAAAAAAAAAAA", "aaaaaaaaaaaaaaaaaaaa", 30));
+	ASSERT_EQ("streqn_i neon null@20 diff",   0, streqn_i("AAAAAAAAAAAAAAAAAAAA", "aaaaaaaaaaaaaaaaaaaaaaa", 30));
+	ASSERT_EQ("streqn_i neon null@20 limit",  1, streqn_i("AAAAAAAAAAAAAAAAAAAA", "aaaaaaaaaaaaaaaaaaaa", 20));
+	ASSERT_EQ("streqn_i neon null@4",         1, streqn_i("abcd", "ABCD", 16));
+	ASSERT_EQ("streqn_i neon null@4 diff",    0, streqn_i("abcd", "ABCDE", 16));
 }
 
 // ── tests: fnv1a_64 ────────────────────────────────────────────────
