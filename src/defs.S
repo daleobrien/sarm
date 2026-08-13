@@ -519,3 +519,77 @@
 .equ RESP_RANGE_START,      48   // inclusive start offset, -1 = no range
 .equ RESP_RANGE_END,        56   // inclusive end offset, -1 = no range
 .equ RESPONSE_SIZE,         64
+
+// ── HTTP/2 frame engine (RFC 9113) ────────────────────────────────────
+// Constants, struct offsets and defaults shared between the frame engine
+// (http2.S) and the later stages (stream engine, HPACK, connection loop).
+
+// frame types (§6)
+.equ H2_FRAME_DATA,          0
+.equ H2_FRAME_HEADERS,       1
+.equ H2_FRAME_PRIORITY,      2
+.equ H2_FRAME_RST_STREAM,    3
+.equ H2_FRAME_SETTINGS,      4
+.equ H2_FRAME_PUSH_PROMISE,  5
+.equ H2_FRAME_PING,          6
+.equ H2_FRAME_GOAWAY,        7
+.equ H2_FRAME_WINDOW_UPDATE, 8
+.equ H2_FRAME_CONTINUATION,  9
+
+// frame flags (§6)
+.equ H2_FLAG_ACK,         0x1  // SETTINGS/PING acknowledgement
+.equ H2_FLAG_END_STREAM,  0x1  // DATA/HEADERS
+.equ H2_FLAG_END_HEADERS, 0x4
+.equ H2_FLAG_PADDED,      0x8
+.equ H2_FLAG_PRIORITY,    0x20
+
+// SETTINGS identifiers (§6.5.2)
+.equ H2_SETTINGS_HEADER_TABLE_SIZE,       1
+.equ H2_SETTINGS_ENABLE_PUSH,             2
+.equ H2_SETTINGS_MAX_CONCURRENT_STREAMS,  3
+.equ H2_SETTINGS_INITIAL_WINDOW_SIZE,     4
+.equ H2_SETTINGS_MAX_FRAME_SIZE,          5
+.equ H2_SETTINGS_MAX_HEADER_LIST_SIZE,    6
+
+// error codes (§7)
+.equ H2_ERR_NO_ERROR,            0
+.equ H2_ERR_PROTOCOL_ERROR,      1
+.equ H2_ERR_INTERNAL_ERROR,      2
+.equ H2_ERR_FLOW_CONTROL_ERROR,  3
+.equ H2_ERR_SETTINGS_TIMEOUT,    4
+.equ H2_ERR_STREAM_CLOSED,       5
+.equ H2_ERR_FRAME_SIZE_ERROR,    6
+.equ H2_ERR_REFUSED_STREAM,      7
+.equ H2_ERR_CANCEL,              8
+.equ H2_ERR_COMPRESSION_ERROR,   9
+.equ H2_ERR_CONNECT_ERROR,       10
+.equ H2_ERR_ENHANCE_YOUR_CALM,   11
+.equ H2_ERR_INADEQUATE_SECURITY, 12
+.equ H2_ERR_HTTP_1_1_REQUIRED,   13
+
+// frame header (§4.1) — one SETTINGS entry is 2-byte id + 4-byte value
+.equ H2_WIRE_HEADER_LEN, 9
+.equ H2_SETTINGS_ENTRY_LEN, 6
+.equ H2_MAX_FRAME_SIZE,  0x00ffffff // 2^24 - 1, absolute wire limit
+.equ H2_DEFAULT_MAX_FRAME_SIZE, 16384 // 2^14, initial SETTINGS_MAX_FRAME_SIZE
+.equ H2_DEFAULT_HEADER_TABLE_SIZE, 4096
+.equ H2_DEFAULT_INITIAL_WINDOW_SIZE, 65535 // 2^16 - 1
+
+// parsed frame header struct (16 bytes) — filled by h2_parse_frame_header
+.equ H2F_LENGTH,     0   // u32 payload length
+.equ H2F_TYPE,       4   // u32 frame type
+.equ H2F_FLAGS,      8   // u32 flags
+.equ H2F_STREAM_ID,  12  // u32 stream id (31-bit, R bit masked off)
+.equ H2F_SIZE,       16
+
+// HTTP/2 connection state struct (h2_conn, 72 bytes)
+.equ H2C_LAST_FRAME_TYPE,                0   // last dispatched frame type
+.equ H2C_MAX_RX_FRAME_SIZE,              8   // max payload we accept (2^14 default)
+.equ H2C_SETTINGS_HEADER_TABLE_SIZE,     16  // peer's settings — RFC 9113 §6.5.2 defaults
+.equ H2C_SETTINGS_ENABLE_PUSH,           24
+.equ H2C_SETTINGS_MAX_CONCURRENT_STREAMS, 32
+.equ H2C_SETTINGS_INITIAL_WINDOW_SIZE,   40
+.equ H2C_SETTINGS_MAX_FRAME_SIZE,        48
+.equ H2C_SETTINGS_MAX_HEADER_LIST_SIZE,  56
+.equ H2C_ACK_RECEIVED,                   64  // 1 once a SETTINGS ACK arrives
+.equ H2C_SIZE,                           72

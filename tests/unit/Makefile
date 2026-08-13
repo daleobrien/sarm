@@ -34,6 +34,7 @@ header_o   := $(OBJ_DIR)/header.o
 get_o      := $(OBJ_DIR)/get.o
 stubs_o    := $(OBJ_DIR)/stubs.o
 stubs_resp_o := $(OBJ_DIR)/stubs_response.o
+http2_o    := $(OBJ_DIR)/http2.o
 
 # ── test executables ────────────────────────────────────────────────
 TEST_UTIL  := $(OBJ_DIR)/test_util
@@ -41,8 +42,9 @@ TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
 TEST_RESPONSE := $(OBJ_DIR)/test_response
+TEST_HTTP2 := $(OBJ_DIR)/test_http2
 
-TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE)
+TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) $(TEST_HTTP2)
 
 all: test
 
@@ -101,6 +103,9 @@ $(stubs_o): stubs.S | $(OBJ_DIR)
 $(stubs_resp_o): stubs_response.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
+$(http2_o): ../../src/http2.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
 # ── test executable link rules ─────────────────────────────────────
 
 # test_util: only needs util.o (pure functions).
@@ -138,6 +143,11 @@ $(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs
 # child_end stub.
 $(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
+
+# test_http2: Stage 4 HTTP/2 frame engine (http2.S). Self-contained —
+# http2.o has no external symbol dependencies, so only it is linked.
+$(TEST_HTTP2): test_http2.c $(http2_o) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(http2_o) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────
 
