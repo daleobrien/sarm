@@ -5,9 +5,6 @@
 // util.S. Unlike stubs.S — which stubs out the header/get functions for
 // the other test suites — this file only provides the symbols that would
 // otherwise live in the embedded table (embedded.S) and in ymawky.S.
-// This file is part of ymawky.
-// Copyright (C) 2026 imtomt
-// SPDX-License-Identifier: GPL-3.0-only
 
 #include "defs.S"
 

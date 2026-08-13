@@ -1,9 +1,6 @@
 // Stub symbols for unit testing — provides minimal definitions for
 // symbols that the tested .S files reference from other source files
 // that we don't want to fully link.
-// This file is part of ymawky.
-// Copyright (C) 2026 imtomt
-// SPDX-License-Identifier: GPL-3.0-only
 
 #include "defs.S"
 
