@@ -37,7 +37,8 @@
 // (h2_stream_event; IDLE/OPEN/HALF_CLOSED_*/CLOSED, §5.1) and the
 // RST_STREAM handler (§6.4). HEADERS and DATA now drive the state
 // machine instead of just acknowledging receipt; PRIORITY, PUSH_PROMISE,
-// PING, GOAWAY, WINDOW_UPDATE and CONTINUATION remain stubs.
+// PING, GOAWAY and CONTINUATION remain stubs (WINDOW_UPDATE arrives in
+// Stage 11).
 //
 // Stage 7 — HPACK lands in its own file (h2_hpack.S). Here the opening
 // SETTINGS frame now advertises SETTINGS_HEADER_TABLE_SIZE = 0 (§6.5.2),
@@ -68,6 +69,20 @@
 // parsed (h2_parse_range) and resolved against the resource size
 // (h2_resolve_range) into a 206 with content-range, or 416. GET serves
 // ranges; HEAD ignores them, matching HTTP/1's head.
+//
+// Stage 11 — DATA flow control (RFC 9113 §5.2, §6.9). The server tracks
+// the send-side credit the client has granted: the connection window
+// (H2C_WINDOW, shared by all streams) and each stream's window
+// (H2S_WINDOW, initialised from the peer's SETTINGS_INITIAL_WINDOW_SIZE).
+// h2_write_body bounds every DATA chunk by min(connection window, stream
+// window, remaining) and drains both windows as it sends; when the body
+// outlives the credit it blocks reading frames and dispatching them
+// until a WINDOW_UPDATE replenishes the window. h2_handle_window_update
+// (§6.9) adds the 31-bit increment to the connection window (stream 0)
+// or the stream window, rejecting bad lengths, zero increments, idle
+// streams and over-2^31 windows, and ignoring updates on CLOSED streams.
+// This makes files larger than the initial 65535-byte window deliver
+// end-to-end without deadlock.
 //
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
@@ -120,6 +135,7 @@ h2_conn:
     .quad 0xffffffff                      // H2C_SETTINGS_MAX_HEADER_LIST_SIZE (unlimited)
     .quad 0                               // H2C_ACK_RECEIVED
     .quad 0                               // H2C_LAST_STREAM_ID
+    .quad H2_DEFAULT_INITIAL_WINDOW_SIZE   // H2C_WINDOW — connection window (§5.2)
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
 // §3.5, §6.5): a single SETTINGS_HEADER_TABLE_SIZE = 0 entry (§6.5.2),
@@ -444,7 +460,9 @@ h2_handle_headers:
 // receive them — an unknown stream is an idle-stream violation
 // (PROTOCOL_ERROR, §5.1); any other invalid state is STREAM_CLOSED.
 // END_STREAM on the frame closes the client's send side. The payload
-// is not consumed yet (flow control/body handling arrive later).
+// is not consumed yet (receive-side flow control and body handling
+// arrive later; Stage 11 tracks the send-side windows in h2_write_body
+// and h2_handle_window_update).
 //
 // input/output: as h2_dispatch_frame
 //
@@ -520,16 +538,96 @@ h2_handle_rst_stream:
     ret
 
 // Handlers not yet implemented — acknowledge receipt and do nothing:
-// PRIORITY, PUSH_PROMISE, PING, GOAWAY, WINDOW_UPDATE, CONTINUATION.
+// PRIORITY, PUSH_PROMISE, PING, GOAWAY, CONTINUATION (WINDOW_UPDATE
+// landed in Stage 11, below).
 h2_handle_priority:
 h2_handle_push_promise:
 h2_handle_ping:
 h2_handle_goaway:
-h2_handle_window_update:
 h2_handle_continuation:
 .Lh2_handler_ok:
     cmn xzr, xzr // success — carry clear
     mov x0, #0
+    ret
+
+// ── 6.9 — WINDOW_UPDATE ─────────────────────────────────────────────
+// Replenish flow-control credit (RFC 9113 §6.9). The payload is one
+// 31-bit increment (big-endian; the reserved top bit is ignored).
+// Stream 0 updates the connection window; a nonzero stream id updates
+// that stream's window. A length other than 4 is a FRAME_SIZE_ERROR; an
+// increment of 0 is a PROTOCOL_ERROR; an update that would push a
+// window past 2^31-1 is a FLOW_CONTROL_ERROR; and an update for a
+// stream that isn't in the table (an idle stream) is a PROTOCOL_ERROR.
+// An update on a CLOSED stream is ignored, not an error — a peer may
+// send WINDOW_UPDATE after END_STREAM (§5.1 closed).
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x6, x9, x30 (saved/restored)
+h2_handle_window_update:
+    str x30, [sp, #-16]!   // save the return address — find clobbers x30
+    mov x7, #H2_MAX_FLOW_WINDOW   // 2^31 - 1 — the window ceiling (§5.2)
+    // exactly 4 payload bytes — one 32-bit increment (§6.9)
+    ldr w3, [x0, #H2F_LENGTH]
+    cmp w3, #4
+    b.ne .Lh2wu_size_error
+    // increment — 31-bit big-endian
+    ldrb w4, [x1]
+    ldrb w5, [x1, #1]
+    ldrb w6, [x1, #2]
+    ldrb w3, [x1, #3]
+    lsl w4, w4, #24
+    orr w4, w4, w5, lsl #16
+    orr w4, w4, w6, lsl #8
+    orr w4, w4, w3
+    and w4, w4, #0x7fffffff   // mask off the reserved bit
+    cbz w4, .Lh2wu_zero_error
+    mov x5, x4               // increment — x4 is reused for the stream id
+    ldr w4, [x0, #H2F_STREAM_ID]
+    cbnz w4, .Lh2wu_stream
+    // ── connection-level — stream 0 → the connection window ──
+    ldr x3, [x2, #H2C_WINDOW]
+    add x3, x3, x5
+    cmp x3, x7
+    b.hi .Lh2wu_flow_error
+    str x3, [x2, #H2C_WINDOW]
+    b .Lh2wu_ok
+.Lh2wu_stream:
+    mov x0, x4
+    bl h2_stream_find
+    cbz x0, .Lh2wu_protocol_error  // idle stream — PROTOCOL_ERROR
+    ldr x6, [x0, #H2S_STATE]
+    cmp x6, #H2_STREAM_CLOSED
+    b.eq .Lh2wu_ok                  // closed — ignore, not an error (§5.1)
+    ldr x3, [x0, #H2S_WINDOW]
+    add x3, x3, x5
+    cmp x3, x7
+    b.hi .Lh2wu_flow_error
+    str x3, [x0, #H2S_WINDOW]
+.Lh2wu_ok:
+    ldr x30, [sp], #16
+    cmn xzr, xzr             // success — carry clear
+    mov x0, #0
+    ret
+.Lh2wu_protocol_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr             // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+.Lh2wu_flow_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_FLOW_CONTROL_ERROR
+    ret
+.Lh2wu_size_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_FRAME_SIZE_ERROR
+    ret
+.Lh2wu_zero_error:
+    ldr x30, [sp], #16
+    cmp xzr, xzr
+    mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
 
 // Shared error exit for the stream handlers: every handler saved x30 at
@@ -576,11 +674,12 @@ h2_stream_find:
 
 // ── 6.1 — find-or-create a stream entry ─────────────────────────────
 // Returns the existing entry for the id, or fills the first free slot
-// (stream_id == 0) with a fresh stream: state IDLE, no flags, and the
-// window we are willing to accept on new streams (RFC 9113 §5.2.1
-// default; the flow-control stage will track our own advertised
-// SETTINGS_INITIAL_WINDOW_SIZE instead). Creating a stream records its
-// id as the connection's new high-water mark for client streams.
+// (stream_id == 0) with a fresh stream: state IDLE, no flags, and a
+// send window of the peer's advertised SETTINGS_INITIAL_WINDOW_SIZE
+// (RFC 9113 §6.9.2 — the client's initial stream-level credit; the
+// connection loop resets it to the 65535 default before the client
+// SETTINGS arrive). Creating a stream records its id as the connection's
+// new high-water mark for client streams.
 //
 // input
 // x0 -> stream id
@@ -613,7 +712,7 @@ h2_stream_create:
     mov x7, #H2_STREAM_IDLE
     str x7, [x6, #H2S_STATE]
     str xzr, [x6, #H2S_FLAGS]
-    mov x7, #H2_DEFAULT_INITIAL_WINDOW_SIZE
+    ldr x7, [x3, #H2C_SETTINGS_INITIAL_WINDOW_SIZE]
     str x7, [x6, #H2S_WINDOW]
     // this id is now the largest client stream the connection has seen
     str x2, [x3, #H2C_LAST_STREAM_ID]
@@ -1480,6 +1579,8 @@ h2_connection_loop:
     str x10, [x9, #H2C_SETTINGS_MAX_HEADER_LIST_SIZE]
     str xzr, [x9, #H2C_ACK_RECEIVED]
     str xzr, [x9, #H2C_LAST_STREAM_ID]
+    mov x10, #H2_DEFAULT_INITIAL_WINDOW_SIZE
+    str x10, [x9, #H2C_WINDOW]
     adr_l x9, h2_streams
     mov x10, #(H2_MAX_STREAMS * H2S_SIZE) / 16
 1:
@@ -2365,8 +2466,16 @@ h2_write_headers:
 // ── 9.3 — h2_write_body: send the response body as DATA frames ─────
 // The body is split into H2_DEFAULT_MAX_FRAME_SIZE (2^14) chunks; the
 // last chunk carries END_STREAM. An empty body sends a single empty
-// DATA frame with END_STREAM. Flow control is a later stage — bodies
-// must fit within the 65535-byte initial stream window for now.
+// DATA frame with END_STREAM.
+//
+// Stage 11 — flow control (§5.2): every DATA chunk is bounded by
+// min(connection window, stream window, remaining), and both windows
+// are drained by the octets sent. When the body still has data but a
+// window is exhausted, the writer blocks reading frames from the client
+// and dispatching them — a WINDOW_UPDATE replenishes the credit and
+// transmission resumes. This keeps the per-connection loop simple: the
+// whole response is written inline, pausing only for the credit the
+// peer hasn't granted yet.
 //
 // input
 // x0 = client fd
@@ -2375,24 +2484,48 @@ h2_write_headers:
 //
 // output
 // success — carry clear, x0 = 0
-// failure — carry set, x0 = errno
+// failure — carry set, x0 = errno (or H2_ERR_* from a frame dispatched
+//           while waiting for credit)
 //
-// clobbers x0-x8, x19-x25 (saved/restored), x30
+// clobbers x0-x8, x13, x19-x27 (saved/restored), x30
 h2_write_body:
-    stp x19, x20, [sp, #-64]!
+    stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
-    stp x25, x30, [sp, #48]
+    stp x25, x26, [sp, #48]
+    stp x27, x30, [sp, #64]
     mov x19, x0             // fd
     mov x20, x1             // response
     mov x21, x2             // stream id
     ldr x22, [x20, #RESP_BODY]
     ldr x23, [x20, #RESP_BODY_LENGTH]
+    adr_l x26, h2_conn
+    mov x0, x21
+    bl h2_stream_find
+    mov x27, x0             // stream entry, or 0 (no stream-level credit)
 .Lh2wb_loop:
-    // this chunk = min(remaining, max frame size)
+    // this chunk = min(max frame size, connection window, stream window,
+    //                  remaining) — §5.2
     mov x24, #H2_DEFAULT_MAX_FRAME_SIZE
-    cmp x23, x24
-    csel x24, x23, x24, lo
+    ldr x8, [x26, #H2C_WINDOW]
+    cmp x24, x8
+    csel x24, x8, x24, hi
+    cbnz x27, .Lh2wb_have_stream
+    b .Lh2wb_min_remaining
+.Lh2wb_have_stream:
+    ldr x8, [x27, #H2S_WINDOW]
+    cmp x24, x8
+    csel x24, x8, x24, hi
+.Lh2wb_min_remaining:
+    cmp x24, x23
+    csel x24, x23, x24, hi
+    // a zero chunk with body remaining means the windows are exhausted —
+    // read frames (WINDOW_UPDATE) until credit opens up; a zero chunk
+    // with an empty body is the terminal empty DATA frame, which carries
+    // no octets and consumes no credit (§5.2)
+    cbnz x24, .Lh2wb_send
+    cbnz x23, .Lh2wb_wait
+.Lh2wb_send:
     // END_STREAM rides on the final chunk
     mov w25, #0
     cmp x24, x23
@@ -2430,18 +2563,63 @@ h2_write_body:
     add x2, x2, x24
     bl write_all
     b.cs .Lh2wb_err
-    // advance
+    // the DATA octets drain both windows (§5.2)
+    ldr x8, [x26, #H2C_WINDOW]
+    sub x8, x8, x24
+    str x8, [x26, #H2C_WINDOW]
+    cbnz x27, .Lh2wb_dec_stream
+    b .Lh2wb_advance
+.Lh2wb_dec_stream:
+    ldr x8, [x27, #H2S_WINDOW]
+    sub x8, x8, x24
+    str x8, [x27, #H2S_WINDOW]
+.Lh2wb_advance:
     add x22, x22, x24
     sub x23, x23, x24
     cbnz x23, .Lh2wb_loop
     cmn xzr, xzr            // success — carry clear
     mov x0, #0
+    b .Lh2wb_done
+.Lh2wb_wait:
+    // ── out of credit, body remaining — read a frame and dispatch it ──
+    // The 9-byte wire header lands at buf[0..8] and is parsed before the
+    // payload read overwrites it; the payload (≤ H2C_MAX_RX_FRAME_SIZE)
+    // fits buf. WINDOW_UPDATE replenishes the credit; anything else is
+    // still dispatched normally (SETTINGS, PING, ...). A dispatch error
+    // aborts the response.
+    mov x0, x19
+    adr_l x1, buf
+    mov x2, #H2_WIRE_HEADER_LEN
+    bl h2_read_exact
+    b.cs .Lh2wb_err
+    adr_l x0, buf
+    adr_l x1, h2_frame_header
+    bl h2_parse_frame_header
+    adr_l x0, h2_frame_header
+    mov x1, x26
+    bl h2_validate_frame
+    b.cs .Lh2wb_err
+    adr_l x0, h2_frame_header
+    ldr w8, [x0, #H2F_LENGTH]
+    mov x0, x19
+    adr_l x1, buf
+    mov x2, x8
+    bl h2_read_exact
+    b.cs .Lh2wb_err
+    adr_l x0, h2_frame_header
+    adr_l x1, buf
+    mov x2, x26
+    bl h2_dispatch_frame
+    b.cs .Lh2wb_err
+    b .Lh2wb_loop
 .Lh2wb_err:
+    // x0 = errno (or H2_ERR_*), carry set
 .Lh2wb_done:
-    ldp x25, x30, [sp, #48]
+    ldp x27, x30, [sp, #64]
+    ldp x25, x26, [sp, #48]
     ldp x23, x24, [sp, #32]
     ldp x21, x22, [sp, #16]
-    ldp x19, x20, [sp], #64
+    ldp x19, x20, [sp], #96
     ret
 
 // ── 6.8 — h2_send_goaway: send a GOAWAY frame and let the caller ───

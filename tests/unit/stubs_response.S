@@ -16,13 +16,14 @@
 .data
 .align 3
 
-// Five tiny embedded entries so the HTTP/2 tests can resolve real files
-// of every Stage 10 MIME type (.html/.css/.js/.svg/.png) and exercise
-// Range responses over a small fixed body. The 80-byte entry layout
-// mirrors embedded.S; the linear scan in lookup_embedded compares path
-// strings, so the hash is ignored. Error-page lookups
-// ("www/err/<code>.html") still miss, which matches the current build
-// and keeps the reply_status tests unchanged.
+// Six embedded entries so the HTTP/2 tests can resolve real files of
+// every Stage 10 MIME type (.html/.css/.js/.svg/.png), exercise Range
+// responses over a small fixed body, and — since Stage 11 — retrieve a
+// file (www/big.bin, 70000 bytes) larger than the initial flow-control
+// window. The 80-byte entry layout mirrors embedded.S; the linear scan
+// in lookup_embedded compares path strings, so the hash is ignored.
+// Error-page lookups ("www/err/<code>.html") still miss, which matches
+// the current build and keeps the reply_status tests unchanged.
 stub_index_path:
     .asciz "www/index.html"
 stub_index_path_end:
@@ -88,6 +89,24 @@ stub_png_etag:
     .asciz "\"stub-png-etag\""
 stub_png_etag_end:
 
+// ── Stage 11 — a big file for the flow-control tests ──
+// 70000 bytes, larger than the 65535-byte initial flow-control window,
+// so serving it exercises WINDOW_UPDATE-driven transmission (h2_write_body
+// pauses when the credit runs out and resumes once the client replenishes
+// it).
+stub_big_path:
+    .asciz "www/big.bin"
+stub_big_path_end:
+stub_big_content:
+    .space 70000, 0x61      // 70000 'a's
+stub_big_content_end:
+stub_big_ct:
+    .asciz "text/plain; charset=utf-8"
+stub_big_ct_end:
+stub_big_etag:
+    .asciz "\"stub-big-etag\""
+stub_big_etag_end:
+
 .align 3
 embedded_files:
     .8byte 0                                      // hash (linear scan ignores it)
@@ -125,8 +144,15 @@ embedded_files:
     .8byte 0
     .8byte stub_png_etag, (stub_png_etag_end - stub_png_etag - 1)
 
+    .8byte 0
+    .8byte stub_big_path, (stub_big_path_end - stub_big_path - 1)
+    .8byte stub_big_content, (stub_big_content_end - stub_big_content)
+    .8byte stub_big_ct, (stub_big_ct_end - stub_big_ct - 1)
+    .8byte 0
+    .8byte stub_big_etag, (stub_big_etag_end - stub_big_etag - 1)
+
 embedded_count:
-    .quad 5
+    .quad 6
 
 .global embedded_files
 .global embedded_count

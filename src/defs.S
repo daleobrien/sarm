@@ -600,7 +600,7 @@
 .equ H2F_STREAM_ID,  12  // u32 stream id (31-bit, R bit masked off)
 .equ H2F_SIZE,       16
 
-// HTTP/2 connection state struct (h2_conn, 80 bytes)
+// HTTP/2 connection state struct (h2_conn, 88 bytes)
 .equ H2C_LAST_FRAME_TYPE,                0   // last dispatched frame type
 .equ H2C_MAX_RX_FRAME_SIZE,              8   // max payload we accept (2^14 default)
 .equ H2C_SETTINGS_HEADER_TABLE_SIZE,     16  // peer's settings — RFC 9113 §6.5.2 defaults
@@ -611,7 +611,13 @@
 .equ H2C_SETTINGS_MAX_HEADER_LIST_SIZE,  56
 .equ H2C_ACK_RECEIVED,                   64  // 1 once a SETTINGS ACK arrives
 .equ H2C_LAST_STREAM_ID,                 72  // largest client-initiated stream id seen (§5.1.1)
-.equ H2C_SIZE,                           80
+.equ H2C_WINDOW,                         80  // u64 connection-level send window (§5.2; Stage 11)
+.equ H2C_SIZE,                           88
+
+// the largest a flow-control window may reach: 2^31 - 1 (RFC 9113 §5.2,
+// §6.9). A WINDOW_UPDATE that would push a window above this is a
+// FLOW_CONTROL_ERROR.
+.equ H2_MAX_FLOW_WINDOW, 0x7fffffff
 
 // ── HTTP/2 stream engine (RFC 9113 §5) ───────────────────────────────
 // Stream states (§5.1), as observed by the receiving endpoint. Rows of
@@ -637,7 +643,11 @@
 .equ H2S_STREAM_ID,  0    // u64 stream id
 .equ H2S_STATE,      8    // u64 one of H2_STREAM_*
 .equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...)
-.equ H2S_WINDOW,     24   // u64 stream flow-control window
+.equ H2S_WINDOW,     24   // u64 stream send window (§5.2; Stage 11) — the
+                          //   flow-control credit the client has granted this
+                          //   stream; drained by DATA sends, replenished by
+                          //   WINDOW_UPDATE. Initialised from the peer's
+                          //   SETTINGS_INITIAL_WINDOW_SIZE (§6.9.2).
 .equ H2S_SIZE,       32
 
 // ── HPACK (RFC 7541) — Stage 7 ──────────────────────────────────────
