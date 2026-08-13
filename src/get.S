@@ -82,18 +82,19 @@ get_setup:
     stp x29, x30, [sp, #-32]!
     stp x19, x20, [sp, #16]
 
-    mov x0, #1 // yes, default to index.html if no file is given
-    bl do_path_checks
-    ldr_l x0, filename_str
+    // the request was already parsed into the `request` struct by
+    // parse_request (ymawky.S dispatch) — read the path from there.
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
 
     ldrb w1, [x0]
     cmp w1, #'*'
     b.eq L400
 
     // try embedded content lookup first
-    str_l xzr, resource_type
-    ldr_l x0, filename_str
-    ldr_l x1, filename_len
+    str_l xzr, resource_type, x10
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
     bl lookup_embedded
     b.cc Lembedded_found
 

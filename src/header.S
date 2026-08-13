@@ -353,9 +353,10 @@ Lbh_content_type:
     b Lbh_ct_write
 
 Lbh_ct_filesystem:
-    // safety fallback: derive content-type from filename extension
-    ldr_l x0, filename_str
-    ldr_l x1, filename_len
+    // safety fallback: derive content-type from the request path
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
     bl get_filetype
 
 Lbh_ct_write:

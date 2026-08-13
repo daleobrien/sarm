@@ -36,8 +36,9 @@ stubs_o    := $(OBJ_DIR)/stubs.o
 TEST_UTIL  := $(OBJ_DIR)/test_util
 TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
+TEST_REQUEST := $(OBJ_DIR)/test_request
 
-TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE)
+TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST)
 
 all: test
 
@@ -96,7 +97,7 @@ $(TEST_UTIL): test_util.c $(util_o) | $(OBJ_DIR)
 # parse_header_end uses parse.S data. get_header_field calls streqn_i.
 # parse_range calls get_header_field + atoi_n. Error paths go to
 # reply_status (stubs.o). Cross-references to decode_url etc in
-# do_path_checks require file.o.
+# parse_request require file.o.
 $(TEST_PARSE): test_parse.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
@@ -106,6 +107,13 @@ $(TEST_PARSE): test_parse.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) 
 # lookup_embedded references embedded_files/embedded_count from stubs.o.
 $(TEST_FILE): test_file.c $(util_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
+
+# test_request: needs parse.o + data.o + file.o + util.o + stubs.o.
+# parse_request parses into the `request` struct (data.o), calls
+# parse_path/get_header_field (parse.o) and decode_url/check_path_*
+# (file.o), with error paths going to reply_status (stubs.o).
+$(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────
 

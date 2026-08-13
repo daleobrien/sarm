@@ -414,48 +414,25 @@ read_failed:
     mov x1, x23
     bl verify_http_version
 
-    // ── HTTP method dispatch via direct word compares (no streqn calls) ──
-
+    // ── parse the request into the protocol-neutral request struct, then
+    // dispatch on the parsed method (parse → request → dispatch) ──
     adr_l x0, buf
-    ldr w5, [x0]              // first 4 bytes of request
+    mov x1, x23
+    bl parse_request
+    b.cs L400
 
-    // GET ?
-    movz w6, #0x4547          // "GE" (LE word)
-    movk w6, #0x2054, lsl #16 // "T "
-    cmp w5, w6
+    adr_l x9, request
+    ldr w0, [x9, #REQ_METHOD]
+    cmp w0, #GET_ID
     b.eq Lget_method
-
-    // HEAD ?  (compare first 4 bytes, then 5th byte)
-    movz w6, #0x4548          // "HE"
-    movk w6, #0x4441, lsl #16 // "AD"
-    cmp w5, w6
-    b.ne 1f
-    ldrb w7, [x0, #4]
-    cmp w7, #' '
+    cmp w0, #HEAD_ID
     b.eq Lhead_method
-1:
-
-    // OPTIONS ?  (8 bytes → single 64-bit LDR + compare)
-    ldr x5, [x0]              // first 8 bytes of request
-    movz x6, #0x504F          // "OP"
-    movk x6, #0x4954, lsl #16 // "TI"
-    movk x6, #0x4E4F, lsl #32 // "ON"
-    movk x6, #0x2053, lsl #48 // "S "
-    cmp x5, x6
+    cmp w0, #OPTIONS_ID
     b.eq Loptions_method
-
-    // BREW ?  (compare first 4 bytes, then 5th byte)
-    ldr w5, [x0]
-    movz w6, #0x5242          // "BR"
-    movk w6, #0x5745, lsl #16 // "EW"
-    cmp w5, w6
-    b.ne 1f
-    ldrb w7, [x0, #4]
-    cmp w7, #' '
+    cmp w0, #BREW_ID
     b.eq L418
-1:
 
-    // if it was none of the above, reply 501
+    // none of the above — unknown method
     b L501
 
 Lget_method:

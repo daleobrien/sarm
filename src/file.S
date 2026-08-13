@@ -501,7 +501,7 @@ Lreturn:
 // convert %XX in URL to 0xXX raw bytes. %0a = newline, %20 = space, etc.
 //
 // SECURITY: This function is called BEFORE check_path_safety and
-// check_path_traversal (see do_path_checks in parse.S). This ordering is
+// check_path_traversal (see parse_request in parse.S). This ordering is
 // deliberate: percent-encoded path-traversal sequences like %2e%2e%2f are
 // decoded to ../ and then caught by check_path_traversal.
 //
@@ -510,7 +510,7 @@ Lreturn:
 //   - %XX where X is not a hex digit — caught by hex_to_val setting x20=1
 //   - Truncated % at end of string (fewer than 3 bytes remaining)
 //
-// If any of these are encountered, do_path_checks responds with HTTP 400.
+// If any of these are encountered, parse_request responds with HTTP 400.
 //
 // input
 // x0 -> encoded string

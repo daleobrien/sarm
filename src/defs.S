@@ -284,6 +284,8 @@
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
+.equ BREW_ID,    3
+.equ UNKNOWN_ID, 4
 
 // unified resource type constants (embedded vs filesystem)
 .equ RES_NONE,     0
@@ -448,6 +450,8 @@
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
+.equ BREW_ID,    3
+.equ UNKNOWN_ID, 4
 
 // unified resource type constants (embedded vs filesystem)
 .equ RES_NONE,     0
@@ -484,3 +488,18 @@
 .equ OFF_TV_USEC, 8
 
 #endif
+
+// ── Protocol-neutral request representation ─────────────────────────
+// The seam between protocol parsers and the static handlers. A protocol
+// parser (parse_request in parse.S for HTTP/1 today, an HTTP/2 HEADERS
+// decoder later) fills this fixed-layout struct, and the handlers
+// (get/head/options) consume it. Offsets are platform-independent.
+// Storage lives in data.S as the `request` symbol.
+.equ REQ_METHOD,       0    // method id: GET_ID / HEAD_ID / OPTIONS_ID
+.equ REQ_PATH,         8    // ptr to docroot-prefixed, percent-decoded path
+.equ REQ_PATH_LENGTH,  16
+.equ REQ_QUERY,        24   // ptr to query string, or 0 if none
+.equ REQ_QUERY_LENGTH, 32
+.equ REQ_AUTHORITY,    40   // ptr to authority (Host) value, or 0 if none
+.equ REQ_STREAM_ID,    48   // HTTP/2 stream id; HTTP/1 is always 0
+.equ REQUEST_SIZE,     56

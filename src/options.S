@@ -4,18 +4,18 @@
 
 .text
 options:
-    // do not default to index.html
-    mov x0, #0
-    bl do_path_checks
+    // the request was already parsed into the `request` struct by
+    // parse_request (ymawky.S dispatch) — read the path from there.
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
 
-    ldr_l x0, filename_str
     ldrb w1, [x0]
     cmp w1, #'*'
     b.eq L204
 
     // Look up the path in the embedded table — no filesystem stat().
-    ldr_l x0, filename_str
-    ldr_l x1, filename_len
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
     bl lookup_embedded
     b.cc L204    // found in embedded table → 204
 
