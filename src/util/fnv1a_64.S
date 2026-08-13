@@ -3,7 +3,9 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: fnv1a_64
 //
-// Description: FNV-1a 64-bit hash of a byte buffer.
+// Description: FNV-1a 64-bit hash of a byte buffer. Optimized with
+//   native 64-bit hardware multiplication to break serial shift-add
+//   dependency chains.
 //
 // Input/Arguments:
 //   x0 -> buffer
@@ -20,7 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .text
-.align 2
+.align 4                        // 16-byte instruction alignment (2^4)
 .global fnv1a_64
 fnv1a_64:
     // FNV offset basis: 0xcbf29ce484222325
@@ -29,27 +31,47 @@ fnv1a_64:
     movk x3, #0x9ce4, lsl #32
     movk x3, #0xcbf2, lsl #48
 
-    mov x2, x1    // remaining length
-    cbz x2, 2f
+    // FNV prime: 0x100000001b3
+    movz x4, #0x01b3
+    movk x4, #0x0100, lsl #32
 
-1:
-    ldrb w1, [x0], #1
-    eor x3, x3, x1     // h ^= byte
+Lloop_4x:
+    cmp x1, #4
+    b.lo Lscalar_loop           // Less than 4 bytes remaining -> scalar loop
 
-    // h = (h * 0x100000001b3) & 0xffffffffffffffff
-    // 0x100000001b3 = h + (h<<1) + (h<<4) + (h<<5) + (h<<7) + (h<<8) + (h<<40)
-    mov x4, x3
-    add x4, x4, x3, lsl #1
-    add x4, x4, x3, lsl #4
-    add x4, x4, x3, lsl #5
-    add x4, x4, x3, lsl #7
-    add x4, x4, x3, lsl #8
-    add x4, x4, x3, lsl #40
-    mov x3, x4
+    // Byte 1
+    ldrb w2, [x0], #1
+    eor x3, x3, x2
+    mul x3, x3, x4
 
-    sub x2, x2, #1
-    cbnz x2, 1b
+    // Byte 2
+    ldrb w2, [x0], #1
+    eor x3, x3, x2
+    mul x3, x3, x4
 
-2:
+    // Byte 3
+    ldrb w2, [x0], #1
+    eor x3, x3, x2
+    mul x3, x3, x4
+
+    // Byte 4
+    ldrb w2, [x0], #1
+    eor x3, x3, x2
+    mul x3, x3, x4
+
+    sub x1, x1, #4
+    b Lloop_4x
+
+Lscalar_loop:
+    cbz x1, Ldone
+
+    ldrb w2, [x0], #1
+    eor x3, x3, x2
+    mul x3, x3, x4
+
+    subs x1, x1, #1
+    b.ne Lscalar_loop
+
+Ldone:
     mov x0, x3
     ret
