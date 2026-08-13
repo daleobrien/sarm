@@ -24,16 +24,19 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 range_match_str: .ascii "range"
 .equ range_match_len, 5
 
+.align 4
 bytes_match_str: .ascii "bytes"
 .equ bytes_match_len, 5
+.align 4
 
 .bss
-.align 3
-range_buf: .skip 19
-.align 3
+.align 4
+range_buf: .skip (19 + 15) & ~15 // 19 bytes, rounded up to 16-byte multiple
+.align 4
 
 .text
 .align 2

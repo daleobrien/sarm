@@ -56,11 +56,12 @@ TEST_H2_STATIC    := $(OBJ_DIR)/test_h2_static
 TEST_H2_FLOW      := $(OBJ_DIR)/test_h2_flow
 TEST_H2_MUX       := $(OBJ_DIR)/test_h2_mux
 TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
+TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
-	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT)
+	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
 
 all: test
 
@@ -99,6 +100,11 @@ test: $(TESTS)
 build: $(TESTS)
 
 # ── assembly compilation rules ─────────────────────────────────────
+
+# The per-module objects are only ever prerequisites of the test binaries,
+# so GNU make treats them as intermediates and deletes them after each
+# link — forcing a full recompile on every `make test`. Keep them.
+.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs)
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)

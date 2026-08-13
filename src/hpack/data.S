@@ -29,7 +29,7 @@
 // H2_HPACK_FIELD_SIZE bytes (name ptr, name len, value ptr, value len).
 // Zeroed at startup; each decode rewrites the first `count` entries.
 .bss
-.align 3
+.align 4
 h2_hpack_fields:
     .skip H2_HPACK_MAX_FIELDS * H2_HPACK_FIELD_SIZE
 
@@ -40,11 +40,12 @@ h2_hpack_fields:
 // string that would overflow the buffer is a COMPRESSION_ERROR. The
 // decoded strings stay valid until the next block decode, which is long
 // enough for h2_build_request to copy out the pseudo-headers.
-.align 3
+.align 4
 h2_hpack_str_buf:
     .skip H2_HPACK_STR_BUF_SIZE
 
 // current write offset into h2_hpack_str_buf
+.align 4
 h2_hpack_str_off:
     .skip 8
 

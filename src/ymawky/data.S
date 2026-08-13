@@ -12,7 +12,8 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
-.align 2 // one is a .word (4 bytes)
+.align 4 // one is a .word (4 bytes) — pad it out to 16
 one: .word 1
+.align 4
 
 .global one

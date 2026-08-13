@@ -23,6 +23,7 @@
 .global h2_preface
 
 .data
+.align 4 // 16-byte alignment for every string and buffer
 file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
                        // initialized to -1 so we can check if it's set.
 
@@ -30,31 +31,38 @@ file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
 // (CONNECTION_HTTP1 / CONNECTION_HTTP2, see defs.S). Defaults to HTTP/1,
 // which keeps existing connections untouched; h2_verify_preface sets it
 // to CONNECTION_HTTP2 once the client preface checks out.
-.align 3
+.align 4
 connection_mode: .quad CONNECTION_HTTP1
 
 // h2_preface — the 24-byte HTTP/2 client connection preface
-// (RFC 9113 §3.4), compared byte-for-byte by h2_verify_preface.
+// (RFC 9113 §3.4), compared byte-for-byte by h2_verify_preface. Read
+// with three 8-byte loads (h2_verify_preface), so it starts 16-aligned
+// and is padded out to a 16-byte multiple.
+.align 4
 h2_preface:
     .ascii "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 .equ h2_preface_len, . - h2_preface
+    .align 4 // pad the 24-byte string to 32 bytes
+
 .bss
-// + 1 so we can NULL terminate, even if content is BUF_SIZE bytes long
-buf:          .skip BUF_SIZE + 1
-.align 3 // + 1 breaks alignment
+// + 1 so we can NULL terminate, even if content is BUF_SIZE bytes long.
+// The size is rounded up to a 16-byte multiple so the buffers that follow
+// stay 16-aligned without extra padding.
+.align 4
+buf:          .skip (BUF_SIZE + 1 + 15) & ~15
 
 // request — protocol-neutral request representation (the HTTP/2 seam).
 // Fixed layout; offsets defined in defs.S (REQ_METHOD, REQ_PATH, ...).
 // Filled by parse_request in parse.S for HTTP/1; an HTTP/2 HEADERS
 // decoder will fill the same struct later.
-.align 3
+.align 4
 request:      .skip REQUEST_SIZE
 
 // response — protocol-neutral response representation (the seam the
 // HTTP/1 and future HTTP/2 encoders share). Fixed layout; offsets in
 // defs.S (RESP_STATUS, RESP_CONTENT_TYPE, ...). Filled by the handlers
 // (get/head/reply_status), consumed by http1_write_response.
-.align 3
+.align 4
 response:     .skip RESPONSE_SIZE
 
 // request_ctx — unified per-request state block.
@@ -64,21 +72,24 @@ response:     .skip RESPONSE_SIZE
 // docroot_len globals were removed in Stage 1 (they were the parser
 // driving response generation directly).
 request_ctx:
-header_len:   .skip 8
-clientfd:     .skip 8
-request_id:       .skip 8
-resource_type:    .skip 8
+// 8-byte values padded to 16-byte slots — every field starts on a 16-byte
+// boundary. The block is only ever touched through the field labels below
+// (the CTX_* offsets in defs.S are stale legacy), so the padding is safe.
+header_len:   .skip 16
+clientfd:     .skip 16
+request_id:       .skip 16
+resource_type:    .skip 16
 
-embedded_content: .skip 8
-embedded_ct:      .skip 8
-embedded_ct_len:  .skip 8
-embedded_gzip:    .skip 8
-embedded_etag:    .skip 8
-embedded_etag_len:.skip 8
+embedded_content: .skip 16
+embedded_ct:      .skip 16
+embedded_ct_len:  .skip 16
+embedded_gzip:    .skip 16
+embedded_etag:    .skip 16
+embedded_etag_len:.skip 16
 
-.align 3
+.align 4
 req_start:    .skip 16 // struct timeval for request start
-.align 3
+.align 4
 req_end:      .skip 16 // struct timeval for request end
-.align 3
+.align 4
 response_code: .skip 8 // HTTP status code for log

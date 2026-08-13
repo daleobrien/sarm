@@ -26,7 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
-.align 3
+.align 4
 addr:
     .byte 0x02, 0x00             // AF_INET (2) + padding byte
     .byte 0x1f, 0x90             // Port 8080, big-endian
@@ -36,46 +36,56 @@ addr:
     .byte 0x7F, 0x00, 0x00, 0x01 // 127.0.0.1
 #endif
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // padding
+.align 4
 
 get_req:
     .ascii "GET "
 .equ get_req_len, . - get_req
 
+.align 4
 head_req:
     .ascii "HEAD "
 .equ head_req_len, . - head_req
 
+.align 4
 options_req:
     .ascii "OPTIONS "
 .equ options_req_len, . - options_req
 
+.align 4
 brew_req:
     .ascii "BREW "
 .equ brew_req_len, . - brew_req
 
 // other data definitions...
 
+.align 4
 http_: .ascii "HTTP/"
 .equ http_len, . - http_
 
+.align 4
 http_1_0: .ascii "HTTP/1.0"
 .equ http_1_0_len, . - http_1_0
 
+.align 4
 http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
 
+.align 4
 ymawky_connecting: .asciz "ymawky is connecting... "
 .equ ymawky_connecting_len, . - ymawky_connecting
 
+.align 4
 ymawky_connected: .asciz "connected!\n"
 .equ ymawky_connected_len, . - ymawky_connected
 
+.align 4
 ymawky_shutdown: .asciz "ymawky is shutting down :(\n"
 .equ ymawky_shutdown_len, . - ymawky_shutdown
-
+.align 4
 
 .bss
-.align 3
+.align 4
 sockfd:             .skip 8
 
 .text

@@ -39,14 +39,16 @@
 .data
 // the content-encoding value the response encoder appends for gzipped
 // embedded assets (HTTP/1's encoder sends the same header)
+.align 4
 h2_gzip_str:
     .ascii "gzip"
 .equ h2_gzip_str_len, . - h2_gzip_str
+.align 4
 
 // h2_cr_buf — scratch for assembling the content-range header value
 // ("start-end/total") in h2_write_headers before it is appended to the
 // HPACK block with its string length prefix.
-.align 3
+.align 4
 h2_cr_buf:
     .skip h2_cr_buf_size
 

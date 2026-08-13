@@ -29,24 +29,31 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 header_content_length: .ascii "\r\nContent-Length: "
 .equ header_content_length_len, . - header_content_length
 
+.align 4
 header_content_type: .ascii "\r\nContent-Type: "
 .equ header_content_type_len, . - header_content_type
 
+.align 4
 header_content_range: .ascii "\r\nContent-Range: bytes "
 .equ header_content_range_len, . - header_content_range
 
+.align 4
 header_content_encoding: .ascii "\r\nContent-Encoding: gzip"
 .equ header_content_encoding_len, . - header_content_encoding
 
+.align 4
 header_etag: .ascii "\r\nETag: "
 .equ header_etag_len, . - header_etag
 
+.align 4
 header_tail:
     .ascii "\r\nConnection: close\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
 .equ header_tail_len, . - header_tail
+    .align 4 // pad the string block to a 16-byte multiple
 
 // the 500 status-line string lives in find_http_code.S; this copies its
 // length here so `mov x2, #header_500_len` can be an immediate.

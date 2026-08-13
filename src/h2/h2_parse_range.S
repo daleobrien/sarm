@@ -32,9 +32,11 @@
 .data
 // the range-unit prefix h2_parse_range accepts (matched
 // case-insensitively, like HTTP/1's get_header_field/parse_range)
+.align 4
 h2_bytes_name:
     .asciz "bytes"
 .equ h2_bytes_name_len, 5
+.align 4
 
 .text
 .align 2

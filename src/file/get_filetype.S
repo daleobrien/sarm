@@ -36,12 +36,14 @@
 .data
 // table of file extension / corresponding MIME types.
 // this table is offset by 96 bytes per entry; 8 bytes for the extension, and
-// 88 bytes for the MIME type string.
+// 88 bytes for the MIME type string. 96 = 6 * 16, so once the first entry is
+// 16-aligned, every entry is.
 //
 // entries are grouped by first character of the extension (after the dot)
 // for first-character dispatch in get_filetype.
 
 // ── group a: .aac, .apng, .avi, .avif ──
+.align 4
 file_types_a:
     mime_entry ".aac",   "audio/aac"
     mime_entry ".apng",  "image/apng"
@@ -150,8 +152,10 @@ file_types_z:
 file_types_7:
     mime_entry ".7z",    "application/x-7z-compressed"
 
+.align 4
 unknown_ct: .ascii "text/plain; charset=utf-8"
 .equ unknown_ct_len, . - unknown_ct
+.align 4
 
 .text
 .align 2

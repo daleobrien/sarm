@@ -35,8 +35,10 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 host_match_str: .ascii "Host"
 .equ host_match_len, 4
+.align 4
 
 .text
 .align 2

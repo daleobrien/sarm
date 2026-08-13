@@ -26,7 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
-.align 3
+.align 4
 // frame-type dispatch table, indexed by frame type (§6). The dispatcher
 // tail-calls the selected handler, so the handler returns directly to
 // the dispatcher's caller with the same x0/x1/x2 arguments.

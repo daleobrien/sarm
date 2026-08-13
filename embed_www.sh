@@ -136,7 +136,7 @@ fi
     echo '// Stage 4: FNV-1a hash-based lookup table.'
     echo ''
     echo '.data'
-    echo '.align 3'
+    echo '.align 4'  # 16-byte alignment for every embedded string and payload
     echo ''
 
     i=0
@@ -151,10 +151,12 @@ fi
         fi
         ct=$(mime_type "$ext")
 
+        echo '    .align 4'
         echo "embedded_path_${i}:"
         echo "    .asciz \"$f\""
         echo "embedded_path_${i}_end:"
         echo ''
+        echo '    .align 4'
         echo "embedded_ct_${i}:"
         echo "    .asciz \"$ct\""
         echo "embedded_ct_${i}_end:"
@@ -190,11 +192,13 @@ fi
         fi
 
         # Emit ETag string (hex SHA-256 wrapped in quotes per HTTP spec)
+        echo '    .align 4'
         echo "embedded_etag_${i}:"
         echo "    .asciz \"\\\"${sha256_hex}\\\"\""
         echo "embedded_etag_${i}_end:"
         echo ''
 
+        echo '    .align 4'  # payloads start on a 16-byte boundary too
         if [ "$gzipped" -eq 1 ]; then
             echo "embedded_data_${i}:"
             echo "    .incbin \"$tmp_gz\""
@@ -214,7 +218,7 @@ fi
     # Table entries are sorted lexicographically by path (files are
     # already sorted by 'find ... | sort' above), but with Stage 4 we
     # use a separate hash-based lookup table sorted by FNV-1a hash.
-    echo '.align 3'
+    echo '.align 4'
     echo '.global embedded_files'
     echo '.global embedded_count'
     echo '.global embedded_entry_size'
@@ -253,7 +257,7 @@ fi
 
     # ── Generate hash lookup table (sorted by hash for binary search) ────
     echo ''
-    echo '.align 3'
+    echo '.align 4'
     echo '.global embedded_hash_table'
     echo '.global embedded_hash_count'
     echo ''

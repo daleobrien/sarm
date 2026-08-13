@@ -34,13 +34,14 @@
 // RECV_RST_STREAM]. Each byte is the resulting state, or 0xff when the
 // transition is invalid (h2_stream_event maps the error: an idle-stream
 // violation is PROTOCOL_ERROR, anything else is STREAM_CLOSED).
-.align 1
+.align 4
 h2_stream_transitions:
     .byte H2_STREAM_OPEN, 0xff, 0xff, 0xff                               // IDLE
     .byte H2_STREAM_OPEN, H2_STREAM_OPEN, H2_STREAM_HALF_CLOSED_REMOTE, H2_STREAM_CLOSED  // OPEN
     .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // HALF_CLOSED_REMOTE
     .byte 0xff, 0xff, H2_STREAM_CLOSED, H2_STREAM_CLOSED                 // HALF_CLOSED_LOCAL
     .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // CLOSED (RST tolerated)
+.align 4 // pad the 20-byte table to a 16-byte multiple
 
 .text
 .align 2

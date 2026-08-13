@@ -31,6 +31,7 @@
 // static-table-only (hpack module) and rejects any dynamic-table
 // representation, so advertising the table-size limit up front lets
 // conforming clients avoid the COMPRESSION_ERROR entirely.
+.align 4
 h2_settings_frame:
     .byte 0x00, 0x00, 0x0c            // payload length (24-bit) = 12
     .byte H2_FRAME_SETTINGS           // type = SETTINGS
@@ -41,6 +42,7 @@ h2_settings_frame:
     .byte 0x00, H2_SETTINGS_MAX_CONCURRENT_STREAMS
     .byte 0x00, 0x00, 0x00, MAX_CONCURRENT_STREAMS  // value = 32
 .equ h2_settings_frame_len, . - h2_settings_frame
+    .align 4 // pad the 21-byte frame to a 16-byte multiple
 
 .text
 .align 2

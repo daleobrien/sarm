@@ -15,7 +15,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .bss
-.align 3
+.align 4
 .equ header_buf_size, RESPONSE_HEADER_SIZE
 header_buf:   .skip header_buf_size
 

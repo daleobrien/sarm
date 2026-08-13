@@ -48,28 +48,35 @@
 // Byte-exact names h2_build_request compares decoded field names and
 // values against. The pseudo-headers are the four a request may carry;
 // the method strings mirror parse_request's case-sensitive detection.
-.align 1
+.align 4
 h2_pseudo_method:
     .asciz ":method"
 .equ h2_pseudo_method_len, . - h2_pseudo_method - 1
+.align 4
 h2_pseudo_path:
     .asciz ":path"
 .equ h2_pseudo_path_len, . - h2_pseudo_path - 1
+.align 4
 h2_pseudo_scheme:
     .asciz ":scheme"
 .equ h2_pseudo_scheme_len, . - h2_pseudo_scheme - 1
+.align 4
 h2_pseudo_authority:
     .asciz ":authority"
 .equ h2_pseudo_authority_len, . - h2_pseudo_authority - 1
+.align 4
 h2_method_get:
     .asciz "GET"
 .equ h2_method_get_len, . - h2_method_get - 1
+.align 4
 h2_method_head:
     .asciz "HEAD"
 .equ h2_method_head_len, . - h2_method_head - 1
+.align 4
 h2_method_options:
     .asciz "OPTIONS"
 .equ h2_method_options_len, . - h2_method_options - 1
+.align 4
 h2_method_brew:
     .asciz "BREW"
 .equ h2_method_brew_len, . - h2_method_brew - 1
@@ -86,7 +93,7 @@ h2_range_name:
 // is per-block scratch, so it is copied here — like :authority into
 // authority_buf — to survive until h2_process_request parses it.
 // h2_range_buf_size is defined in defs.S.
-.align 3
+.align 4
 h2_range_buf:
     .skip h2_range_buf_size
 

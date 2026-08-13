@@ -18,20 +18,27 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 www_prefix: .ascii DOCROOT // DOCROOT from config.S
+.align 4
 default_file: .ascii DEFAULT_FILE // also from config.S
+.align 4 // pad the strings out to 16-byte multiples
 
 .bss
 // probably way too defensive, but can't hurt, eh?
-filename_buf: .skip filename_buf_size + 1
-.align 3 // fix broken alignment again
+// + 1 is rounded up to a 16-byte multiple so what follows stays aligned.
+.align 4
+filename_buf: .skip (filename_buf_size + 1 + 15) & ~15
+.align 4
 query_buf: .skip query_buf_size
-.align 3
+.align 4
 // authority_buf holds a NUL-terminated copy of the Host header value.
-// +1 leaves room for the terminator when the value fills the buffer.
+// +1 leaves room for the terminator when the value fills the buffer
+// (rounded up to a 16-byte multiple, like filename_buf).
 // The size bound lives in defs.S (AUTHORITY_BUF_SIZE), shared with the
 // HTTP/2 request builder.
-authority_buf: .skip AUTHORITY_BUF_SIZE + 1
+.align 4
+authority_buf: .skip (AUTHORITY_BUF_SIZE + 1 + 15) & ~15
 
 .global www_prefix
 .global default_file

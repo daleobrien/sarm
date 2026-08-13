@@ -26,17 +26,21 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 err_dir: .ascii ERR_DIR
 .equ err_dir_len, . - err_dir
+.align 4
 err_ext: .ascii ".html"
 .equ err_ext_len, . - err_ext
 
+.align 4
 arrows_out: .asciz "\n\n>>>\n"
 .equ arrows_out_len, . - arrows_out
+.align 4
 
 .bss
 .equ err_page_buf_size, 64
-.align 3
+.align 4
 err_page_buf: .skip err_page_buf_size
 
 .text

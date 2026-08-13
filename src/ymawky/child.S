@@ -26,13 +26,15 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
-.align 3
+.align 4
 rcv_timeout:           // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
 
+.align 4
 arrows_in: .ascii "\n\n<<<\n"
 .equ arrows_in_len, . - arrows_in
+.align 4
 
 .text
 .align 2

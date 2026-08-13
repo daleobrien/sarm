@@ -21,10 +21,13 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 took_prefix:    .ascii "Took: "
 .equ took_prefix_len, . - took_prefix
+.align 4
 took_suffix:    .ascii "µs\n"
 .equ took_suffix_len, . - took_suffix
+.align 4
 
 .text
 .align 2

@@ -18,7 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
-.align 3
+.align 4
 // h2_conn — HTTP/2 connection state (fixed layout; offsets in defs.S).
 // One instance per connection; a fork-per-connection child starts with
 // these RFC 9113 §6.5.2 initial values and updates them as SETTINGS
@@ -41,7 +41,7 @@ h2_conn:
     .quad 0                               // H2C_GOAWAY_LAST_STREAM_ID (Stage 13)
 
 .bss
-.align 3
+.align 4
 // h2_frame_header — scratch for the parsed frame header. The connection
 // loop parses the 9 wire bytes into this before validating/dispatching.
 h2_frame_header:
@@ -52,6 +52,7 @@ h2_frame_header:
 // never zero). Zeroed at startup. Entries are reused: h2_stream_create
 // takes a free slot first, then — Stage 12 — recycles a CLOSED entry so
 // a long-lived connection can serve more than H2_MAX_STREAMS requests.
+.align 4
 h2_streams:
     .skip H2_MAX_STREAMS * H2S_SIZE
 

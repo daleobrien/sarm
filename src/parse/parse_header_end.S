@@ -21,8 +21,10 @@
 // ─────────────────────────────────────────────────────────────────────
 
 .data
+.align 4
 header_end: .ascii "\r\n\r\n"
 .equ header_end_len, 4
+.align 4
 
 .text
 .align 2
