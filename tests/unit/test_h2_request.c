@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 8: HEADERS → HPACK → the common
+// Unit tests for src/h2/ — Stage 8: HEADERS → HPACK → the common
 // request. h2_handle_headers extracts stream id, the header block and
 // the END_STREAM/END_HEADERS flags and feeds the block to the HPACK
 // decoder (8.1); h2_build_request decodes the request pseudo-headers

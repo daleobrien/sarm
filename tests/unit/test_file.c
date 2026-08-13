@@ -1,4 +1,4 @@
-// Unit tests for src/file.S assembly functions
+// Unit tests for src/util/ assembly functions
 // Tests: check_path_traversal, check_path_safety, get_filetype
 
 #include "test_harness.h"

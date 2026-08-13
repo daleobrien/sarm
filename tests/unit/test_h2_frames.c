@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 4: the frame engine.
+// Unit tests for src/h2/ — Stage 4: the frame engine.
 // h2_parse_frame_header (RFC 9113 §4.1), h2_validate_frame (§4.2),
 // h2_dispatch_frame (§4.3), h2_handle_settings (§4.4) and SETTINGS
 // ACK (§4.5). SETTINGS tests go through h2_dispatch_frame so the full

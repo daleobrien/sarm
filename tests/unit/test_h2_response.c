@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 9: the first working HTTP/2 GET.
+// Unit tests for src/h2/ — Stage 9: the first working HTTP/2 GET.
 // h2_process_request runs the common request through the existing
 // resource handler; h2_write_headers / h2_write_body emit the HEADERS
 // and DATA frames; h2_connection_loop drives the full preface + frame

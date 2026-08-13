@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 13: connection management.
+// Unit tests for src/h2/ — Stage 13: connection management.
 // PING (RFC 9113 §6.7): an 8-octet PING without ACK is answered with a
 // PING ACK carrying the identical payload, wrong lengths and non-zero
 // stream ids are rejected, and an ACK is never answered. GOAWAY (§6.8):

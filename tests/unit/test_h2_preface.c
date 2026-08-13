@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 5 (connection preface) and the
+// Unit tests for src/h2/ — Stage 5 (connection preface) and the
 // Stage 14 protocol-detection probe (h2_probe).
 // h2_verify_preface reads exactly 24 bytes and compares them with the
 // HTTP/2 preface (RFC 9113 §3.4), flipping connection_mode;

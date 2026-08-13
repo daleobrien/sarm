@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 11: DATA flow control
+// Unit tests for src/h2/ — Stage 11: DATA flow control
 // (RFC 9113 §5.2, §6.9). The connection window (h2_conn) and stream
 // window (h2_streams entry) start at 65535, every DATA send drains
 // both, h2_handle_window_update replenishes them (rejecting bad

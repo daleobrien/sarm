@@ -1,6 +1,6 @@
 // Shared helpers for the HTTP/2 unit tests (test_h2_*.c).
 // Constants, struct layouts, asm wrappers and support functions that
-// mirror src/defs.S, src/data.S and src/h2_hpack.S. Each test file
+// mirror src/defs.S, src/data.S and src/hpack/. Each test file
 // includes this header and gets its own copy of every static helper,
 // so the per-executable harness counters keep working unchanged.
 //

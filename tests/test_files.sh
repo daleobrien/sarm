@@ -31,7 +31,7 @@ ok()   { local _s; printf -v _s "  ${GRN}✓${CLR} %s" "$*"; PASS=$((PASS + 1));
 nope() { local _s; printf -v _s "  ${RED}✗${CLR} %s" "$*"; FAIL=$((FAIL + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
 skip() { local _s; printf -v _s "  ${YLW}—${CLR} %s (skipped)" "$*"; SKIP=$((SKIP + 1)); if [ $QUIET -eq 1 ]; then _log "$_s"; else printf '%s\n' "$_s"; fi; }
 
-# ── MIME-type map (must match embed_www.sh / src/file.S) ────────
+# ── MIME-type map (must match embed_www.sh / src/file/get_filetype.S) ──
 mime_type() {
     case "$1" in
         .html)  echo "text/html; charset=utf-8" ;;

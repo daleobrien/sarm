@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 12: connection multiplexing.
+// Unit tests for src/h2/ — Stage 12: connection multiplexing.
 // Two (or more) streams on one TCP connection, each served as its
 // request completes; the opening SETTINGS frame advertises
 // MAX_CONCURRENT_STREAMS = 32, the 33rd concurrent stream is refused

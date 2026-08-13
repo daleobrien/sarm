@@ -13,7 +13,32 @@
 // You should have received a copy of the GNU General Public License
 // along with ymawky. If not, see <https://www.gnu.org/licenses/>.
 
-#include "defs.S"
+#include "../defs.S"
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: get_filetype
+//
+// Description: Given a filename, extract the extension and return the
+//   corresponding MIME content-type string. Entries are grouped by
+//   first character of the extension (after the dot) for fast
+//   first-character dispatch, then a small linear scan within the
+//   group. Returns a fallback "text/plain; charset=utf-8" string when
+//   the extension is unknown or missing. Calls streqn_i and strlen.
+//
+// Input/Arguments:
+//   x0 -> filename
+//   x1 -> filename length
+//
+// Output/Returns:
+//   x0 -> content-type string (e.g. text/html)
+//   x1 -> length of content-type string
+//
+// Clobbered Registers:
+//   x0, x1, x2, x19, x20, x21, x22, x23 (x19-x23 saved and restored)
+//
+// Stack Usage:
+//   64 bytes: stp x29, x30, [sp, #-64]!
+// ─────────────────────────────────────────────────────────────────────
 
 .macro mime_entry ext, mime
 99:
@@ -22,12 +47,6 @@
     .asciz "\mime"
     .space 96 - (. - 99b) // pad to offset 96 from entry start
 .endm
-
-.global get_filetype
-.global check_path_traversal
-.global check_path_safety
-.global decode_url
-.global lookup_embedded
 
 .data
 // table of file extension / corresponding MIME types.
@@ -151,134 +170,7 @@ unknown_ct: .ascii "text/plain; charset=utf-8"
 
 .text
 .align 2
-
-// checks for path traversal: GET /../../file.txt
-// it does not do anything else. one "." is fine. more than two "..." is fine.
-// two ".." in a file "foo..txt" is fine. but a path segment being just .. is
-// no good!
-// input
-// x0 -> filename string
-// x1 -> filename length
-//
-// returns
-// x0 -> 1 if safe, 0 if unsafe
-//
-// clobbers
-// x2 -> index into string
-// x3 -> dot count per segment
-// x4 -> segment length
-check_path_traversal:
-    mov x2, #0
-    mov x3, #0
-    mov x4, #0
-
-Lloop:
-    cmp x2, x1
-    b.ge Lcheck_segment
-
-    ldrb w5, [x0, x2]
-
-    cmp w5, #'/'
-    b.eq Lcheck_segment
-
-    cmp w5, #0
-    b.eq Lcheck_segment
-
-    add x2, x2, #1
-    add x4, x4, #1
-
-    cmp w5, #'.'
-    b.eq 2f
-
-    b Lloop
-
-2:
-    add x3, x3, #1
-    b Lloop
-
-Lcheck_segment:
-    cmp x3, x4
-    b.eq Lequal_length
-
-3:
-    mov x3, #0
-    mov x4, #0
-
-    cmp x2, x1
-    b.ge Lno_path_traversal
-
-    add x2, x2, #1
-    b Lloop
-
-Lequal_length:
-    cmp x3, #2
-    b.eq Lpath_traversal
-
-    b 3b
-
-Lno_path_traversal:
-    mov x0, #1
-    ret
-
-Lpath_traversal:
-    mov x0, #0
-    ret
-
-
-// ensure a path only has printable ASCII characters.
-//
-// URL policy:
-//     allowed bytes = 0x20–0x7E (printable ASCII)
-//
-// The only exclusions from this range are:
-//   - Control characters (0x00–0x1F): NUL, SOH, STX, …, US
-//   - DEL (0x7F) and everything above (non-ASCII)
-//
-// This is deliberately restrictive for a small server; it rejects all
-// non-ASCII byte sequences including UTF-8 multi-byte characters.
-//
-// input
-// x0 -> path to check
-// x1 -> path length
-//
-// returns
-// x0 -> 1 if safe, 0 if unsafe
-check_path_safety:
-    // if we've reached the end and no issues yet, it's safe
-    cbz x1, Lsafe
-
-    ldrb w3, [x0]
-
-    // everything under and including 0x1F, "US" or Unit Separator.
-    cmp w3, #0x1F
-    b.le Lunsafe
-
-    // everything including and after 0x7F, which is DELETE. everything after
-    // that is not valid ascii anymore.
-    cmp w3, #0x7F
-    b.ge Lunsafe
-
-    sub x1, x1, #1
-    add x0, x0, #1
-    b check_path_safety
-
-Lsafe:
-    mov x0, #1
-    ret
-
-Lunsafe:
-    mov x0, #0
-    ret
-
-
-// given a filename, extract the extension and return MIME type.
-// input
-// x0 -> filename
-// x1 -> filename length
-//
-// returns
-// x0 -> content-type string (eg text/html)
-// x1 -> length of content-type string
+.global get_filetype
 get_filetype:
     // push the link register to the stack sorta. since we bl strcmp, we need
     // to preserve it
@@ -492,219 +384,6 @@ Lreturn_unknown:
 Lreturn:
     // restore the link register we pushed to the stack
     ldr x23, [sp, #48]
-    ldp x21, x22, [sp, #32]
-    ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #64
-    ret
-
-
-// convert %XX in URL to 0xXX raw bytes. %0a = newline, %20 = space, etc.
-//
-// SECURITY: This function is called BEFORE check_path_safety and
-// check_path_traversal (see parse_request in parse.S). This ordering is
-// deliberate: percent-encoded path-traversal sequences like %2e%2e%2f are
-// decoded to ../ and then caught by check_path_traversal.
-//
-// The function rejects the following dangerous inputs by returning (0, 0):
-//   - %00 (decoded null byte) — caught by cmp w4, #0 / b.eq Lbad_end
-//   - %XX where X is not a hex digit — caught by hex_to_val setting x20=1
-//   - Truncated % at end of string (fewer than 3 bytes remaining)
-//
-// If any of these are encountered, parse_request responds with HTTP 400.
-//
-// input
-// x0 -> encoded string
-// x1 -> length of encoded string
-//
-// returns
-// x0 -> decoded string (decoded in-place), or 0 on rejection
-// x1 -> length of decoded string, or 0 on rejection
-decode_url:
-    stp x29, x30, [sp, #-32]!
-    str x20, [sp, #16]
-    mov x2, x0 // write pointer
-    mov x3, #0 // x3 is length of new string
-
-Ldecode_loop:
-    ldrb w4, [x0]
-    // make sure we're not null
-    cmp w4, #0
-    b.eq Ldecode_end
-
-    cmp w4, #'%'
-    b.eq Lencoded_char
-
-    strb w4, [x2, x3]
-    add x3, x3, #1
-
-    // make sure we're not reading beyond the length of the string
-    sub x1, x1, #1
-    cmp x1, #0
-    b.eq Ldecode_end
-
-    add x0, x0, #1 // increment along the new string to the next char
-    b Ldecode_loop
-
-Lencoded_char:
-    cmp x1, #3
-    b.lt Lbad_end
-
-    // high nibble
-    ldrb w4, [x0, #1]
-    bl hex_to_val
-    cbnz x20, Lbad_end
-
-    lsl w5, w4, #4 // stash in w5
-
-    // low nibble
-    ldrb w4, [x0, #2]
-    bl hex_to_val
-    cbnz x20, Lbad_end
-
-    orr w4, w5, w4 // combine w5 (high nibble) with w4 (low nibble)
-
-    cmp w4, #0
-    b.eq Lbad_end
-
-    // now w4 contains the decoded byte
-    strb w4, [x2, x3]
-
-    add x3, x3, #1
-    sub x1, x1, #3
-    cmp x1, #0
-    b.le Ldecode_end
-
-    add x0, x0, #3
-    b Ldecode_loop
-
-hex_to_val:
-    orr w4, w4, #0x20
-
-    cmp w4, #'0'
-    b.lt 2f
-    cmp w4, #'9'
-    b.le 1f
-
-    cmp w4, #'a'
-    b.lt 2f
-    cmp w4, #'f'
-    b.gt 2f
-
-    mov x20, #0
-    sub w4, w4, #'a' - 10
-    ret
-1:
-    mov x20, #0
-    sub w4, w4, #'0'
-    ret
-2:
-    mov x20, #1
-    ret
-
-Ldecode_end:
-    mov x0, x2
-    mov x1, x3
-
-    strb wzr, [x0, x1] // null terminate decoded string
-    b Ldecode_epilogue
-
-Lbad_end:
-    mov x0, #0
-    mov x1, #0
-    b Ldecode_epilogue
-
-Ldecode_epilogue:
-    ldr x20, [sp, #16]
-    ldp x29, x30, [sp], #32
-    ret
-
-
-// Look up a path in the embedded files table (generated by embed_www.sh).
-// The table is sorted lexicographically by path, so we use binary search
-// for O(log n) lookup instead of linear scan.
-// input
-// x0 -> path string (e.g. "www/index.html")
-// x1 -> path length
-//
-// returns
-// x0 -> content pointer
-// x1 -> content size
-// x2 -> content-type string pointer
-// x3 -> content-type string length
-// x4 -> gzip flag (1 = gzipped, 0 = raw)
-// x5 -> ETag string pointer (e.g. "\"abc123...\"")
-// x6 -> ETag string length
-// carry set = not found, carry clear = found
-lookup_embedded:
-    stp x29, x30, [sp, #-64]!
-    stp x19, x20, [sp, #16]
-    stp x21, x22, [sp, #32]
-    stp x23, x24, [sp, #48]
-
-    mov x19, x0  // save path_ptr
-    mov x20, x1  // save path_len
-
-    // DEBUG: linear scan fallback to verify entry layout
-    adr_l x5, embedded_files
-    mov x9, #80                  // entry size
-    adr_l x10, embedded_count
-    ldr x22, [x10]              // x22 = count
-    mov x23, #0                 // index
-
-Lle_linear_scan:
-    cmp x23, x22
-    b.ge Lle_not_found
-
-    mul x6, x23, x9             // offset = index * 80
-    add x6, x5, x6              // x6 = &embedded_files[index]
-
-    ldr x1, [x6, #8]            // entry path_ptr
-    ldr x3, [x6, #16]           // entry path_len
-    cmp x20, x3                 // compare lengths
-    b.ne Lle_linear_next
-
-    mov x0, x19
-    mov x2, x20
-    bl streqn
-    cbnz x0, Lle_found_from_linear
-
-Lle_linear_next:
-    add x23, x23, #1
-    b Lle_linear_scan
-
-Lle_found_from_linear:
-    // x6 already points to the entry
-    b Lle_found
-
-Lle_found:
-    // Entry layout at x6:
-    // +0:  hash        (8 bytes)
-    // +8:  path_ptr    (8 bytes)
-    // +16: path_len    (8 bytes)
-    // +24: content_ptr (8 bytes)
-    // +32: content_size (8 bytes)
-    // +40: ct_ptr      (8 bytes)
-    // +48: ct_len      (8 bytes)
-    // +56: gzip flag   (8 bytes)
-    // +64: etag_ptr    (8 bytes)
-    // +72: etag_len    (8 bytes)
-    ldr x0, [x6, #24]   // content_ptr
-    ldr x1, [x6, #32]   // content_size
-    ldr x2, [x6, #40]   // ct_ptr
-    ldr x3, [x6, #48]   // ct_len
-    ldr x4, [x6, #56]   // gzip flag
-    ldr x5, [x6, #64]   // etag_ptr
-    ldr x6, [x6, #72]   // etag_len
-
-    cmn xzr, xzr  // clear carry
-    b Lle_epilogue
-
-Lle_not_found:
-    cmp xzr, xzr  // set carry
-    b Lle_epilogue
-
-Lle_epilogue:
-    ldp x23, x24, [sp, #48]
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64

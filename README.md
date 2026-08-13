@@ -38,7 +38,7 @@ ymawky is a ~~static-file~~ dynamic web server. It ~~doesn't~~ **does** support 
 - Smart path traversal detection and prevention. Blocks `..` from traversing paths, while not disallowing multiple periods when they're part of a file:
   - `GET /../../../etc/passwd` -> `403 Forbidden`
   - `GET /ohwell...txt` -> `200 OK`
-  - `GET /../src/ymawky.S` -> `403 Forbidden`
+  - `GET /../src/defs.S` -> `403 Forbidden`
   - `GET /hehe..txt` -> `200 OK`
 - Automatically prepends `www/` to requested files. `GET /index.html` will retrieve `www/index.html`
 - Empty `GET /` requests default to `GET www/index.html`

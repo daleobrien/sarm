@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stage 10: complete static responses.
+// Unit tests for src/h2/ — Stage 10: complete static responses.
 // HEAD (headers only, END_STREAM on the HEADERS frame), 404 (unresolved
 // resource), 403 (a path the server refuses to serve), MIME types
 // identical to HTTP/1's, and byte ranges — h2_parse_range /

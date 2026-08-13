@@ -507,10 +507,19 @@
 .equ REQ_FORBIDDEN,    72   // 1 = path rejected by server policy → reply 403 (Stage 10)
 .equ REQUEST_SIZE,     80
 
-// authority_buf (parse.S) holds a NUL-terminated copy of the request's
-// authority — the HTTP/1 Host header or the HTTP/2 :authority
+// authority_buf (parse/data.S) holds a NUL-terminated copy of the
+// request's authority — the HTTP/1 Host header or the HTTP/2 :authority
 // pseudo-header. Both protocol parsers share the buffer and this bound.
 .equ AUTHORITY_BUF_SIZE, 256
+
+// ── parse module shared constants ────────────────────────────────────
+// Sizes shared between parse_path and parse_h2_path (src/parse/). The
+// buffers themselves live in src/parse/data.S; the length constants are
+// per-file .equ values, so they live here (included by every file).
+.equ www_prefix_len, 4        // strlen(DOCROOT) = "www/" — keep in sync with config.S
+.equ default_file_len, 10     // strlen(DEFAULT_FILE) = "index.html" — keep in sync with config.S
+.equ filename_buf_size, 4096  // PATH_MAX-sized filename buffer
+.equ query_buf_size, 4096     // max query-string size
 
 // ── Protocol-neutral response representation ─────────────────────────
 // The seam between response generation and the protocol encoders. A
@@ -592,6 +601,13 @@
 .equ H2_DEFAULT_MAX_FRAME_SIZE, 16384 // 2^14, initial SETTINGS_MAX_FRAME_SIZE
 .equ H2_DEFAULT_HEADER_TABLE_SIZE, 4096
 .equ H2_DEFAULT_INITIAL_WINDOW_SIZE, 65535 // 2^16 - 1
+
+// h2 module shared scratch buffers (src/h2/data.S). The size constants
+// are per-file .equ values used by several h2 functions, so they live
+// here (included by every file) rather than next to the .skip.
+.equ h2_frame_buf_size, H2_WIRE_HEADER_LEN + H2_DEFAULT_MAX_FRAME_SIZE
+.equ h2_range_buf_size, 64  // copy of the request's Range header value
+.equ h2_cr_buf_size, 64     // scratch for the content-range value
 
 // parsed frame header struct (16 bytes) — filled by h2_parse_frame_header
 .equ H2F_LENGTH,     0   // u32 payload length

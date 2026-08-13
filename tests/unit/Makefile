@@ -8,9 +8,11 @@
 #   make -C tests/unit build    — compile only, don't run
 #   make -C tests/unit clean    — remove build artifacts
 #
-# Each test executable links only the .S files it actually needs.
-# NOTE: util.S defines a "strlen" with non-standard ABI (x1 arg).
-# Test C code must avoid libc strlen() when util.o is linked.
+# Each test executable links only the modules it actually needs. Source
+# files live in per-module folders under src/ (one function per file);
+# the object lists below expand each folder with a wildcard.
+# NOTE: the util module defines a "strlen" with non-standard ABI (x1 arg).
+# Test C code must avoid libc strlen() when util is linked.
 
 .PHONY: all test build clean
 
@@ -25,17 +27,17 @@ LDFLAGS := -arch arm64
 OBJ_DIR := _obj
 
 # ── assembly object files ──────────────────────────────────────────
-# Compiled once, reused across test executables.
-util_o     := $(OBJ_DIR)/util.o
-data_o     := $(OBJ_DIR)/data.o
-parse_o    := $(OBJ_DIR)/parse.o
-file_o     := $(OBJ_DIR)/file.o
-header_o   := $(OBJ_DIR)/header.o
-get_o      := $(OBJ_DIR)/get.o
-stubs_o    := $(OBJ_DIR)/stubs.o
-stubs_resp_o := $(OBJ_DIR)/stubs_response.o
-http2_o    := $(OBJ_DIR)/http2.o
-hpack_o    := $(OBJ_DIR)/h2_hpack.o
+# One object per source file; each module's objects are gathered with a
+# wildcard so adding a new function file needs no Makefile edit.
+util_objs    := $(patsubst ../../src/util/%.S,$(OBJ_DIR)/util_%.o,$(wildcard ../../src/util/*.S))
+parse_objs   := $(patsubst ../../src/parse/%.S,$(OBJ_DIR)/parse_%.o,$(wildcard ../../src/parse/*.S))
+file_objs    := $(patsubst ../../src/file/%.S,$(OBJ_DIR)/file_%.o,$(wildcard ../../src/file/*.S))
+http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(wildcard ../../src/http1/*.S))
+h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../src/h2/*.S))
+hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
+data_objs    := $(OBJ_DIR)/data.o
+stubs_objs   := $(OBJ_DIR)/stubs.o
+stubs_resp_objs := $(OBJ_DIR)/stubs_response.o
 
 # ── test executables ────────────────────────────────────────────────
 TEST_UTIL  := $(OBJ_DIR)/test_util
@@ -101,36 +103,33 @@ build: $(TESTS)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-$(util_o): ../../src/util.S | $(OBJ_DIR)
+# one pattern rule per module folder — src/<module>/<file>.S compiles to
+# _obj/<module>_<file>.o
+$(OBJ_DIR)/util_%.o: ../../src/util/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(data_o): ../../src/data.S | $(OBJ_DIR)
+$(OBJ_DIR)/parse_%.o: ../../src/parse/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(parse_o): ../../src/parse.S | $(OBJ_DIR)
+$(OBJ_DIR)/file_%.o: ../../src/file/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(file_o): ../../src/file.S | $(OBJ_DIR)
+$(OBJ_DIR)/http1_%.o: ../../src/http1/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-# header.o and get.o are only linked by test_response; the other suites
-# use the function stubs in stubs.o instead.
-$(header_o): ../../src/header.S | $(OBJ_DIR)
+$(OBJ_DIR)/h2_%.o: ../../src/h2/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(get_o): ../../src/get.S | $(OBJ_DIR)
+$(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(stubs_o): stubs.S | $(OBJ_DIR)
+$(data_objs): ../../src/data.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(stubs_resp_o): stubs_response.S | $(OBJ_DIR)
+$(stubs_objs): stubs.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-$(http2_o): ../../src/http2.S | $(OBJ_DIR)
-	$(AS) $(ASFLAGS) -c $< -o $@
-
-$(hpack_o): ../../src/h2_hpack.S | $(OBJ_DIR)
+$(stubs_resp_objs): stubs_response.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 # ── test executable link rules ─────────────────────────────────────
@@ -139,48 +138,48 @@ $(hpack_o): ../../src/h2_hpack.S | $(OBJ_DIR)
 # each link rule to force a rebuild when the harness changes.
 HARNESS := test_harness.h
 
-# test_util: only needs util.o (pure functions).
+# test_util: only needs util (pure functions).
 # The C test code uses inline asm wrappers to call asm functions.
-$(TEST_UTIL): test_util.c $(HARNESS) $(util_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_o) $(LDFLAGS) -o $@
+$(TEST_UTIL): test_util.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
-# test_parse: needs util.o + parse.o + data.o + file.o + stubs.o.
-# parse_header_end uses parse.S data. get_header_field calls streqn_i.
+# test_parse: needs util + parse + data + file + stubs.
+# parse_header_end uses parse data. get_header_field calls streqn_i.
 # parse_range calls get_header_field + atoi_n. Error paths go to
 # reply_status (stubs.o). Cross-references to decode_url etc in
 # parse_request require file.o.
-$(TEST_PARSE): test_parse.c $(HARNESS) $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
+$(TEST_PARSE): test_parse.c $(HARNESS) $(util_objs) $(parse_objs) $(data_objs) $(file_objs) $(stubs_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(parse_objs) $(data_objs) $(file_objs) $(stubs_objs) $(LDFLAGS) -o $@
 
-# test_file: needs file.o + util.o + stubs.o.
+# test_file: needs file + util + stubs.
 # check_path_traversal/check_path_safety are self-contained.
-# get_filetype calls streqn_i and strlen from util.S.
+# get_filetype calls streqn_i and strlen from util.
 # lookup_embedded references embedded_files/embedded_count from stubs.o.
-$(TEST_FILE): test_file.c $(HARNESS) $(util_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
+$(TEST_FILE): test_file.c $(HARNESS) $(util_objs) $(file_objs) $(stubs_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(file_objs) $(stubs_objs) $(LDFLAGS) -o $@
 
-# test_request: needs parse.o + data.o + file.o + util.o + stubs.o.
+# test_request: needs parse + data + file + util + stubs.
 # parse_request parses into the `request` struct (data.o), calls
-# parse_path/get_header_field (parse.o) and decode_url/check_path_*
-# (file.o), with error paths going to reply_status (stubs.o).
-$(TEST_REQUEST): test_request.c $(HARNESS) $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
+# parse_path/get_header_field (parse) and decode_url/check_path_*
+# (file), with error paths going to reply_status (stubs.o).
+$(TEST_REQUEST): test_request.c $(HARNESS) $(util_objs) $(parse_objs) $(data_objs) $(file_objs) $(stubs_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(parse_objs) $(data_objs) $(file_objs) $(stubs_objs) $(LDFLAGS) -o $@
 
-# test_response: Stage 2 response abstraction. Links the REAL header.o
-# (http1_write_response, reply_status) and get.o (create_response) so
-# the response struct is exercised through the real encoder, plus
-# parse.o/file.o for parse_range/get_filetype. stubs_response.o replaces
-# stubs.o (no duplicate reply_status/build_header stubs) and adds a
-# child_end stub.
-$(TEST_RESPONSE): test_response.c $(HARNESS) $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
+# test_response: Stage 2 response abstraction. Links the REAL http1
+# module (find_http_code, http1_write_response, reply_status,
+# create_response, get_setup, get, head) so the response struct is
+# exercised through the real encoder, plus parse/file for
+# parse_range/get_filetype. stubs_response.o replaces stubs.o (no
+# duplicate reply_status/build_header stubs) and adds a child_end stub.
+$(TEST_RESPONSE): test_response.c $(HARNESS) $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) $(LDFLAGS) -o $@
 
 # HTTP/2 suites: one .c file per stage group, all linking the same
-# object set — the full Stage 4-14 stack (http2.o + h2_hpack.o + the
-# shared request/file/response helpers) plus stubs_response.o (the
-# embedded table, child_end). Every test_h2_*.c includes
-# test_h2_common.h, which must trigger a rebuild when it changes.
-H2_LIBS := $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o)
+# object set — the full Stage 4-14 stack (h2 + hpack + the shared
+# request/file/response helpers) plus stubs_response.o (the embedded
+# table, child_end). Every test_h2_*.c includes test_h2_common.h, which
+# must trigger a rebuild when it changes.
+H2_LIBS := $(h2_objs) $(hpack_objs) $(data_objs) $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs)
 
 $(OBJ_DIR)/test_h2_%: test_h2_%.c $(HARNESS) test_h2_common.h $(H2_LIBS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(H2_LIBS) $(LDFLAGS) -o $@

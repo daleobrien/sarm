@@ -28,7 +28,7 @@ else
     exit 1
 fi
 
-# ── FNV-1a 64-bit hash (matches fnv1a_64 in src/util.S) ─────────────
+# ── FNV-1a 64-bit hash (matches fnv1a_64 in src/util/fnv1a_64.S) ────────
 if ! command -v python3 >/dev/null 2>&1; then
     echo "embed_www.sh: need python3 for FNV-1a hash computation" >&2
     exit 1
@@ -46,7 +46,7 @@ print(h)
 " "$1"
 }
 
-# ── MIME type map (mirrors file_types table in src/file.S) ────────────────
+# ── MIME type map (mirrors file_types table in src/file/get_filetype.S) ───────
 mime_type() {
     case "$1" in
         # web

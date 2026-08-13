@@ -1,24 +1,29 @@
 rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 
-SRCS := $(filter-out src/config.S src/defs.S src/embedded.S,$(wildcard src/*.S))
-OBJS := $(SRCS:src/%.S=%.o)
+# Sources: every .S under src/ (recursively, so the per-function folders
+# are picked up), except the shared headers (config.S, defs.S), the
+# generated embedded table (built separately), and the generated HPACK
+# Huffman table (included by src/hpack/data.S, never compiled standalone).
+SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
+OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
 LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e _main -arch arm64
 
 # Build pipeline:
-#   www/ ──embed_www.sh──> src/embedded.S ──cc──> embedded.o ──ld──> ymawky
+#   www/ ──embed_www.sh──> src/embedded.S ──cc──> build/embedded.o ──ld──> ymawky
 
 # Dependency graph:
-#   www/* ──> src/embedded.S ──> embedded.o ──> ymawky
+#   www/* ──> src/embedded.S ──> build/embedded.o ──> ymawky
 #
 # ymawky depends on 'assets' so that changing any file under www/
 # triggers regeneration of src/embedded.S, recompilation of
-# embedded.o, and relinking of the final binary.
-ymawky: assets $(OBJS) embedded.o
-	@ld $(OBJS) embedded.o -o ymawky $(LDFLAGS)
-	@rm -f $(OBJS) embedded.o
+# build/embedded.o, and relinking of the final binary.
+ymawky: assets $(OBJS) build/embedded.o
+	@ld $(OBJS) build/embedded.o -o ymawky $(LDFLAGS)
+	@rm -rf build
 
-%.o: src/%.S
+build/%.o: src/%.S
+	@mkdir -p $(dir $@)
 	@cc -g $(CFLAGS) -c $< -o $@
 
 # Production build: same pipeline as the default target, but the final
@@ -37,8 +42,8 @@ src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 
 .PHONY: clean
 clean:
-	rm -f ymawky $(OBJS) embedded.o src/embedded.S
-	rm -rf www_gz www/err
+	rm -f ymawky src/embedded.S
+	rm -rf build www_gz www/err
 
 .PHONY: test
 test: ymawky

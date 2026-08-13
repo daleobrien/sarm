@@ -1,4 +1,4 @@
-// Unit tests for src/h2_hpack.S — Stage 7: minimal HPACK.
+// Unit tests for src/hpack/ — Stage 7: minimal HPACK.
 // The RFC 7541 Appendix A static table (7.1), integer decoding §5.1
 // (7.2), plain-string decoding §5.2 (7.3), indexed header fields §6.1
 // (7.4), literal header fields §6.2.2/§6.2.3 (7.5), Huffman decoding

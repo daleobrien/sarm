@@ -1,4 +1,5 @@
-ymawky
+# the built binary (anchor to the repo root so src/ymawky/ is NOT ignored)
+/ymawky
 .*
 !.gitignore
 err/*
