@@ -21,6 +21,12 @@ ymawky: assets $(OBJS) embedded.o
 %.o: src/%.S
 	@cc -g $(CFLAGS) -c $< -o $@
 
+# Production build: same pipeline as the default target, but the final
+# binary is stripped of local symbols with `strip -x`.
+.PHONY: production
+production: ymawky
+	@strip -x ymawky
+
 .PHONY: assets
 assets: src/embedded.S
 
