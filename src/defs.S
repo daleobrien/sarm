@@ -638,8 +638,18 @@
 
 // the fixed stream table (§5.1.2): H2_MAX_STREAMS entries of H2S_SIZE
 // bytes each. An entry is free when stream_id == 0 — wire stream ids
-// are never zero, so 0 is unambiguous.
+// are never zero, so 0 is unambiguous. Finished (CLOSED) entries are
+// recycled by h2_stream_create once the connection outgrows its initial
+// table, so one connection can serve far more than H2_MAX_STREAMS
+// requests (Stage 12).
 .equ H2_MAX_STREAMS, 32
+
+// how many client-initiated streams may be open (not CLOSED) at once
+// (RFC 9113 §5.1.2). The server advertises this in its opening SETTINGS
+// frame and refuses a HEADERS frame that would open a new stream past
+// the limit with GOAWAY(ENHANCE_YOUR_CALM). Matches the fixed stream
+// table size, so the table can always hold a full quota of open streams.
+.equ MAX_CONCURRENT_STREAMS, 32
 .equ H2S_STREAM_ID,  0    // u64 stream id
 .equ H2S_STATE,      8    // u64 one of H2_STREAM_*
 .equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...)

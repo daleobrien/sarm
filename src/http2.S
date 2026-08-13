@@ -84,6 +84,14 @@
 // This makes files larger than the initial 65535-byte window deliver
 // end-to-end without deadlock.
 //
+// Stage 12 — connection multiplexing (Phase 14). One TCP connection now
+// carries any number of streams: each completed request is served as its
+// HEADERS/DATA frames arrive, finished (CLOSED) stream entries are
+// recycled once the connection outgrows its initial table, and the
+// opening SETTINGS frame advertises MAX_CONCURRENT_STREAMS = 32 —
+// enforced with GOAWAY(ENHANCE_YOUR_CALM) when a client opens more
+// streams than that (§5.1.2).
+//
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
 //   carry set   = failure, x0 = HTTP/2 error code (H2_ERR_*)
@@ -138,18 +146,22 @@ h2_conn:
     .quad H2_DEFAULT_INITIAL_WINDOW_SIZE   // H2C_WINDOW — connection window (§5.2)
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
-// §3.5, §6.5): a single SETTINGS_HEADER_TABLE_SIZE = 0 entry (§6.5.2),
-// which tells the client its HPACK encoder may not use a dynamic table.
-// Our decoder is static-table-only (h2_hpack.S) and rejects any
-// dynamic-table representation, so advertising the limit up front lets
+// §3.5, §6.5): SETTINGS_HEADER_TABLE_SIZE = 0 (§6.5.2) tells the client
+// its HPACK encoder may not use a dynamic table, and (Stage 12)
+// SETTINGS_MAX_CONCURRENT_STREAMS = 32 advertises how many concurrent
+// streams this endpoint permits (§5.1.2). Our decoder is
+// static-table-only (h2_hpack.S) and rejects any dynamic-table
+// representation, so advertising the table-size limit up front lets
 // conforming clients avoid the COMPRESSION_ERROR entirely.
 h2_settings_frame:
-    .byte 0x00, 0x00, 0x06            // payload length (24-bit) = 6
+    .byte 0x00, 0x00, 0x0c            // payload length (24-bit) = 12
     .byte H2_FRAME_SETTINGS           // type = SETTINGS
     .byte 0x00                        // flags = 0
     .byte 0x00, 0x00, 0x00, 0x00      // stream id = 0
     .byte 0x00, H2_SETTINGS_HEADER_TABLE_SIZE // identifier (16-bit BE)
     .byte 0x00, 0x00, 0x00, 0x00      // value = 0 — dynamic table disabled
+    .byte 0x00, H2_SETTINGS_MAX_CONCURRENT_STREAMS
+    .byte 0x00, 0x00, 0x00, MAX_CONCURRENT_STREAMS  // value = 32
 .equ h2_settings_frame_len, . - h2_settings_frame
 
 // frame-type dispatch table, indexed by frame type (§6). The dispatcher
@@ -236,8 +248,9 @@ h2_frame_header:
 
 // h2_streams — the fixed stream table (§5.1). H2_MAX_STREAMS entries of
 // H2S_SIZE bytes; a zero stream_id marks a free slot (wire ids are
-// never zero). Zeroed at startup; stream entries are not recycled once
-// CLOSED — a later stage decides when closed entries may be reused.
+// never zero). Zeroed at startup. Entries are reused: h2_stream_create
+// takes a free slot first, then — Stage 12 — recycles a CLOSED entry so
+// a long-lived connection can serve more than H2_MAX_STREAMS requests.
 h2_streams:
     .skip H2_MAX_STREAMS * H2S_SIZE
 
@@ -400,7 +413,10 @@ h2_dispatch_frame:
 // fields are converted into the protocol-neutral `request` struct by
 // h2_build_request. An undecodable block is a COMPRESSION_ERROR
 // connection error (§4.3); a malformed request is a PROTOCOL_ERROR
-// stream error (§8.1.1).
+// stream error (§8.1.1). Since Stage 12 a HEADERS that opens a
+// brand-new stream beyond MAX_CONCURRENT_STREAMS (§5.1.2) is refused
+// with ENHANCE_YOUR_CALM — a connection error the loop answers with
+// GOAWAY; HEADERS on an existing stream (trailers) never counts again.
 //
 // NOTE: the dispatcher reaches us with br, so x30 is the return address
 // of the dispatcher's caller — save it before our own bl calls.
@@ -418,6 +434,29 @@ h2_handle_headers:
     mov x1, x2              // validate's second argument is the conn
     bl h2_validate_stream_id
     b.cs .Lh2_headers_err
+    // ── Stage 12 — enforce MAX_CONCURRENT_STREAMS (§5.1.2) ──
+    // Only a brand-new stream consumes a slot: an existing stream keeps
+    // its entry, so trailers are never counted twice. Open means OPEN or
+    // HALF_CLOSED_* — IDLE and CLOSED streams don't count (§5.1.2).
+    ldr w0, [x10, #H2F_STREAM_ID]
+    bl h2_stream_find
+    cbnz x0, .Lh2_headers_count_done
+    adr_l x9, h2_streams
+    mov x13, #H2_MAX_STREAMS
+    mov x14, #0             // open-stream count
+1:
+    ldr x15, [x9, #H2S_STATE]
+    cbz x15, 2f             // IDLE doesn't count
+    cmp x15, #H2_STREAM_CLOSED
+    b.eq 2f                 // CLOSED doesn't count
+    add x14, x14, #1
+2:
+    add x9, x9, #H2S_SIZE
+    subs x13, x13, #1
+    b.ne 1b
+    cmp x14, #MAX_CONCURRENT_STREAMS
+    b.hs .Lh2_headers_too_many
+.Lh2_headers_count_done:
     ldr w0, [x10, #H2F_STREAM_ID]
     mov x1, x11
     bl h2_stream_create
@@ -451,6 +490,9 @@ h2_handle_headers:
     cmn xzr, xzr             // success — carry clear
     mov x0, #0
     ret
+.Lh2_headers_too_many:
+    cmp xzr, xzr             // failure — carry set
+    mov x0, #H2_ERR_ENHANCE_YOUR_CALM
 .Lh2_headers_err:
     ldp x19, x30, [sp], #32
     ret                      // x0 = error, carry set
@@ -673,13 +715,16 @@ h2_stream_find:
     ret
 
 // ── 6.1 — find-or-create a stream entry ─────────────────────────────
-// Returns the existing entry for the id, or fills the first free slot
-// (stream_id == 0) with a fresh stream: state IDLE, no flags, and a
+// Returns the existing entry for the id, or fills a free slot — or,
+// Stage 12, recycles a CLOSED entry once the connection outgrows its
+// initial table — with a fresh stream: state IDLE, no flags, and a
 // send window of the peer's advertised SETTINGS_INITIAL_WINDOW_SIZE
 // (RFC 9113 §6.9.2 — the client's initial stream-level credit; the
 // connection loop resets it to the 65535 default before the client
 // SETTINGS arrive). Creating a stream records its id as the connection's
-// new high-water mark for client streams.
+// new high-water mark for client streams. Recycling overwrites the
+// closed entry wholesale (id, state, flags, window), so the old id stops
+// answering immediately; the new id always exceeds it (§5.1.1).
 //
 // input
 // x0 -> stream id
@@ -687,26 +732,42 @@ h2_stream_find:
 //
 // output
 // success — carry clear, x0 -> stream entry
-// failure — carry set, x0 = H2_ERR_REFUSED_STREAM (table is full)
+// failure — carry set, x0 = H2_ERR_REFUSED_STREAM (table is full of
+//           live or idle streams)
 //
-// clobbers x0-x7, x9
+// clobbers x0-x9
 h2_stream_create:
     mov x2, x0             // id
     mov x3, x1             // conn
     adr_l x4, h2_streams
     mov x5, #H2_MAX_STREAMS
     mov x6, #0             // free slot seen so far (0 = none)
+    mov x8, #0             // first CLOSED slot seen (0 = none) — Stage 12
 .Lh2_create_loop:
     ldr x7, [x4]           // this entry's stream id
     cmp x7, x2
     b.eq .Lh2_create_exists
-    cbnz x7, .Lh2_create_next
+    cbnz x7, .Lh2_create_check_closed
     mov x6, x4             // remember the free slot
+    b .Lh2_create_next
+.Lh2_create_check_closed:
+    ldr x9, [x4, #H2S_STATE]
+    cmp x9, #H2_STREAM_CLOSED
+    b.ne .Lh2_create_next
+    cbz x8, .Lh2_create_first_closed
+    b .Lh2_create_next
+.Lh2_create_first_closed:
+    mov x8, x4             // remember the first closed slot
 .Lh2_create_next:
     add x4, x4, #H2S_SIZE
     subs x5, x5, #1
     b.ne .Lh2_create_loop
-    cbz x6, .Lh2_create_full
+    cbz x6, 1f
+    b .Lh2_create_init
+1:  // no free slot — recycle the first CLOSED entry, if any
+    cbz x8, .Lh2_create_full
+    mov x6, x8
+.Lh2_create_init:
     // initialise the fresh entry
     str x2, [x6, #H2S_STREAM_ID]
     mov x7, #H2_STREAM_IDLE
@@ -1409,7 +1470,7 @@ h2_verify_preface:
 // clobbers x0, x1, x2, x8, x16 (syscall registers; see write_all)
 h2_send_settings:
     adr_l x1, h2_settings_frame
-    mov x2, #(H2_WIRE_HEADER_LEN + H2_SETTINGS_ENTRY_LEN) // header + 1 entry
+    mov x2, #h2_settings_frame_len    // header + both SETTINGS entries
     b write_all
 
 // ═══════════════════════════════════════════════════════════════════

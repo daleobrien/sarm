@@ -40,7 +40,13 @@
 // (rejecting bad lengths, zero increments, idle streams and over-2^31
 // windows, ignoring updates on CLOSED streams), and h2_write_body pauses
 // for WINDOW_UPDATE when the credit runs out — so a file larger than the
-// initial window (70000-byte www/big.bin stub) delivers end-to-end.
+// window (70000-byte www/big.bin stub) delivers end-to-end.
+// Stage 12: connection multiplexing (Phase 14) — two (or more) streams
+// on one TCP connection, each served as its request completes; the
+// opening SETTINGS frame advertises MAX_CONCURRENT_STREAMS = 32, the
+// 33rd concurrent stream is refused with GOAWAY(ENHANCE_YOUR_CALM)
+// (§5.1.2), and finished (CLOSED) stream entries are recycled so a
+// long-lived connection outlives its 32-entry table.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -88,6 +94,7 @@
 #define H2_ERR_REFUSED_STREAM     7
 #define H2_ERR_CANCEL             8
 #define H2_ERR_COMPRESSION_ERROR  9
+#define H2_ERR_ENHANCE_YOUR_CALM  11
 
 // RFC 9113 §6.5.2 default values
 #define H2_DEF_HEADER_TABLE_SIZE       4096
@@ -99,6 +106,9 @@
 
 // ── stream constants, mirroring defs.S (§5) ────────────────────────
 #define H2_MAX_STREAMS 32
+
+// the server's advertised and enforced concurrent-stream limit (§5.1.2)
+#define MAX_CONCURRENT_STREAMS 32
 
 #define H2_STREAM_IDLE               0
 #define H2_STREAM_OPEN               1
@@ -342,7 +352,8 @@ static inline int64_t h2_dispatch_wrapper(h2_frame_header_t *hdr,
 		: "=r"(rc), "=r"(carry)
 		: "r"(hdr), "r"(payload), "r"(conn)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-		  "x8", "x9", "x10", "x11", "x30", "memory");
+		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+		  "x30", "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -467,7 +478,7 @@ static inline h2_stream_t *h2_stream_create_wrapper(int64_t id, h2_conn_t *conn,
 		: "=r"(p), "=r"(carry)
 		: "r"(id), "r"(conn)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-		  "x9", "memory");
+		  "x8", "x9", "memory");
 	*carry_out = carry;
 	return p;
 }
@@ -1398,18 +1409,18 @@ static void test_h2_send_settings(void) {
 	write(sv[0], H2_PREFACE, H2_PREFACE_LEN);
 	ASSERT_EQ("preface verified", CONNECTION_HTTP2,
 	          h2_verify_preface_wrapper(sv[1], buf, &carry));
-	ASSERT_EQ("settings sent — 15 bytes written", 15,
+	ASSERT_EQ("settings sent — 21 bytes written", 21,
 	          h2_send_settings_wrapper(sv[1], &carry));
 	ASSERT_EQ("carry clear", 0, carry);
 
 	// capture the frame from the client side and check every header field
-	uint8_t frame[15];
-	long n = read(sv[0], frame, 15);
-	ASSERT_EQ("15-byte frame captured", 15, n);
+	uint8_t frame[21];
+	long n = read(sv[0], frame, 21);
+	ASSERT_EQ("21-byte frame captured", 21, n);
 
 	uint32_t length = ((uint32_t)frame[0] << 16) |
 	                  ((uint32_t)frame[1] << 8) | frame[2];
-	ASSERT_EQ("payload length = 6 (one SETTINGS entry)", 6, length);
+	ASSERT_EQ("payload length = 12 (two SETTINGS entries)", 12, length);
 	ASSERT_EQ("type = SETTINGS", H2_FRAME_SETTINGS, frame[3]);
 	ASSERT_EQ("flags = 0", 0, frame[4]);
 	uint32_t stream = ((uint32_t)frame[5] << 24) |
@@ -1417,7 +1428,7 @@ static void test_h2_send_settings(void) {
 	                  ((uint32_t)frame[7] << 8) | frame[8];
 	ASSERT_EQ("stream id = 0", 0, stream);
 
-	// the single entry: SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table off)
+	// entry 1: SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table off)
 	uint32_t id = ((uint32_t)frame[9] << 8) | frame[10];
 	ASSERT_EQ("entry id = SETTINGS_HEADER_TABLE_SIZE",
 	          H2_SETTINGS_HEADER_TABLE_SIZE, id);
@@ -1425,9 +1436,18 @@ static void test_h2_send_settings(void) {
 	                 ((uint32_t)frame[13] << 8) | frame[14];
 	ASSERT_EQ("entry value = 0 (dynamic table disabled)", 0, value);
 
+	// entry 2: SETTINGS_MAX_CONCURRENT_STREAMS = 32 (Stage 12)
+	id = ((uint32_t)frame[15] << 8) | frame[16];
+	ASSERT_EQ("entry id = SETTINGS_MAX_CONCURRENT_STREAMS",
+	          H2_SETTINGS_MAX_CONCURRENT_STREAMS, id);
+	value = ((uint32_t)frame[17] << 24) | ((uint32_t)frame[18] << 16) |
+	        ((uint32_t)frame[19] << 8) | frame[20];
+	ASSERT_EQ("entry value = 32 (MAX_CONCURRENT_STREAMS)",
+	          MAX_CONCURRENT_STREAMS, value);
+
 	// the captured frame matches the asm constant byte-for-byte
 	ASSERT_STR_EQ("frame matches h2_settings_frame constant",
-	              h2_settings_frame_addr(), frame, 15);
+	              h2_settings_frame_addr(), frame, 21);
 
 	close(sv[0]);
 	close(sv[1]);
@@ -3240,40 +3260,45 @@ static void test_h2_connection_loop(void) {
 			if (r <= 0) _exit(1);
 			w += r;
 		}
-		// read the full response: SETTINGS (15) + HEADERS (42) + DATA (26)
+		// read the full response: SETTINGS (21) + HEADERS (42) + DATA (26)
 		long n = 0;
-		while (n < 83) {
-			long r = read(sv[1], in + n, (unsigned long)(83 - n));
+		while (n < 89) {
+			long r = read(sv[1], in + n, (unsigned long)(89 - n));
 			if (r <= 0) break;
 			n += r;
 		}
-		if (n != 83) _exit(2);
-		// server SETTINGS: len=6, type=4, stream=0, entry id=1 value=0
-		if (in[0] != 0 || in[1] != 0 || in[2] != 6 ||
+		if (n != 89) _exit(2);
+		// server SETTINGS: len=12, type=4, stream=0
+		if (in[0] != 0 || in[1] != 0 || in[2] != 12 ||
 		    in[3] != H2_FRAME_SETTINGS || in[4] != 0 ||
 		    in[5] != 0 || in[6] != 0 || in[7] != 0 || in[8] != 0)
 			_exit(3);
+		// entry 1: SETTINGS_HEADER_TABLE_SIZE = 0
 		if (in[9] != 0 || in[10] != H2_SETTINGS_HEADER_TABLE_SIZE ||
 		    in[11] != 0 || in[12] != 0 || in[13] != 0 || in[14] != 0)
 			_exit(4);
+		// entry 2: SETTINGS_MAX_CONCURRENT_STREAMS = 32
+		if (in[15] != 0 || in[16] != H2_SETTINGS_MAX_CONCURRENT_STREAMS ||
+		    in[17] != 0 || in[18] != 0 || in[19] != 0 || in[20] != 0x20)
+			_exit(9);
 		// HEADERS: len=0x21 (33), type=1, flags=END_HEADERS, stream=1
-		if (in[15] != 0 || in[16] != 0 || in[17] != 0x21 ||
-		    in[18] != H2_FRAME_HEADERS || in[19] != H2_FLAG_END_HEADERS ||
-		    in[20] != 0 || in[21] != 0 || in[22] != 0 || in[23] != 1)
+		if (in[21] != 0 || in[22] != 0 || in[23] != 0x21 ||
+		    in[24] != H2_FRAME_HEADERS || in[25] != H2_FLAG_END_HEADERS ||
+		    in[26] != 0 || in[27] != 0 || in[28] != 0 || in[29] != 1)
 			_exit(5);
 		// HPACK block: 0x88 | 0x0f 0x10 0x18 ct | 0x0f 0x0d 0x02 "17"
-		if (in[24] != 0x88 || in[25] != 0x0f || in[26] != 0x10 ||
-		    in[27] != 0x18 ||
-		    memcmp(in + 28, "text/html; charset=utf-8", 24) != 0 ||
-		    in[52] != 0x0f || in[53] != 0x0d || in[54] != 0x02 ||
-		    in[55] != '1' || in[56] != '7')
+		if (in[30] != 0x88 || in[31] != 0x0f || in[32] != 0x10 ||
+		    in[33] != 0x18 ||
+		    memcmp(in + 34, "text/html; charset=utf-8", 24) != 0 ||
+		    in[58] != 0x0f || in[59] != 0x0d || in[60] != 0x02 ||
+		    in[61] != '1' || in[62] != '7')
 			_exit(6);
 		// DATA: len=17, type=0, flags=END_STREAM, stream=1, body
-		if (in[57] != 0 || in[58] != 0 || in[59] != 17 ||
-		    in[60] != H2_FRAME_DATA || in[61] != H2_FLAG_END_STREAM ||
-		    in[62] != 0 || in[63] != 0 || in[64] != 0 || in[65] != 1)
+		if (in[63] != 0 || in[64] != 0 || in[65] != 17 ||
+		    in[66] != H2_FRAME_DATA || in[67] != H2_FLAG_END_STREAM ||
+		    in[68] != 0 || in[69] != 0 || in[70] != 0 || in[71] != 1)
 			_exit(7);
-		if (memcmp(in + 66, "<h1>hello h2</h1>", 17) != 0)
+		if (memcmp(in + 72, "<h1>hello h2</h1>", 17) != 0)
 			_exit(8);
 		close(sv[1]);
 		_exit(0);
@@ -4191,10 +4216,10 @@ static void test_h2_flow_large_file(void) {
 			w += r;
 		}
 
-		// the server's opening SETTINGS (15 bytes) — read, then skip
+		// the server's opening SETTINGS (21 bytes) — read, then skip
 		long n = 0;
-		while (n < 15) {
-			long r = read(sv[1], in + n, (unsigned long)(15 - n));
+		while (n < 21) {
+			long r = read(sv[1], in + n, (unsigned long)(21 - n));
 			if (r <= 0) _exit(2);
 			n += r;
 		}
@@ -4282,6 +4307,425 @@ static void test_h2_flow_large_file(void) {
 	ASSERT_EQ("client received all 70000 bytes (no deadlock)", 0, exit_code);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Stage 12 — connection multiplexing (Phase 14)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── helpers for the multiplexing tests ─────────────────────────────
+
+// Read one complete frame (9-byte header + payload) from fd. Returns the
+// payload length (> 0), or -1 on EOF/error/short read. The payload lands
+// in buf[0..len) and the frame's type, flags and stream id are returned
+// through the out pointers.
+static long read_frame(int fd, uint8_t *buf, long cap, uint8_t *type_out,
+                       uint8_t *flags_out, uint32_t *sid_out) {
+	uint8_t hdr[H2_WIRE_HEADER_LEN];
+	long n = 0;
+	while (n < H2_WIRE_HEADER_LEN) {
+		long r = read(fd, hdr + n, (unsigned long)(H2_WIRE_HEADER_LEN - n));
+		if (r <= 0) return -1;
+		n += r;
+	}
+	long len = ((long)hdr[0] << 16) | ((long)hdr[1] << 8) | hdr[2];
+	if (len > cap) return -1;
+	n = 0;
+	while (n < len) {
+		long r = read(fd, buf + n, (unsigned long)(len - n));
+		if (r <= 0) return -1;
+		n += r;
+	}
+	*type_out = hdr[3];
+	*flags_out = hdr[4];
+	*sid_out = ((uint32_t)hdr[5] << 24) | ((uint32_t)hdr[6] << 16) |
+	           ((uint32_t)hdr[7] << 8) | hdr[8];
+	return len;
+}
+
+// Write all bytes — the client side of these tests must not assume a
+// single write() completes.
+static void send_all(int fd, const uint8_t *buf, long len) {
+	long w = 0;
+	while (w < len) {
+		long r = write(fd, buf + w, (unsigned long)(len - w));
+		if (r <= 0) _exit(1);
+		w += r;
+	}
+}
+
+// Build a HEADERS frame for GET <path> into out; returns the length. The
+// HPACK block is :method GET (indexed, 0x82) plus :path as a literal
+// without indexing with the indexed name (0x04 + length + bytes — the
+// same representation the existing tests use for /index.html). The
+// caller ORs in END_STREAM/END_HEADERS as needed.
+static long put_request_headers(uint8_t *out, const char *path, long path_len,
+                                uint8_t flags, uint32_t stream_id) {
+	uint8_t block[256];
+	long b = 0;
+	block[b++] = 0x82;                 // :method GET
+	block[b++] = 0x04;                 // literal without indexing, name = :path (4)
+	block[b++] = (uint8_t)path_len;    // path < 128 in all these tests
+	memcpy(block + b, path, (unsigned long)path_len);
+	b += path_len;
+	put_wire_header(out, (uint32_t)b, H2_FRAME_HEADERS, flags, stream_id);
+	memcpy(out + H2_WIRE_HEADER_LEN, block, (unsigned long)b);
+	return H2_WIRE_HEADER_LEN + b;
+}
+
+// ── 12.1 — two streams on one TCP connection ───────────────────────
+// Stream 1 asks for / and stream 3 for /assets/style.css — both on the
+// same connection (a socketpair here). The loop serves each stream as
+// its request completes; the client must receive two complete responses
+// addressed to the right streams with the right bodies.
+static void test_h2_multiplex_two_streams(void) {
+	TEST_SUITE("12.1 two streams on one connection — both responses returned");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		close(sv[0]);
+		uint8_t out[256];
+		long out_len = 0;
+		memcpy(out + out_len, H2_PREFACE, H2_PREFACE_LEN);
+		out_len += H2_PREFACE_LEN;
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		out_len += put_request_headers(out + out_len, "/", 1,
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+		out_len += put_request_headers(out + out_len, "/assets/style.css",
+		                               LITLEN("/assets/style.css"),
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 3);
+		send_all(sv[1], out, out_len);
+
+		uint8_t in[256];
+		uint8_t type, flags;
+		uint32_t sid;
+		// the server's opening SETTINGS first
+		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
+			_exit(1);
+		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// response 1 — stream 1, /: HEADERS then DATA "<h1>hello h2</h1>"
+		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+		if (len < 0 || type != H2_FRAME_HEADERS || sid != 1 ||
+		    (flags & H2_FLAG_END_HEADERS) == 0) _exit(3);
+		len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+		if (len != 17 || type != H2_FRAME_DATA || sid != 1 ||
+		    (flags & H2_FLAG_END_STREAM) == 0) _exit(4);
+		if (memcmp(in, "<h1>hello h2</h1>", 17) != 0) _exit(5);
+		// response 2 — stream 3, /assets/style.css
+		len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+		if (len < 0 || type != H2_FRAME_HEADERS || sid != 3 ||
+		    (flags & H2_FLAG_END_HEADERS) == 0) _exit(6);
+		len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+		if (len != 15 || type != H2_FRAME_DATA || sid != 3 ||
+		    (flags & H2_FLAG_END_STREAM) == 0) _exit(7);
+		if (memcmp(in, "body{color:red}", 15) != 0) _exit(8);
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side ──
+	close(sv[1]);
+	uint8_t in[512];
+	h2_connection_loop_wrapper(sv[0], in, 0);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("client received both responses on one connection", 0, exit_code);
+}
+
+// ── 12.2 — interleaved requests ────────────────────────────────────
+// HEADERS for streams 1, 3 and 5 are all written before the client
+// reads anything — i.e. before the first response completes. The loop
+// processes them sequentially (Phase 14), so all three responses must
+// still arrive, each on its own stream, with the right body.
+static void test_h2_multiplex_interleave(void) {
+	TEST_SUITE("12.2 interleaved requests — HEADERS 1, 3, 5 before the first response");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		close(sv[0]);
+		uint8_t out[512];
+		long out_len = 0;
+		memcpy(out + out_len, H2_PREFACE, H2_PREFACE_LEN);
+		out_len += H2_PREFACE_LEN;
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		// all three HEADERS frames, one burst, before any response is read
+		out_len += put_request_headers(out + out_len, "/", 1,
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+		out_len += put_request_headers(out + out_len, "/assets/style.css",
+		                               LITLEN("/assets/style.css"),
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 3);
+		out_len += put_request_headers(out + out_len, "/assets/app.js",
+		                               LITLEN("/assets/app.js"),
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 5);
+		send_all(sv[1], out, out_len);
+
+		uint8_t in[256];
+		uint8_t type, flags;
+		uint32_t sid;
+		// the server's opening SETTINGS
+		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
+			_exit(1);
+		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// three responses, each HEADERS + DATA, in stream order
+		static const uint32_t ids[3] = { 1, 3, 5 };
+		static const long lens[3] = { 17, 15, 14 };
+		static const char *bodies[3] = {
+			"<h1>hello h2</h1>", "body{color:red}", "console.log(1)",
+		};
+		for (int i = 0; i < 3; i++) {
+			long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+			if (len < 0 || type != H2_FRAME_HEADERS || sid != ids[i] ||
+			    (flags & H2_FLAG_END_HEADERS) == 0) _exit(3);
+			len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+			if (len != lens[i] || type != H2_FRAME_DATA || sid != ids[i] ||
+			    (flags & H2_FLAG_END_STREAM) == 0) _exit(4);
+			if (memcmp(in, bodies[i], (unsigned long)lens[i]) != 0) _exit(5);
+		}
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side ──
+	close(sv[1]);
+	uint8_t in[512];
+	h2_connection_loop_wrapper(sv[0], in, 0);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("all three interleaved streams completed", 0, exit_code);
+}
+
+// ── 12 — the stream table outlives its 32 initial entries ───────────
+// A connection serves many requests; a finished (CLOSED) entry is
+// recycled once the table fills, so the 33rd request on a long-lived
+// connection doesn't kill it.
+static void test_h2_stream_recycle(void) {
+	TEST_SUITE("12 stream table — CLOSED entries recycled for new streams");
+
+	h2_conn_t conn;
+	reset_conn(&conn);
+	reset_streams();
+	int64_t carry;
+
+	// fill the table with 32 entries — all live (IDLE), not recyclable
+	for (int64_t id = 1; id <= 63; id += 2)
+		h2_stream_create_wrapper(id, &conn, &carry);
+	ASSERT_EQ("full table refuses the 33rd", H2_ERR_REFUSED_STREAM,
+	          (int64_t)h2_stream_create_wrapper(65, &conn, &carry));
+
+	// close them all — the state h2_process_request leaves behind — and
+	// the slots become recyclable
+	for (int64_t id = 1; id <= 63; id += 2) {
+		h2_stream_t *s = h2_stream_find_wrapper(id);
+		if (s != NULL)
+			s->state = H2_STREAM_CLOSED;
+	}
+	h2_stream_t *s = h2_stream_create_wrapper(65, &conn, &carry);
+	ASSERT_EQ("recycled create succeeds", 0, carry);
+	ASSERT_NOT_NULL("stream 65 created in a recycled slot", s);
+	ASSERT_EQ("state reset to IDLE", H2_STREAM_IDLE, s->state);
+	ASSERT_EQ("conn last stream id = 65", 65, conn.last_stream_id);
+	ASSERT_EQ("find 65 works", (int64_t)s, (int64_t)h2_stream_find_wrapper(65));
+	// the recycled slot displaced one of the closed streams — whichever
+	// slot the scan picked, exactly 31 of the original 32 remain
+	int64_t remaining = 0;
+	for (int64_t old = 1; old <= 63; old += 2) {
+		if (h2_stream_find_wrapper(old) != NULL)
+			remaining++;
+	}
+	ASSERT_EQ("one closed stream displaced by the recycle", 31, remaining);
+}
+
+// ── 12.3 — MAX_CONCURRENT_STREAMS at the dispatch level ─────────────
+// The server advertises (opening SETTINGS) and enforces (§5.1.2) a
+// limit of MAX_CONCURRENT_STREAMS open streams. A HEADERS that would
+// open a brand-new stream past the limit is refused with
+// ENHANCE_YOUR_CALM — a connection error the loop turns into GOAWAY.
+static void test_h2_max_streams_dispatch(void) {
+	TEST_SUITE("12.3 MAX_CONCURRENT_STREAMS — 33rd concurrent stream refused");
+
+	uint8_t wire[9];
+	uint8_t payload[4];
+	memcpy(payload, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN); // valid HPACK request
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	// open 32 streams (ids 1..63) without END_STREAM — they stay OPEN
+	reset_streams();
+	reset_conn(&conn);
+	for (int64_t id = 1; id <= 63; id += 2) {
+		put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, (uint32_t)id);
+		h2_parse_wrapper(wire, &hdr);
+		h2_dispatch_wrapper(&hdr, payload, &conn, &carry);
+	}
+	h2_stream_t *last = h2_stream_find_wrapper(63);
+	ASSERT_NOT_NULL("32nd stream (63) created", last);
+	ASSERT_EQ("32nd stream still OPEN", H2_STREAM_OPEN, last->state);
+
+	// the 33rd (stream 65) crosses the limit — refused, not created
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 65);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("33rd concurrent stream → ENHANCE_YOUR_CALM",
+	          H2_ERR_ENHANCE_YOUR_CALM,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+	ASSERT_EQ("stream 65 not created", 0, (int64_t)h2_stream_find_wrapper(65));
+
+	// the limit is about concurrency, not stream ids: with only 16 open,
+	// stream 33 (the 17th) is accepted
+	reset_streams();
+	reset_conn(&conn);
+	for (int64_t id = 1; id <= 31; id += 2) {
+		put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, (uint32_t)id);
+		h2_parse_wrapper(wire, &hdr);
+		h2_dispatch_wrapper(&hdr, payload, &conn, &carry);
+	}
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 33);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("stream 33 accepted (17 concurrent ≤ 32)", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("stream 33 OPEN", H2_STREAM_OPEN,
+	          h2_stream_find_wrapper(33)->state);
+}
+
+// ── 12.3 — the limit over a real connection ─────────────────────────
+// 32 streams opened without END_STREAM stay open; the 33rd HEADERS is
+// refused with GOAWAY(ENHANCE_YOUR_CALM), last stream 63, and the
+// connection closes.
+static void test_h2_max_streams_loop(void) {
+	TEST_SUITE("12.3 MAX_CONCURRENT_STREAMS — 33rd refused (GOAWAY ENHANCE_YOUR_CALM)");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		close(sv[0]);
+		uint8_t out[512];
+		long out_len = 0;
+		memcpy(out + out_len, H2_PREFACE, H2_PREFACE_LEN);
+		out_len += H2_PREFACE_LEN;
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		// 32 concurrent streams — no END_STREAM, so they stay open
+		for (int64_t id = 1; id <= 63; id += 2)
+			out_len += put_request_headers(out + out_len, "/", 1,
+			                               H2_FLAG_END_HEADERS, (uint32_t)id);
+		// the 33rd — crosses the limit
+		out_len += put_request_headers(out + out_len, "/", 1,
+		                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 65);
+		send_all(sv[1], out, out_len);
+
+		uint8_t in[64];
+		uint8_t type, flags;
+		uint32_t sid;
+		// the server's opening SETTINGS
+		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
+			_exit(1);
+		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// GOAWAY — ENHANCE_YOUR_CALM, last accepted stream 63
+		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+		if (len != 8 || type != H2_FRAME_GOAWAY || sid != 0) _exit(3);
+		uint32_t last = ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) |
+		                ((uint32_t)in[2] << 8) | in[3];
+		uint32_t code = ((uint32_t)in[4] << 24) | ((uint32_t)in[5] << 16) |
+		                ((uint32_t)in[6] << 8) | in[7];
+		if (last != 63) _exit(4);
+		if (code != H2_ERR_ENHANCE_YOUR_CALM) _exit(5);
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side ──
+	close(sv[1]);
+	uint8_t in[512];
+	h2_connection_loop_wrapper(sv[0], in, 0);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("33rd concurrent stream refused with GOAWAY", 0, exit_code);
+}
+
+// ── 12 — many sequential requests on one long-lived connection ─────
+// More requests than the 32-entry table, one after another — the CLOSED
+// entries are recycled as the connection goes, so all 33 complete.
+static void test_h2_many_sequential(void) {
+	TEST_SUITE("12 multiplexing — 33 sequential requests on one connection");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		close(sv[0]);
+		uint8_t out[512];
+		long out_len = 0;
+		memcpy(out + out_len, H2_PREFACE, H2_PREFACE_LEN);
+		out_len += H2_PREFACE_LEN;
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		for (int64_t id = 1; id <= 65; id += 2)
+			out_len += put_request_headers(out + out_len, "/", 1,
+			                               H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS,
+			                               (uint32_t)id);
+		send_all(sv[1], out, out_len);
+
+		uint8_t in[256];
+		uint8_t type, flags;
+		uint32_t sid;
+		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
+			_exit(1);
+		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		int64_t id = 1;
+		for (int i = 0; i < 33; i++) {
+			long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+			if (len < 0 || type != H2_FRAME_HEADERS || sid != (uint32_t)id)
+				_exit(3);
+			len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
+			if (len != 17 || type != H2_FRAME_DATA || sid != (uint32_t)id ||
+			    (flags & H2_FLAG_END_STREAM) == 0) _exit(4);
+			if (memcmp(in, "<h1>hello h2</h1>", 17) != 0) _exit(5);
+			id += 2;
+		}
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side ──
+	close(sv[1]);
+	uint8_t in[512];
+	h2_connection_loop_wrapper(sv[0], in, 0);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("all 33 sequential requests completed", 0, exit_code);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -4350,6 +4794,13 @@ int main(void) {
 	test_h2_flow_window_update();
 	test_h2_flow_resume();
 	test_h2_flow_large_file();
+	// Stage 12 — connection multiplexing
+	test_h2_multiplex_two_streams();
+	test_h2_multiplex_interleave();
+	test_h2_stream_recycle();
+	test_h2_max_streams_dispatch();
+	test_h2_max_streams_loop();
+	test_h2_many_sequential();
 	test_summary();
 	return 0;
 }
