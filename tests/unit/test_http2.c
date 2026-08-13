@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stages 4 & 5.
+// Unit tests for src/http2.S — Stages 4, 5 & 6.
 // Stage 4: the HTTP/2 frame engine — h2_parse_frame_header (4.1),
 // h2_validate_frame (4.2), h2_dispatch_frame (4.3), h2_handle_settings
 // (4.4) and SETTINGS ACK (4.5). SETTINGS tests go through
@@ -7,6 +7,11 @@
 // bytes and compares them with the HTTP/2 preface (3.4), flipping
 // connection_mode; h2_send_settings emits the server's opening SETTINGS
 // frame (3.5), captured over a real socketpair and verified byte-for-byte.
+// Stage 6: stream management — the fixed stream table (6.1,
+// h2_streams/h2_stream_find/h2_stream_create), stream id validation
+// (6.2, h2_validate_stream_id), the receive-side state machine (6.3,
+// h2_stream_event) and RST_STREAM handling (6.4). HEADERS/DATA handlers
+// drive the machine through h2_dispatch_frame.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -36,11 +41,15 @@
 #define H2_SETTINGS_MAX_FRAME_SIZE          5
 #define H2_SETTINGS_MAX_HEADER_LIST_SIZE    6
 
-#define H2_FLAG_ACK 0x1
+#define H2_FLAG_ACK         0x1
+#define H2_FLAG_END_STREAM  0x1
 
 #define H2_ERR_PROTOCOL_ERROR     1
 #define H2_ERR_FLOW_CONTROL_ERROR 3
+#define H2_ERR_STREAM_CLOSED      5
 #define H2_ERR_FRAME_SIZE_ERROR   6
+#define H2_ERR_REFUSED_STREAM     7
+#define H2_ERR_CANCEL             8
 
 // RFC 9113 §6.5.2 default values
 #define H2_DEF_HEADER_TABLE_SIZE       4096
@@ -49,6 +58,28 @@
 #define H2_DEF_INITIAL_WINDOW_SIZE     65535
 #define H2_DEF_MAX_FRAME_SIZE          16384
 #define H2_DEF_MAX_HEADER_LIST_SIZE    0xffffffff
+
+// ── stream constants, mirroring defs.S (§5) ────────────────────────
+#define H2_MAX_STREAMS 32
+
+#define H2_STREAM_IDLE               0
+#define H2_STREAM_OPEN               1
+#define H2_STREAM_HALF_CLOSED_REMOTE 2
+#define H2_STREAM_HALF_CLOSED_LOCAL  3
+#define H2_STREAM_CLOSED             4
+
+#define H2_EVENT_RECV_HEADERS    0
+#define H2_EVENT_RECV_DATA       1
+#define H2_EVENT_RECV_END_STREAM 2
+#define H2_EVENT_RECV_RST_STREAM 3
+
+#define H2S_STREAM_ID 0
+#define H2S_STATE     8
+#define H2S_FLAGS     16
+#define H2S_WINDOW    24
+#define H2S_SIZE      32
+
+#define H2_STREAMS_BYTES (H2_MAX_STREAMS * H2S_SIZE)
 
 // ── the 24-byte client connection preface (RFC 9113 §3.4) ─────────
 // 25 bytes with the NUL terminator; only the first 24 are sent.
@@ -65,7 +96,7 @@ extern int usleep(unsigned int usec);
 #define AF_UNIX   1
 #define SOCK_STREAM 1
 
-// ── structs, mirroring the H2F_*/H2C_* offsets in defs.S ───────────
+// ── structs, mirroring the H2F_*/H2C_*/H2S_* offsets in defs.S ──────
 typedef struct {
 	uint32_t length;
 	uint32_t type;
@@ -83,7 +114,16 @@ typedef struct {
 	int64_t settings_max_frame_size;
 	int64_t settings_max_header_list_size;
 	int64_t ack_received;
+	int64_t last_stream_id;
 } h2_conn_t;
+
+// one entry of the fixed stream table (h2_streams)
+typedef struct {
+	int64_t stream_id;
+	int64_t state;
+	int64_t flags;
+	int64_t window;
+} h2_stream_t;
 
 // ── wire frame builders ────────────────────────────────────────────
 
@@ -175,6 +215,7 @@ static void reset_conn(h2_conn_t *conn) {
 	conn->settings_max_frame_size = H2_DEF_MAX_FRAME_SIZE;
 	conn->settings_max_header_list_size = H2_DEF_MAX_HEADER_LIST_SIZE;
 	conn->ack_received = 0;
+	conn->last_stream_id = 0;
 }
 
 // ── h2_conn defaults baked into data.S ─────────────────────────────
@@ -232,6 +273,94 @@ static inline const uint8_t *h2_settings_frame_addr(void) {
 		: "=r"(p)
 		:: "x0");
 	return p;
+}
+
+// ── Stage 6 wrappers for asm functions ─────────────────────────────
+
+static inline h2_stream_t *h2_streams_addr(void) {
+	h2_stream_t *p;
+	asm volatile(
+		"adrp x0, h2_streams@PAGE\n"
+		"add  x0, x0, h2_streams@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+// Zero the whole stream table — a fresh connection in tests.
+static void reset_streams(void) {
+	memset(h2_streams_addr(), 0, H2_STREAMS_BYTES);
+}
+
+// h2_stream_find(id=x0) → pointer to the entry, or NULL
+static inline h2_stream_t *h2_stream_find_wrapper(int64_t id) {
+	h2_stream_t *p;
+	asm volatile(
+		"mov x0, %1\n"
+		"bl h2_stream_find\n"
+		"mov %0, x0\n"
+		: "=r"(p)
+		: "r"(id)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+	return p;
+}
+
+// h2_stream_create(id=x0, conn=x1) → (ptr=x0, carry)
+static inline h2_stream_t *h2_stream_create_wrapper(int64_t id, h2_conn_t *conn,
+                                                    int64_t *carry_out) {
+	h2_stream_t *p;
+	int64_t carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_stream_create\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(p), "=r"(carry)
+		: "r"(id), "r"(conn)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+		  "x9", "memory");
+	*carry_out = carry;
+	return p;
+}
+
+// h2_validate_stream_id(hdr=x0, conn=x1) → (rc=x0, carry)
+static inline int64_t h2_validate_stream_id_wrapper(h2_frame_header_t *hdr,
+                                                    h2_conn_t *conn,
+                                                    int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_validate_stream_id\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(hdr), "r"(conn)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+	*carry_out = carry;
+	return rc;
+}
+
+// h2_stream_event(stream=x0, event=x1) → (rc=x0, carry)
+static inline int64_t h2_stream_event_wrapper(h2_stream_t *s, int64_t event,
+                                              int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_stream_event\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(s), "r"(event)
+		: "x0", "x1", "x2", "x3", "x4", "x9", "memory");
+	*carry_out = carry;
+	return rc;
 }
 
 // ── Stage 5 wrappers for asm functions ─────────────────────────────
@@ -294,6 +423,7 @@ static void test_h2_conn_defaults(void) {
 	ASSERT_EQ("max_header_list_size", H2_DEF_MAX_HEADER_LIST_SIZE,
 	          conn->settings_max_header_list_size);
 	ASSERT_EQ("ack_received", 0, conn->ack_received);
+	ASSERT_EQ("last_stream_id", 0, conn->last_stream_id);
 	ASSERT_EQ("last_frame_type", 0, conn->last_frame_type);
 }
 
@@ -373,22 +503,31 @@ static void test_h2_validate_frame(void) {
 static void test_h2_dispatch_frame(void) {
 	TEST_SUITE("h2_dispatch_frame — 4.3");
 
+	// Since Stage 6, stream-scoped frames (HEADERS, DATA, RST_STREAM)
+	// are real: HEADERS on stream 1 opens the stream, DATA rides on it,
+	// RST_STREAM closes it. Connection-scoped frames (SETTINGS, PING,
+	// GOAWAY) keep stream id 0; the remaining stream-scoped types are
+	// still stubs and accept any id. RST_STREAM needs its 4-byte
+	// payload to pass the §6.4 length check.
 	static const uint8_t types[] = {
-		H2_FRAME_DATA, H2_FRAME_HEADERS, H2_FRAME_PRIORITY, H2_FRAME_RST_STREAM,
+		H2_FRAME_HEADERS, H2_FRAME_DATA, H2_FRAME_PRIORITY, H2_FRAME_RST_STREAM,
 		H2_FRAME_SETTINGS, H2_FRAME_PUSH_PROMISE, H2_FRAME_PING, H2_FRAME_GOAWAY,
 		H2_FRAME_WINDOW_UPDATE, H2_FRAME_CONTINUATION,
 	};
+	static const uint8_t streams[] = { 1, 1, 1, 1, 0, 1, 0, 0, 1, 1 };
+	static const uint32_t lens[]   = { 0, 0, 0, 4, 0, 0, 0, 0, 0, 0 };
 	uint8_t payload[6] = {0};
 	h2_conn_t conn;
 	reset_conn(&conn);
+	reset_streams();
 	h2_frame_header_t hdr;
-	hdr.length = 0;
 	hdr.flags = 0;
-	hdr.stream_id = 0;
 	int64_t carry;
 
 	for (int i = 0; i < 10; i++) {
 		hdr.type = types[i];
+		hdr.length = lens[i];
+		hdr.stream_id = streams[i];
 		ASSERT_EQ("handler returns success", 0,
 		          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
 		ASSERT_EQ("carry clear", 0, carry);
@@ -782,6 +921,444 @@ static void test_h2_preface_constant(void) {
 	ASSERT_STR_EQ("matches the spec string", H2_PREFACE, p, H2_PREFACE_LEN);
 }
 
+// ── 6.1 — stream table ─────────────────────────────────────────────
+
+// Create a stream and force it into `state` — the transition tests need
+// to start from any state without driving there frame by frame.
+static h2_stream_t *stream_in_state(h2_conn_t *conn, int64_t id,
+                                    int64_t state) {
+	reset_streams();
+	reset_conn(conn);
+	int64_t carry;
+	h2_stream_t *s = h2_stream_create_wrapper(id, conn, &carry);
+	if (s == NULL)
+		return NULL;
+	s->state = state;
+	return s;
+}
+
+static void test_h2_stream_table(void) {
+	TEST_SUITE("h2_stream table — 6.1 create and find");
+
+	h2_conn_t conn;
+	reset_conn(&conn);
+	reset_streams();
+	int64_t carry;
+
+	// an empty table finds nothing
+	ASSERT_EQ("find stream 1 — not found", 0,
+	          (int64_t)h2_stream_find_wrapper(1));
+
+	// creating stream 1 fills a fresh entry with the RFC defaults
+	h2_stream_t *s1 = h2_stream_create_wrapper(1, &conn, &carry);
+	ASSERT_EQ("create 1 succeeds", 0, carry);
+	ASSERT_NOT_NULL("create 1 returns an entry", s1);
+	ASSERT_EQ("stream_id = 1", 1, s1->stream_id);
+	ASSERT_EQ("initial state IDLE", H2_STREAM_IDLE, s1->state);
+	ASSERT_EQ("initial flags 0", 0, s1->flags);
+	ASSERT_EQ("initial window 65535", H2_DEF_INITIAL_WINDOW_SIZE, s1->window);
+	ASSERT_EQ("conn tracks last stream id", 1, conn.last_stream_id);
+
+	// ... and can be found again
+	ASSERT_EQ("find 1 returns the same entry", (int64_t)s1,
+	          (int64_t)h2_stream_find_wrapper(1));
+
+	// a second stream uses a different entry; the first is untouched
+	h2_stream_t *s3 = h2_stream_create_wrapper(3, &conn, &carry);
+	ASSERT_EQ("create 3 succeeds", 0, carry);
+	ASSERT_NOT_NULL("create 3 returns an entry", s3);
+	ASSERT_EQ("entries differ", 1, s1 != s3);
+	ASSERT_EQ("find 3 returns its entry", (int64_t)s3,
+	          (int64_t)h2_stream_find_wrapper(3));
+	ASSERT_EQ("stream 1 still present", (int64_t)s1,
+	          (int64_t)h2_stream_find_wrapper(1));
+	ASSERT_EQ("conn tracks last stream id", 3, conn.last_stream_id);
+
+	// creating an existing id is find-or-create: same entry, no change
+	ASSERT_EQ("create 1 again returns existing entry", (int64_t)s1,
+	          (int64_t)h2_stream_create_wrapper(1, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("stream 1 state unchanged", H2_STREAM_IDLE, s1->state);
+
+	// the table is fixed at H2_MAX_STREAMS — filling it rejects the next
+	reset_streams();
+	reset_conn(&conn);
+	for (int64_t id = 1; id < 2 * H2_MAX_STREAMS; id += 2)
+		h2_stream_create_wrapper(id, &conn, &carry);
+	// 32 odd ids (1..63) fill the table; the 33rd is rejected
+	h2_stream_t *full = h2_stream_create_wrapper(65, &conn, &carry);
+	ASSERT_EQ("table full → carry set", 1, carry);
+	ASSERT_EQ("table full → REFUSED_STREAM", H2_ERR_REFUSED_STREAM,
+	          (int64_t)full);
+}
+
+// ── 6.2 — stream id validation ─────────────────────────────────────
+
+static void test_h2_validate_stream_id(void) {
+	TEST_SUITE("h2_validate_stream_id — 6.2");
+
+	uint8_t wire[9];
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	reset_streams();
+	reset_conn(&conn);
+
+	// zero is reserved for connection-level frames (§5.1.1)
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 0);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("id 0 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	// client streams are odd — an even id belongs to a server stream
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 2);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("even id → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 4);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("even id 4 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+
+	// a fresh odd id is fine
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("id 1 accepted", 0,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// ids must increase for new streams (§5.1.1)
+	reset_streams();
+	reset_conn(&conn);
+	conn.last_stream_id = 9; // the connection has already seen up to 9
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 7); // new stream, lower id
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("new id ≤ last → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 11); // new stream, higher id
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("new id > last accepted", 0,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+
+	// an existing stream may keep its id — no increase check for it
+	reset_streams();
+	reset_conn(&conn);
+	h2_stream_create_wrapper(5, &conn, &carry); // last becomes 5
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 5);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("existing id accepted", 0,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+}
+
+// 6.2 end-to-end: the HEADERS handler applies the same checks
+static void test_h2_headers_stream_creation(void) {
+	TEST_SUITE("h2_handle_headers — 6.2 stream creation");
+
+	uint8_t wire[9];
+	uint8_t payload[1] = {0};
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	reset_streams();
+	reset_conn(&conn);
+
+	// a HEADERS frame on stream 0 is a PROTOCOL_ERROR
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 0);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS id 0 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+	ASSERT_EQ("no stream created", 0, (int64_t)h2_stream_find_wrapper(1));
+
+	// an even stream id is a PROTOCOL_ERROR
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 2);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS id 2 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("no stream created", 0, (int64_t)h2_stream_find_wrapper(2));
+
+	// a valid HEADERS opens the stream and bumps the high-water mark
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS id 1 accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	h2_stream_t *s = h2_stream_find_wrapper(1);
+	ASSERT_NOT_NULL("stream 1 created", s);
+	ASSERT_EQ("state OPEN", H2_STREAM_OPEN, s->state);
+	ASSERT_EQ("conn last stream id = 1", 1, conn.last_stream_id);
+
+	// the next stream must use a larger id
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 3);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS id 3 accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("conn last stream id = 3", 3, conn.last_stream_id);
+
+	// a HEADERS for an existing stream is fine (trailers, §5.1 open)
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS on existing stream accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("stream 1 still OPEN", H2_STREAM_OPEN,
+	          h2_stream_find_wrapper(1)->state);
+}
+
+// ── 6.3 — stream states ────────────────────────────────────────────
+
+static void test_h2_stream_transitions(void) {
+	TEST_SUITE("h2_stream_event — 6.3 state machine");
+
+	h2_conn_t conn;
+	h2_stream_t *s;
+	int64_t carry;
+
+	// ── IDLE ──
+	s = stream_in_state(&conn, 1, H2_STREAM_IDLE);
+	ASSERT_EQ("IDLE+HEADERS → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry));
+	ASSERT_EQ("IDLE+HEADERS → OPEN", H2_STREAM_OPEN, s->state);
+
+	s = stream_in_state(&conn, 3, H2_STREAM_IDLE);
+	ASSERT_EQ("IDLE+DATA → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_DATA, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+	ASSERT_EQ("state unchanged", H2_STREAM_IDLE, s->state);
+
+	s = stream_in_state(&conn, 5, H2_STREAM_IDLE);
+	ASSERT_EQ("IDLE+END_STREAM → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_END_STREAM, &carry));
+	ASSERT_EQ("state unchanged", H2_STREAM_IDLE, s->state);
+
+	s = stream_in_state(&conn, 7, H2_STREAM_IDLE);
+	ASSERT_EQ("IDLE+RST → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry));
+	ASSERT_EQ("state unchanged", H2_STREAM_IDLE, s->state);
+
+	// ── OPEN ──
+	s = stream_in_state(&conn, 9, H2_STREAM_OPEN);
+	ASSERT_EQ("OPEN+HEADERS → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry));
+	ASSERT_EQ("OPEN+HEADERS stays OPEN (trailers)", H2_STREAM_OPEN, s->state);
+
+	s = stream_in_state(&conn, 11, H2_STREAM_OPEN);
+	ASSERT_EQ("OPEN+DATA → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_DATA, &carry));
+	ASSERT_EQ("OPEN+DATA stays OPEN", H2_STREAM_OPEN, s->state);
+
+	s = stream_in_state(&conn, 13, H2_STREAM_OPEN);
+	ASSERT_EQ("OPEN+END_STREAM → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_END_STREAM, &carry));
+	ASSERT_EQ("OPEN+END_STREAM → HALF_CLOSED_REMOTE",
+	          H2_STREAM_HALF_CLOSED_REMOTE, s->state);
+
+	s = stream_in_state(&conn, 15, H2_STREAM_OPEN);
+	ASSERT_EQ("OPEN+RST → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry));
+	ASSERT_EQ("OPEN+RST → CLOSED", H2_STREAM_CLOSED, s->state);
+
+	// ── HALF_CLOSED_REMOTE ──
+	s = stream_in_state(&conn, 17, H2_STREAM_HALF_CLOSED_REMOTE);
+	ASSERT_EQ("HCR+HEADERS → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry));
+	ASSERT_EQ("state unchanged", H2_STREAM_HALF_CLOSED_REMOTE, s->state);
+
+	s = stream_in_state(&conn, 19, H2_STREAM_HALF_CLOSED_REMOTE);
+	ASSERT_EQ("HCR+DATA → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_DATA, &carry));
+
+	s = stream_in_state(&conn, 21, H2_STREAM_HALF_CLOSED_REMOTE);
+	ASSERT_EQ("HCR+END_STREAM → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_END_STREAM, &carry));
+
+	s = stream_in_state(&conn, 23, H2_STREAM_HALF_CLOSED_REMOTE);
+	ASSERT_EQ("HCR+RST → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry));
+	ASSERT_EQ("HCR+RST → CLOSED", H2_STREAM_CLOSED, s->state);
+
+	// ── HALF_CLOSED_LOCAL ──
+	s = stream_in_state(&conn, 25, H2_STREAM_HALF_CLOSED_LOCAL);
+	ASSERT_EQ("HCL+HEADERS → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry));
+
+	s = stream_in_state(&conn, 27, H2_STREAM_HALF_CLOSED_LOCAL);
+	ASSERT_EQ("HCL+DATA → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_DATA, &carry));
+
+	s = stream_in_state(&conn, 29, H2_STREAM_HALF_CLOSED_LOCAL);
+	ASSERT_EQ("HCL+END_STREAM → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_END_STREAM, &carry));
+	ASSERT_EQ("HCL+END_STREAM → CLOSED", H2_STREAM_CLOSED, s->state);
+
+	s = stream_in_state(&conn, 31, H2_STREAM_HALF_CLOSED_LOCAL);
+	ASSERT_EQ("HCL+RST → 0", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry));
+	ASSERT_EQ("HCL+RST → CLOSED", H2_STREAM_CLOSED, s->state);
+
+	// ── CLOSED ──
+	s = stream_in_state(&conn, 33, H2_STREAM_CLOSED);
+	ASSERT_EQ("CLOSED+DATA → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_DATA, &carry));
+	ASSERT_EQ("state unchanged", H2_STREAM_CLOSED, s->state);
+
+	// a reset racing our own END_STREAM is tolerated (§5.1 closed)
+	s = stream_in_state(&conn, 35, H2_STREAM_CLOSED);
+	ASSERT_EQ("CLOSED+RST → 0 (tolerated)", 0,
+	          h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry));
+	ASSERT_EQ("state stays CLOSED", H2_STREAM_CLOSED, s->state);
+
+	// defensive: an out-of-range event is an invalid transition
+	s = stream_in_state(&conn, 37, H2_STREAM_OPEN);
+	ASSERT_EQ("event out of range → STREAM_CLOSED", H2_ERR_STREAM_CLOSED,
+	          h2_stream_event_wrapper(s, 4, &carry));
+	ASSERT_EQ("state unchanged", H2_STREAM_OPEN, s->state);
+}
+
+// END_STREAM flag handling through the real handlers
+static void test_h2_end_stream_flags(void) {
+	TEST_SUITE("h2 HEADERS/DATA — 6.3 END_STREAM flag");
+
+	uint8_t wire[9];
+	uint8_t payload[1] = {0};
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	// HEADERS without END_STREAM → OPEN
+	reset_streams();
+	reset_conn(&conn);
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("state OPEN", H2_STREAM_OPEN, h2_stream_find_wrapper(1)->state);
+
+	// HEADERS with END_STREAM → HALF_CLOSED_REMOTE
+	reset_streams();
+	reset_conn(&conn);
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS+END_STREAM accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	h2_stream_t *s = h2_stream_find_wrapper(1);
+	ASSERT_EQ("state HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE, s->state);
+
+	// DATA without END_STREAM → stays OPEN
+	reset_streams();
+	reset_conn(&conn);
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	put_wire_header(wire, 5, H2_FRAME_DATA, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("DATA accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("state still OPEN", H2_STREAM_OPEN, h2_stream_find_wrapper(1)->state);
+
+	// DATA with END_STREAM → HALF_CLOSED_REMOTE
+	put_wire_header(wire, 5, H2_FRAME_DATA, H2_FLAG_END_STREAM, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("DATA+END_STREAM accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("state HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
+	          h2_stream_find_wrapper(1)->state);
+
+	// DATA on an unknown stream → idle violation (PROTOCOL_ERROR)
+	put_wire_header(wire, 5, H2_FRAME_DATA, 0, 9);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("DATA on idle stream → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+}
+
+// ── 6.4 — RST_STREAM ───────────────────────────────────────────────
+
+static void test_h2_rst_stream(void) {
+	TEST_SUITE("h2_handle_rst_stream — 6.4");
+
+	uint8_t wire[9];
+	uint8_t payload[4] = {0, 0, 0, H2_ERR_CANCEL}; // 4-byte error code
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	// the happy path: HEADERS opens a stream, RST_STREAM closes it
+	reset_streams();
+	reset_conn(&conn);
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	h2_stream_t *s = h2_stream_find_wrapper(1);
+	ASSERT_EQ("stream OPEN", H2_STREAM_OPEN, s->state);
+
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("RST_STREAM accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("stream CLOSED", H2_STREAM_CLOSED, h2_stream_find_wrapper(1)->state);
+
+	// a wrong payload length is a FRAME_SIZE_ERROR
+	put_wire_header(wire, 3, H2_FRAME_RST_STREAM, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("length 3 → FRAME_SIZE_ERROR", H2_ERR_FRAME_SIZE_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	// stream 0 is a connection-level id — RST_STREAM there is an error
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 0);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("stream 0 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+
+	// an even id (server-initiated) is an error from the client
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 2);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("even id → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+
+	// RST_STREAM on an idle (never opened) stream (§6.4)
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 9);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("idle stream → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	// RST_STREAM on a half-closed (remote) stream also closes it
+	// (stream 1 is closed now; use a fresh stream 3)
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 3);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS+END_STREAM accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	h2_stream_t *s3 = h2_stream_find_wrapper(3);
+	ASSERT_EQ("stream 3 HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
+	          s3->state);
+
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 3);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("RST_STREAM accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("stream 3 CLOSED", H2_STREAM_CLOSED, h2_stream_find_wrapper(3)->state);
+
+	// RST_STREAM on an already-closed stream is tolerated (§5.1 closed)
+	put_wire_header(wire, 4, H2_FRAME_RST_STREAM, 0, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("RST on CLOSED stream tolerated", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("stream 1 still CLOSED", H2_STREAM_CLOSED,
+	          h2_stream_find_wrapper(1)->state);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -799,6 +1376,13 @@ int main(void) {
 	test_h2_settings_validation();
 	test_h2_settings_ack();
 	test_h2_malformed_rejected();
+	// Stage 6 — stream management
+	test_h2_stream_table();
+	test_h2_validate_stream_id();
+	test_h2_headers_stream_creation();
+	test_h2_stream_transitions();
+	test_h2_end_stream_flags();
+	test_h2_rst_stream();
 	test_summary();
 	return 0;
 }

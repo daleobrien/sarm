@@ -592,7 +592,7 @@
 .equ H2F_STREAM_ID,  12  // u32 stream id (31-bit, R bit masked off)
 .equ H2F_SIZE,       16
 
-// HTTP/2 connection state struct (h2_conn, 72 bytes)
+// HTTP/2 connection state struct (h2_conn, 80 bytes)
 .equ H2C_LAST_FRAME_TYPE,                0   // last dispatched frame type
 .equ H2C_MAX_RX_FRAME_SIZE,              8   // max payload we accept (2^14 default)
 .equ H2C_SETTINGS_HEADER_TABLE_SIZE,     16  // peer's settings — RFC 9113 §6.5.2 defaults
@@ -602,4 +602,32 @@
 .equ H2C_SETTINGS_MAX_FRAME_SIZE,        48
 .equ H2C_SETTINGS_MAX_HEADER_LIST_SIZE,  56
 .equ H2C_ACK_RECEIVED,                   64  // 1 once a SETTINGS ACK arrives
-.equ H2C_SIZE,                           72
+.equ H2C_LAST_STREAM_ID,                 72  // largest client-initiated stream id seen (§5.1.1)
+.equ H2C_SIZE,                           80
+
+// ── HTTP/2 stream engine (RFC 9113 §5) ───────────────────────────────
+// Stream states (§5.1), as observed by the receiving endpoint. Rows of
+// the h2_stream_event transition table; HPACK/flow control stages later
+// add the fields they need to each entry.
+.equ H2_STREAM_IDLE,               0
+.equ H2_STREAM_OPEN,               1
+.equ H2_STREAM_HALF_CLOSED_REMOTE, 2
+.equ H2_STREAM_HALF_CLOSED_LOCAL,  3
+.equ H2_STREAM_CLOSED,             4
+
+// stream events — the receive-side inputs to h2_stream_event
+.equ H2_EVENT_RECV_HEADERS,    0
+.equ H2_EVENT_RECV_DATA,       1
+.equ H2_EVENT_RECV_END_STREAM, 2
+.equ H2_EVENT_RECV_RST_STREAM, 3
+.equ H2_EVENT_COUNT,           4
+
+// the fixed stream table (§5.1.2): H2_MAX_STREAMS entries of H2S_SIZE
+// bytes each. An entry is free when stream_id == 0 — wire stream ids
+// are never zero, so 0 is unambiguous.
+.equ H2_MAX_STREAMS, 32
+.equ H2S_STREAM_ID,  0    // u64 stream id
+.equ H2S_STATE,      8    // u64 one of H2_STREAM_*
+.equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...)
+.equ H2S_WINDOW,     24   // u64 stream flow-control window
+.equ H2S_SIZE,       32

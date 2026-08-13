@@ -31,11 +31,23 @@
 // the first frame the server sends. The connection read loop that calls
 // them in sequence arrives in a later stage.
 //
+// Stage 6 — stream management: the fixed stream table (h2_streams,
+// H2_MAX_STREAMS entries, §5.1), stream id validation (nonzero, odd,
+// increasing; §5.1.1), the receive-side stream state machine
+// (h2_stream_event; IDLE/OPEN/HALF_CLOSED_*/CLOSED, §5.1) and the
+// RST_STREAM handler (§6.4). HEADERS and DATA now drive the state
+// machine instead of just acknowledging receipt; PRIORITY, PUSH_PROMISE,
+// PING, GOAWAY, WINDOW_UPDATE and CONTINUATION remain stubs. HPACK
+// decoding and flow control arrive in later stages.
+//
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
 //   carry set   = failure, x0 = HTTP/2 error code (H2_ERR_*)
-// A frame handler that reports an error means the connection is
-// poisoned — the connection loop must send GOAWAY and close.
+// A frame handler that reports a connection error (PROTOCOL_ERROR,
+// FRAME_SIZE_ERROR, ...) poisons the connection — the connection loop
+// must send GOAWAY and close. STREAM_CLOSED is a stream error: it
+// should become an RST_STREAM on that stream rather than a GOAWAY once
+// the connection loop stage separates the two.
 
 .global h2_parse_frame_header
 .global h2_validate_frame
@@ -46,6 +58,11 @@
 .global h2_conn
 .global h2_frame_header
 .global h2_settings_frame
+.global h2_streams
+.global h2_stream_find
+.global h2_stream_create
+.global h2_validate_stream_id
+.global h2_stream_event
 
 .data
 .align 3
@@ -64,6 +81,7 @@ h2_conn:
     .quad H2_DEFAULT_MAX_FRAME_SIZE        // H2C_SETTINGS_MAX_FRAME_SIZE
     .quad 0xffffffff                      // H2C_SETTINGS_MAX_HEADER_LIST_SIZE (unlimited)
     .quad 0                               // H2C_ACK_RECEIVED
+    .quad 0                               // H2C_LAST_STREAM_ID
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
 // §3.5, §6.5): a potentially empty SETTINGS frame, so it is just the
@@ -92,12 +110,32 @@ h2_frame_handlers:
     .quad h2_handle_window_update
     .quad h2_handle_continuation
 
+// receive-side stream transitions (§5.1) — rows are states, columns are
+// H2_EVENT_* in order [RECV_HEADERS, RECV_DATA, RECV_END_STREAM,
+// RECV_RST_STREAM]. Each byte is the resulting state, or 0xff when the
+// transition is invalid (h2_stream_event maps the error: an idle-stream
+// violation is PROTOCOL_ERROR, anything else is STREAM_CLOSED).
+.align 1
+h2_stream_transitions:
+    .byte H2_STREAM_OPEN, 0xff, 0xff, 0xff                               // IDLE
+    .byte H2_STREAM_OPEN, H2_STREAM_OPEN, H2_STREAM_HALF_CLOSED_REMOTE, H2_STREAM_CLOSED  // OPEN
+    .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // HALF_CLOSED_REMOTE
+    .byte 0xff, 0xff, H2_STREAM_CLOSED, H2_STREAM_CLOSED                 // HALF_CLOSED_LOCAL
+    .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // CLOSED (RST tolerated)
+
 .bss
 .align 3
 // h2_frame_header — scratch for the parsed frame header. The connection
 // loop parses the 9 wire bytes into this before validating/dispatching.
 h2_frame_header:
     .skip H2F_SIZE
+
+// h2_streams — the fixed stream table (§5.1). H2_MAX_STREAMS entries of
+// H2S_SIZE bytes; a zero stream_id marks a free slot (wire ids are
+// never zero). Zeroed at startup; stream entries are not recycled once
+// CLOSED — a later stage decides when closed entries may be reused.
+h2_streams:
+    .skip H2_MAX_STREAMS * H2S_SIZE
 
 .text
 .align 2
@@ -214,18 +252,139 @@ h2_dispatch_frame:
     ret
 
 // ── frame handlers ──────────────────────────────────────────────────
-// Stage 4: every handler except SETTINGS acknowledges receipt and does
-// nothing else; their real behaviour (streams, HPACK, flow control)
-// arrives in later stages. All handlers receive x0 -> frame header,
-// x1 -> payload, x2 -> connection state and return via the dispatcher's
-// tail call. Each must fully establish the return contract (x0 = 0,
-// carry clear) — the dispatcher leaves the flags from its type compare,
-// so a handler may not assume anything about them on entry.
+// All handlers receive x0 -> frame header, x1 -> payload, x2 ->
+// connection state and return via the dispatcher's tail call. Each must
+// fully establish the return contract (x0 = 0, carry clear) — the
+// dispatcher leaves the flags from its type compare, so a handler may
+// not assume anything about them on entry.
 
-h2_handle_data:
+// ── 6.3/6.2 — HEADERS ───────────────────────────────────────────────
+// Open or update the stream named by the frame. A HEADERS frame is the
+// only thing that may open a new client stream (§5.1): the id must pass
+// h2_validate_stream_id, the stream is created in IDLE and moved to
+// OPEN, and the END_STREAM flag then moves it to HALF_CLOSED_REMOTE.
+// The HPACK payload is not decoded yet — that is the HPACK stage.
+//
+// NOTE: the dispatcher reaches us with br, so x30 is the return address
+// of the dispatcher's caller — save it before our own bl calls.
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x11, x9, x30 (saved/restored)
 h2_handle_headers:
-h2_handle_priority:
+    str x30, [sp, #-16]!   // save the return address
+    // the id must be nonzero, odd and, for a brand-new stream, higher
+    // than every client id seen on this connection (§5.1.1)
+    mov x10, x0            // hdr — saved across the validate call
+    mov x11, x2            // conn — saved across the validate call
+    mov x1, x2             // validate's second argument is the conn
+    bl h2_validate_stream_id
+    b.cs .Lh2_stream_error
+    ldr w0, [x10, #H2F_STREAM_ID]
+    mov x1, x11
+    bl h2_stream_create
+    b.cs .Lh2_stream_error
+    mov x8, x0             // stream entry — survives the event calls
+    mov x1, #H2_EVENT_RECV_HEADERS
+    bl h2_stream_event
+    b.cs .Lh2_stream_error
+    // END_STREAM closes the client's send side → HALF_CLOSED_REMOTE
+    ldr w3, [x10, #H2F_FLAGS]
+    tst w3, #H2_FLAG_END_STREAM
+    b.eq .Lh2_headers_ok
+    mov x0, x8
+    mov x1, #H2_EVENT_RECV_END_STREAM
+    bl h2_stream_event
+    b.cs .Lh2_stream_error
+.Lh2_headers_ok:
+    ldr x30, [sp], #16    // restore the return address
+    cmn xzr, xzr // success — carry clear
+    mov x0, #0
+    ret
+
+// ── 6.3 — DATA ──────────────────────────────────────────────────────
+// DATA frames carry request body bytes. Only an existing stream may
+// receive them — an unknown stream is an idle-stream violation
+// (PROTOCOL_ERROR, §5.1); any other invalid state is STREAM_CLOSED.
+// END_STREAM on the frame closes the client's send side. The payload
+// is not consumed yet (flow control/body handling arrive later).
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x8, x10, x11, x9, x30 (saved/restored)
+h2_handle_data:
+    str x30, [sp, #-16]!   // save the return address
+    mov x10, x0            // hdr
+    mov x11, x2            // conn — unused beyond this, kept for symmetry
+    ldr w0, [x10, #H2F_STREAM_ID]
+    bl h2_stream_find
+    cbz x0, .Lh2_data_idle_error
+    mov x8, x0             // stream entry
+    mov x1, #H2_EVENT_RECV_DATA
+    bl h2_stream_event
+    b.cs .Lh2_stream_error
+    // END_STREAM closes the client's send side → HALF_CLOSED_REMOTE
+    ldr w3, [x10, #H2F_FLAGS]
+    tst w3, #H2_FLAG_END_STREAM
+    b.eq .Lh2_data_ok
+    mov x0, x8
+    mov x1, #H2_EVENT_RECV_END_STREAM
+    bl h2_stream_event
+    b.cs .Lh2_stream_error
+.Lh2_data_ok:
+    ldr x30, [sp], #16    // restore the return address
+    cmn xzr, xzr // success — carry clear
+    mov x0, #0
+    ret
+.Lh2_data_idle_error:
+    ldr x30, [sp], #16    // restore the return address
+    cmp xzr, xzr // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+
+// ── 6.4 — RST_STREAM ────────────────────────────────────────────────
+// Abort a stream (§6.4). The payload is one 32-bit error code; the
+// stream moves to CLOSED. RST_STREAM on an idle stream, on stream 0,
+// or with an even (server-initiated) id is a PROTOCOL_ERROR connection
+// error. The error code itself is not recorded anywhere yet.
+//
+// input/output: as h2_dispatch_frame
+//
+// clobbers x0-x4, x9, x30 (saved/restored)
 h2_handle_rst_stream:
+    str x30, [sp, #-16]!   // save the return address
+    // exactly 4 payload bytes — one 32-bit error code (§6.4)
+    ldr w3, [x0, #H2F_LENGTH]
+    cmp w3, #4
+    b.ne .Lh2_rst_size_error
+    ldr w4, [x0, #H2F_STREAM_ID]
+    cbz w4, .Lh2_rst_protocol_error
+    tst w4, #1
+    b.eq .Lh2_rst_protocol_error
+    mov x0, x4
+    bl h2_stream_find
+    cbz x0, .Lh2_rst_protocol_error
+    mov x1, #H2_EVENT_RECV_RST_STREAM
+    bl h2_stream_event
+    b.cs .Lh2_stream_error
+    ldr x30, [sp], #16    // restore the return address
+    cmn xzr, xzr // success — carry clear
+    mov x0, #0
+    ret
+.Lh2_rst_protocol_error:
+    ldr x30, [sp], #16    // restore the return address
+    cmp xzr, xzr // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+.Lh2_rst_size_error:
+    ldr x30, [sp], #16    // restore the return address
+    cmp xzr, xzr // failure — carry set
+    mov x0, #H2_ERR_FRAME_SIZE_ERROR
+    ret
+
+// Handlers not yet implemented — acknowledge receipt and do nothing:
+// PRIORITY, PUSH_PROMISE, PING, GOAWAY, WINDOW_UPDATE, CONTINUATION.
+h2_handle_priority:
 h2_handle_push_promise:
 h2_handle_ping:
 h2_handle_goaway:
@@ -234,6 +393,192 @@ h2_handle_continuation:
 .Lh2_handler_ok:
     cmn xzr, xzr // success — carry clear
     mov x0, #0
+    ret
+
+// Shared error exit for the stream handlers: every handler saved x30 at
+// entry the same way, so pop it back and pass the error through
+// (x0 holds the error, carry is set).
+.Lh2_stream_error:
+    ldr x30, [sp], #16
+    ret
+
+// ── stream engine ───────────────────────────────────────────────────
+// Stage 6. The fixed stream table (h2_streams) plus the receive-side
+// state machine (§5.1) and id validation (§5.1.1) that the HEADERS /
+// DATA / RST_STREAM handlers drive.
+
+// ── 6.1 — look up a stream by id ────────────────────────────────────
+// Linear scan of the table; 32 entries is small and the scan is only
+// run per frame, so a hash table is not worth it yet.
+//
+// input
+// x0 -> stream id
+//
+// output
+// x0 -> stream entry, or 0 if the stream is not in the table
+// carry clear (not found is a valid result, not an error)
+//
+// clobbers x0, x2, x3, x9
+h2_stream_find:
+    adr_l x9, h2_streams
+    mov x2, #H2_MAX_STREAMS
+.Lh2_find_loop:
+    ldr x3, [x9]           // this entry's stream id
+    cmp x3, x0
+    b.eq .Lh2_find_hit
+    add x9, x9, #H2S_SIZE
+    subs x2, x2, #1
+    b.ne .Lh2_find_loop
+    mov x0, #0             // not found
+    cmn xzr, xzr           // success — carry clear
+    ret
+.Lh2_find_hit:
+    mov x0, x9
+    cmn xzr, xzr
+    ret
+
+// ── 6.1 — find-or-create a stream entry ─────────────────────────────
+// Returns the existing entry for the id, or fills the first free slot
+// (stream_id == 0) with a fresh stream: state IDLE, no flags, and the
+// window we are willing to accept on new streams (RFC 9113 §5.2.1
+// default; the flow-control stage will track our own advertised
+// SETTINGS_INITIAL_WINDOW_SIZE instead). Creating a stream records its
+// id as the connection's new high-water mark for client streams.
+//
+// input
+// x0 -> stream id
+// x1 -> connection state
+//
+// output
+// success — carry clear, x0 -> stream entry
+// failure — carry set, x0 = H2_ERR_REFUSED_STREAM (table is full)
+//
+// clobbers x0-x7, x9
+h2_stream_create:
+    mov x2, x0             // id
+    mov x3, x1             // conn
+    adr_l x4, h2_streams
+    mov x5, #H2_MAX_STREAMS
+    mov x6, #0             // free slot seen so far (0 = none)
+.Lh2_create_loop:
+    ldr x7, [x4]           // this entry's stream id
+    cmp x7, x2
+    b.eq .Lh2_create_exists
+    cbnz x7, .Lh2_create_next
+    mov x6, x4             // remember the free slot
+.Lh2_create_next:
+    add x4, x4, #H2S_SIZE
+    subs x5, x5, #1
+    b.ne .Lh2_create_loop
+    cbz x6, .Lh2_create_full
+    // initialise the fresh entry
+    str x2, [x6, #H2S_STREAM_ID]
+    mov x7, #H2_STREAM_IDLE
+    str x7, [x6, #H2S_STATE]
+    str xzr, [x6, #H2S_FLAGS]
+    mov x7, #H2_DEFAULT_INITIAL_WINDOW_SIZE
+    str x7, [x6, #H2S_WINDOW]
+    // this id is now the largest client stream the connection has seen
+    str x2, [x3, #H2C_LAST_STREAM_ID]
+    mov x0, x6
+    cmn xzr, xzr
+    ret
+.Lh2_create_exists:
+    mov x0, x4
+    cmn xzr, xzr
+    ret
+.Lh2_create_full:
+    cmp xzr, xzr
+    mov x0, #H2_ERR_REFUSED_STREAM
+    ret
+
+// ── 6.2 — validate a stream-scoped frame's id ───────────────────────
+// Reject the three classes of bad client stream id (RFC 9113 §5.1.1):
+//   - zero, which is reserved for connection-level frames
+//   - even numbers, which belong to server-initiated streams
+//   - a brand-new stream id that does not exceed every client stream id
+//     the connection has already seen
+// All three are PROTOCOL_ERROR connection errors. Existing streams keep
+// their id, so frames addressed to a live stream are unaffected by the
+// high-water mark.
+//
+// input
+// x0 -> parsed frame header
+// x1 -> connection state
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = H2_ERR_PROTOCOL_ERROR
+//
+// clobbers x0-x5, x9, x30 (saved/restored)
+h2_validate_stream_id:
+    str x30, [sp, #-16]!   // save our return address — find clobbers x30
+    ldr w4, [x0, #H2F_STREAM_ID]
+    cbz w4, .Lh2_bad_stream_id
+    tst w4, #1
+    b.eq .Lh2_bad_stream_id
+    ldr w5, [x1, #H2C_LAST_STREAM_ID]
+    mov x0, x4
+    bl h2_stream_find
+    cbnz x0, .Lh2_ok_stream_id // exists — nothing to check
+    cmp w4, w5                   // new stream must increase (§5.1.1)
+    b.ls .Lh2_bad_stream_id
+.Lh2_ok_stream_id:
+    ldr x30, [sp], #16    // restore the return address
+    cmn xzr, xzr
+    mov x0, #0
+    ret
+.Lh2_bad_stream_id:
+    ldr x30, [sp], #16    // restore the return address
+    cmp xzr, xzr
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+
+// ── 6.3 — apply a receive-side event to a stream ────────────────────
+// One step of the §5.1 state machine, driven by the h2_stream_transitions
+// table (state × event → new state, or 0xff = invalid). Valid
+// transitions store the new state and succeed; invalid ones leave the
+// state untouched and fail: an idle-stream violation is a PROTOCOL_ERROR
+// connection error (§5.1), anything else is a STREAM_CLOSED stream
+// error. RST_STREAM on an already-CLOSED stream is tolerated — a reset
+// may race with our own END_STREAM (§5.1 closed).
+//
+// input
+// x0 -> stream entry
+// x1 -> event (H2_EVENT_*)
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = H2_ERR_PROTOCOL_ERROR or H2_ERR_STREAM_CLOSED
+//
+// clobbers x0-x4, x9
+h2_stream_event:
+    ldr x2, [x0, #H2S_STATE]
+    cmp x2, #H2_STREAM_CLOSED
+    b.hi .Lh2_stream_bad_event   // defensive: unknown state
+    cmp x1, #H2_EVENT_COUNT
+    b.hs .Lh2_stream_bad_event   // defensive: unknown event
+    // index = state * H2_EVENT_COUNT + event (H2_EVENT_COUNT == 4)
+    lsl x3, x2, #2
+    add x3, x3, x1
+    adr_l x9, h2_stream_transitions
+    ldrb w4, [x9, x3]
+    cmp w4, #0xff
+    b.eq .Lh2_stream_invalid
+    str x4, [x0, #H2S_STATE]
+    cmn xzr, xzr
+    mov x0, #0
+    ret
+.Lh2_stream_invalid:
+    cmp x2, #H2_STREAM_IDLE
+    b.eq .Lh2_stream_idle_violation
+.Lh2_stream_bad_event:
+    cmp xzr, xzr
+    mov x0, #H2_ERR_STREAM_CLOSED
+    ret
+.Lh2_stream_idle_violation:
+    cmp xzr, xzr
+    mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
 
 // ── 4.4 + 4.5 — SETTINGS ────────────────────────────────────────────

@@ -144,10 +144,11 @@ $(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs
 $(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
-# test_http2: Stage 4 frame engine + Stage 5 connection preface
-# (http2.S). h2_verify_preface reads the client preface and stores
-# connection_mode (data.S), and h2_send_settings tail-calls write_all
-# (util.S) to emit the opening SETTINGS frame.
+# test_http2: Stages 4-6 frame engine + connection preface + stream
+# management (http2.S). h2_verify_preface reads the client preface and
+# stores connection_mode (data.S), h2_send_settings tail-calls write_all
+# (util.S) to emit the opening SETTINGS frame, and the stream functions
+# operate on the global h2_streams table.
 $(TEST_HTTP2): test_http2.c $(http2_o) $(data_o) $(util_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(http2_o) $(data_o) $(util_o) $(LDFLAGS) -o $@
 
