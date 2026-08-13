@@ -59,6 +59,16 @@
 // HTTP/2 request gets exactly the same internal representation as its
 // HTTP/1 twin (8.4). CONTINUATION and trailers are still later stages.
 //
+// Stage 10 — complete static responses. HEAD already rides the common
+// response machinery (headers only, END_STREAM on the HEADERS frame);
+// 404 answers an unresolved resource; 403 answers a path the server
+// refuses (check_path_safety / check_path_traversal rejection — recorded
+// in REQ_FORBIDDEN so the request still decodes cleanly); MIME types come
+// from the same create_response path HTTP/1 uses; and byte ranges are
+// parsed (h2_parse_range) and resolved against the resource size
+// (h2_resolve_range) into a 206 with content-range, or 416. GET serves
+// ranges; HEAD ignores them, matching HTTP/1's head.
+//
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
 //   carry set   = failure, x0 = HTTP/2 error code (H2_ERR_*)
@@ -89,6 +99,8 @@
 .global h2_write_headers
 .global h2_write_body
 .global h2_reply_status
+.global h2_parse_range
+.global h2_resolve_range
 
 .data
 .align 3
@@ -189,6 +201,16 @@ h2_gzip_str:
     .ascii "gzip"
 .equ h2_gzip_str_len, . - h2_gzip_str
 
+// the request header name h2_build_request matches to feed the Range
+// machinery, and the range-unit prefix h2_parse_range accepts (both
+// matched case-insensitively, like HTTP/1's get_header_field/parse_range)
+h2_range_name:
+    .asciz "range"
+.equ h2_range_name_len, 5
+h2_bytes_name:
+    .asciz "bytes"
+.equ h2_bytes_name_len, 5
+
 .bss
 .align 3
 // h2_frame_header — scratch for the parsed frame header. The connection
@@ -212,6 +234,23 @@ h2_streams:
 .align 4
 h2_frame_buf:
     .skip h2_frame_buf_size
+
+// h2_range_buf — persistent copy of the request's Range header value
+// ("bytes=0-99"). The decoded value points into h2_hpack_str_buf, which
+// is per-block scratch, so it is copied here — like :authority into
+// authority_buf — to survive until h2_process_request parses it.
+.equ h2_range_buf_size, 64
+.align 3
+h2_range_buf:
+    .skip h2_range_buf_size
+
+// h2_cr_buf — scratch for assembling the content-range header value
+// ("start-end/total") in h2_write_headers before it is appended to the
+// HPACK block with its string length prefix.
+.equ h2_cr_buf_size, 64
+.align 3
+h2_cr_buf:
+    .skip h2_cr_buf_size
 
 .text
 .align 2
@@ -701,7 +740,14 @@ h2_stream_event:
 // into authority_buf — the same buffers and helpers HTTP/1 uses, so an
 // HTTP/2 request and its HTTP/1 twin reach the handlers identically
 // (8.4). BREW/unknown methods skip path handling entirely, matching
-// parse_request; only REQ_METHOD and REQ_STREAM_ID are set for them.
+// HTTP/1 twin (8.4). BREW/unknown methods skip path handling entirely,
+// matching parse_request; only REQ_METHOD and REQ_STREAM_ID are set for them.
+//
+// Stage 10 additions: a regular `range` header value is copied into
+// h2_range_buf and recorded in REQ_RANGE_PTR/REQ_RANGE_LEN for the
+// Range machinery, and a path rejected by check_path_safety /
+// check_path_traversal is not a protocol error — the request decodes
+// cleanly with REQ_FORBIDDEN set, so h2_process_request can answer 403.
 //
 // input
 // x0 = stream id
@@ -713,16 +759,20 @@ h2_stream_event:
 //
 // clobbers x0-x18, x19-x24 (saved/restored), x30
 h2_build_request:
-    stp x19, x20, [sp, #-128]!
+    stp x19, x20, [sp, #-160]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     str x30, [sp, #48]
-    // zero the pseudo-header value slots: method, path, scheme,
-    // authority — each a (ptr, len) pair
+    // zero the value slots: method, path, scheme, authority — each a
+    // (ptr, len) pair — plus the range header (ptr, len) and the
+    // forbidden flag, so requests that don't set them never inherit the
+    // previous request's values
     stp xzr, xzr, [sp, #64]
     stp xzr, xzr, [sp, #80]
     stp xzr, xzr, [sp, #96]
     stp xzr, xzr, [sp, #112]
+    stp xzr, xzr, [sp, #128]    // REQ_RANGE_PTR / REQ_RANGE_LEN
+    str xzr, [sp, #144]         // REQ_FORBIDDEN
 
     mov x19, x0             // stream id
     mov x20, x1             // field count
@@ -801,6 +851,36 @@ h2_build_request:
     b .Lh2_req_next
 .Lh2_req_normal:
     mov x23, #1             // regular headers follow the pseudo-headers
+    // ── Stage 10 — a regular `range` header feeds the Range machinery ──
+    // Matched case-insensitively like HTTP/1's get_header_field; the
+    // first occurrence wins (later duplicates are ignored).
+    ldr x0, [x21, #H2_HPACK_FIELD_NAME_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_NAME_LEN]
+    cmp x1, h2_range_name_len
+    b.ne .Lh2_req_next
+    adr_l x1, h2_range_name
+    mov x2, h2_range_name_len
+    bl streqn_i
+    cbz x0, .Lh2_req_next
+    ldr x6, [sp, #128]       // already seen — keep the first
+    cbnz x6, .Lh2_req_next
+    // copy the value into h2_range_buf so it outlives the per-block
+    // HPACK string buffer (same reason :authority is copied)
+    ldr x0, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    adr_l x7, h2_range_buf
+    mov x8, #0              // bytes copied
+1:  cbz x1, 2f
+    cmp x8, h2_range_buf_size
+    b.hs 2f                 // too long — truncate, like authority_buf
+    ldrb w3, [x0, x8]
+    strb w3, [x7, x8]
+    add x8, x8, #1
+    sub x1, x1, #1
+    b 1b
+2:  str x7, [sp, #128]
+    str x8, [sp, #136]
+    b .Lh2_req_next
 .Lh2_req_next:
     add x21, x21, #H2_HPACK_FIELD_SIZE
     add x22, x22, #1
@@ -880,11 +960,11 @@ h2_build_request:
     ldr x0, [sp, #80]
     ldr x1, [sp, #88]
     bl check_path_safety
-    cbz x0, .Lh2_req_bad_path
+    cbz x0, .Lh2_req_forbidden
     ldr x0, [sp, #80]
     ldr x1, [sp, #88]
     bl check_path_traversal
-    cbz x0, .Lh2_req_bad_path
+    cbz x0, .Lh2_req_forbidden
     // copy :authority into authority_buf, NUL-terminated (bounded)
     ldr x0, [sp, #112]
     cbz x0, .Lh2_req_no_authority
@@ -919,11 +999,23 @@ h2_build_request:
     ldr x4, [sp, #104]
     str x4, [x0, #REQ_QUERY_LENGTH]
     str x7, [x0, #REQ_AUTHORITY]
+    ldr x5, [sp, #128]
+    str x5, [x0, #REQ_RANGE_PTR]
+    ldr x5, [sp, #136]
+    str x5, [x0, #REQ_RANGE_LEN]
+    ldr x5, [sp, #144]
+    str x5, [x0, #REQ_FORBIDDEN]
     b .Lh2_req_ok
 .Lh2_req_store_method_only:
     adr_l x0, request
     str x24, [x0, #REQ_METHOD]
     str x19, [x0, #REQ_STREAM_ID]
+    ldr x5, [sp, #128]
+    str x5, [x0, #REQ_RANGE_PTR]
+    ldr x5, [sp, #136]
+    str x5, [x0, #REQ_RANGE_LEN]
+    ldr x5, [sp, #144]
+    str x5, [x0, #REQ_FORBIDDEN]
 .Lh2_req_ok:
     cmn xzr, xzr            // success — carry clear
     mov x0, #0
@@ -941,8 +1033,18 @@ h2_build_request:
     ldr x30, [sp, #48]
     ldp x23, x24, [sp, #32]
     ldp x21, x22, [sp, #16]
-    ldp x19, x20, [sp], #128
+    ldp x19, x20, [sp], #160
     ret
+
+// A path the server refuses to serve (unsafe bytes, traversal) is not a
+// protocol violation — the request decodes, and h2_process_request
+// answers 403. The decoded path is stored for completeness; the handler
+// never looks at it.
+.Lh2_req_forbidden:
+    mov x7, #0              // no authority copy — the path is rejected
+    mov x6, #1
+    str x6, [sp, #144]
+    b .Lh2_req_store
 
 // h2_name_eq — byte-exact compare of (x0, len x1) with the string at
 // x2 (of length x3). Returns x0 = 1 if equal, 0 otherwise. Reading is
@@ -1552,8 +1654,11 @@ h2_connection_loop:
 // h2_write_body) sends it. GET sends headers + body; HEAD sends headers
 // only (END_STREAM on the HEADERS frame); OPTIONS is 204 when the path
 // resolves and 404 otherwise; BREW is 418; any unknown method is 501.
-// A failed resource lookup is a 404. The stream is moved to CLOSED
-// once the response is on the wire.
+// A failed resource lookup is a 404. Stage 10: a path the server refuses
+// (REQ_FORBIDDEN) is a 403; a satisfiable Range on a GET is a 206 with
+// content-range (HEAD ignores ranges, like HTTP/1's head); an
+// unsatisfiable range is a 416. The stream is moved to CLOSED once the
+// response is on the wire.
 //
 // input
 // x0 = stream id
@@ -1565,14 +1670,26 @@ h2_connection_loop:
 //
 // clobbers x0-x9, x19-x26 (saved/restored), x30
 h2_process_request:
-    stp x19, x20, [sp, #-80]!
+    stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     stp x25, x26, [sp, #48]
     str x30, [sp, #64]
+    // [sp, #72] = response range start, [sp, #80] = range end — the
+    // response window is built on the stack because it must survive the
+    // create_response / h2_write_headers calls
     mov x19, x0             // stream id
     mov x20, x1             // fd
     adr_l x9, request
+    // ── Stage 10 — a path the server refuses to serve is a 403 ──
+    ldr x10, [x9, #REQ_FORBIDDEN]
+    cbz x10, 1f
+    mov x0, #403
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+1:
     ldr x21, [x9, #REQ_METHOD]
 
     cmp x21, #GET_ID
@@ -1644,18 +1761,59 @@ h2_process_request:
     	str_l x9, resource_type, x10
     	mov x9, #-1
     	str_l x9, file_des, x10  // nothing is open — child_end must not close
-    // resolve resource → create response (GET: full body, HEAD: none)
+    // ── Stage 10 — Range: resolve a request range against the size ──
+    // GET serves ranges; HEAD ignores them (HTTP/1's head never parses
+    // the Range header). The response window defaults to -1/-1 (none)
+    // in the [sp, #72]/[sp, #80] slots. x9/x10 are caller-saved scratch
+    // — x27/x28 are callee-saved (x28 is Darwin's frame base) and must
+    // not be clobbered here.
+    mov x9, #-1
+    str x9, [sp, #72]
+    mov x10, #-1
+    str x10, [sp, #80]
+    cmp x21, #HEAD_ID
+    b.eq .Lh2pr_create
+    adr_l x9, request
+    ldr x0, [x9, #REQ_RANGE_PTR]
+    cbz x0, .Lh2pr_create
+    ldr x1, [x9, #REQ_RANGE_LEN]
+    bl h2_parse_range
+    b.cs .Lh2pr_create      // unparsable — ignore the range
+    mov x2, x23             // resource size
+    bl h2_resolve_range     // x0=start, x1=end, x2=200/206/416
+    cmp x2, #416
+    b.eq .Lh2pr_416
+    cmp x2, #200
+    b.eq .Lh2pr_create      // range covers the whole file — no range
+    str x0, [sp, #72]       // range start
+    str x1, [sp, #80]       // range end
+.Lh2pr_create:
+    // resolve resource → create response (GET: full body, HEAD: none;
+    // ranged GET: status 206, windowed body)
     adr_l x0, response
     mov x1, #200
-    mov x2, x23             // content_length
-    mov x3, #-1             // range start — ranges are a later stage
-    mov x4, #-1             // range end
+    ldr x3, [sp, #72]
+    cmn x3, #1
+    b.eq 1f
+    mov x1, #206
+1:
+    mov x2, x23             // content_length (total resource size)
+    ldr x4, [sp, #80]       // range end
     mov x5, x22             // body ptr
     mov x6, x23             // body length
+    ldr x3, [sp, #72]       // range start
+    cmn x3, #1
+    b.eq 2f
+    // a ranged body is content[start .. end]
+    add x5, x5, x3
+    ldr x4, [sp, #80]
+    sub x6, x4, x3
+    add x6, x6, #1
+2:
     cmp x21, #HEAD_ID
-    b.ne 1f
+    b.ne 3f
     mov x6, #0              // HEAD — headers only
-1:
+3:
     bl create_response
     // encode — GET finishes the stream with DATA frames; HEAD puts
     // END_STREAM on the HEADERS frame
@@ -1676,6 +1834,13 @@ h2_process_request:
     mov x2, x19
     bl h2_write_body
     b.cs .Lh2pr_500
+    b .Lh2pr_done
+
+.Lh2pr_416:
+    mov x0, #416
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
     b .Lh2pr_done
 
 .Lh2pr_404:
@@ -1703,7 +1868,195 @@ h2_process_request:
     ldp x25, x26, [sp, #48]
     ldp x23, x24, [sp, #32]
     ldp x21, x22, [sp, #16]
-    ldp x19, x20, [sp], #80
+    ldp x19, x20, [sp], #96
+    ret
+
+// ── 10.5 — h2_parse_range: parse a Range header value ──────────────
+// Parse the decoded value of a `range` request header ("bytes=0-99",
+// "bytes=100-", "bytes=-50") into a (start, end) pair — the same shape
+// HTTP/1's parse_range produces. -1 means the part is absent: a -1
+// start is a suffix range, a -1 end is open-ended. The value scan
+// mirrors parse_range's value half (case-insensitive "bytes" prefix,
+// digits up to '-', 19-digit cap, end < start rejected), but works on
+// the bare value rather than the whole HTTP/1 header buffer, so it
+// terminates on the value length instead of a CRLF.
+//
+// input
+// x0 -> range value (e.g. "bytes=0-99")
+// x1 -> value length
+//
+// output
+// x0 -> start (-1 = suffix range)
+// x1 -> end   (-1 = open-ended)
+// carry clear = usable single range; carry set = no usable range
+//
+// clobbers x0-x17, x30 (saved/restored)
+h2_parse_range:
+    str x30, [sp, #-16]!
+    mov x6, x0              // value ptr — survives streqn_i / atoi_n
+    mov x7, x1              // value length
+    // must be at least "bytes=" (6 bytes) with the right prefix
+    cmp x7, #6
+    b.lo .Lh2pr_no_range
+    mov x0, x6
+    adr_l x1, h2_bytes_name
+    mov x2, #h2_bytes_name_len
+    bl streqn_i
+    cbz x0, .Lh2pr_no_range
+    ldrb w4, [x6, #5]
+    cmp w4, #'='
+    b.ne .Lh2pr_no_range
+    // ── the start: digits up to '-' ──
+    mov x8, #6              // cursor
+    mov x4, #0              // start digit count
+.Lh2pr_start_digits:
+    cmp x8, x7
+    b.ge .Lh2pr_no_range    // ran off the value before '-' — invalid
+    ldrb w5, [x6, x8]
+    cmp w5, #'-'
+    b.eq .Lh2pr_start_done
+    cmp w5, #'0'
+    b.lo .Lh2pr_no_range
+    cmp w5, #'9'
+    b.hi .Lh2pr_no_range
+    add x4, x4, #1
+    cmp x4, #19
+    b.ge .Lh2pr_no_range    // atoi_n's overflow guard (like parse_range)
+    add x8, x8, #1
+    b .Lh2pr_start_digits
+.Lh2pr_start_done:
+    // empty start is a suffix range
+    cbz x4, .Lh2pr_suffix
+    mov x0, x6
+    add x0, x0, #6
+    mov x1, x4
+    bl atoi_n
+    b.cs .Lh2pr_no_range
+    mov x9, x0              // start
+    b .Lh2pr_scan_end
+.Lh2pr_suffix:
+    mov x9, #-1             // start = -1 → bytes=-N
+.Lh2pr_scan_end:
+    // ── the end: digits after '-', up to the value end / CR / LF ──
+    add x8, x8, #1          // cursor past '-'
+    mov x4, #0              // end digit count
+.Lh2pr_end_digits:
+    cmp x8, x7
+    b.ge .Lh2pr_end_done
+    ldrb w5, [x6, x8]
+    cmp w5, #'\r'
+    b.eq .Lh2pr_end_done
+    cmp w5, #'\n'
+    b.eq .Lh2pr_end_done
+    cmp w5, #'0'
+    b.lo .Lh2pr_no_range
+    cmp w5, #'9'
+    b.hi .Lh2pr_no_range
+    add x4, x4, #1
+    cmp x4, #19
+    b.ge .Lh2pr_no_range
+    add x8, x8, #1
+    b .Lh2pr_end_digits
+.Lh2pr_end_done:
+    // empty end is an open-ended range
+    cbz x4, .Lh2pr_open
+    mov x0, x6
+    add x0, x0, x8
+    sub x0, x0, x4          // pointer to the end digits
+    mov x1, x4
+    bl atoi_n
+    b.cs .Lh2pr_no_range
+    mov x10, x0             // end
+    b .Lh2pr_check
+.Lh2pr_open:
+    mov x10, #-1            // end = -1 → bytes=N-
+.Lh2pr_check:
+    // "bytes=-" (both -1) is invalid
+    cmn x9, #1
+    b.ne 1f
+    cmn x10, #1
+    b.eq .Lh2pr_no_range
+1:
+    // a concrete end below the start is invalid
+    cmn x9, #1
+    b.eq 2f
+    cmn x10, #1
+    b.eq 2f
+    cmp x9, x10
+    b.gt .Lh2pr_no_range
+2:
+    mov x0, x9
+    mov x1, x10
+    ldr x30, [sp], #16
+    cmn xzr, xzr            // success — carry clear
+    ret
+.Lh2pr_no_range:
+    ldr x30, [sp], #16
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #0
+    mov x1, #0
+    ret
+
+// ── 10.5 — h2_resolve_range: resolve a range against a resource size ─
+// Mirror of get.S's range-resolution logic: given a parsed (start, end)
+// pair and the resource size, decide the response. Returns the resolved
+// inclusive window and the status to send — 206 with the window, 200 to
+// ignore the range (serve the whole file), or 416 when no part of the
+// file lies in the range.
+//
+// input
+// x0 = range start (-1 = suffix range)
+// x1 = range end   (-1 = open-ended)
+// x2 = resource size
+//
+// output
+// x0 = resolved start, x1 = resolved end, x2 = status (200/206/416)
+//
+// clobbers x0-x5
+h2_resolve_range:
+    cmn x0, #1
+    b.ne 1f
+    // ── suffix range — bytes=-N ──
+    cbz x1, .Lh2rr_416       // bytes=-0 is unsatisfiable
+    cbz x2, .Lh2rr_200       // empty file — serve the whole (empty) file
+    cmp x1, x2
+    b.lo 2f
+    // N >= size — the whole file is the last N bytes
+    mov x0, #0
+    sub x1, x2, #1
+    b .Lh2rr_206
+2:
+    // start = size - N, end = size - 1 (inclusive)
+    sub x0, x2, x1
+    sub x1, x2, #1
+    b .Lh2rr_206
+1:
+    // ── non-suffix range ──
+    cbz x2, .Lh2rr_416       // an empty file has no satisfiable range
+    cmp x0, x2
+    b.hs .Lh2rr_416          // start at or beyond the end of the file
+    cmn x1, #1
+    b.ne 3f
+    sub x1, x2, #1           // open-ended — end = size - 1
+    b .Lh2rr_206
+3:
+    // both concrete — clamp the end to size - 1
+    sub x3, x2, #1
+    cmp x1, x3
+    csel x1, x3, x1, hi
+    b .Lh2rr_206
+.Lh2rr_416:
+    mov x0, #-1
+    mov x1, #-1
+    mov x2, #416
+    ret
+.Lh2rr_200:
+    mov x0, #-1
+    mov x1, #-1
+    mov x2, #200
+    ret
+.Lh2rr_206:
+    mov x2, #206
     ret
 
 // ── 9 — h2_reply_status: a headers-only HTTP/2 status response ─────
@@ -1748,18 +2101,18 @@ h2_reply_status:
 
 // ── 9.2 — h2_write_headers: encode the response struct as a HEADERS ─
 // frame. The HPACK block carries :status, content-type and
-// content-length — plus content-encoding: gzip when the embedded asset
-// is gzipped (the HTTP/1 encoder sends the same header). The block is
-// built into h2_frame_buf right after the 9-byte frame header and the
-// whole frame is written in one write_all, so a partial write can't
-// split the frame.
+// content-length — plus content-range for a ranged (206) response and
+// content-encoding: gzip when the embedded asset is gzipped (the
+// HTTP/1 encoder sends the same headers). The block is built into
+// h2_frame_buf right after the 9-byte frame header and the whole frame
+// is written in one write_all, so a partial write can't split the frame.
 //
 // HPACK notes: :status 200 is a static-table index (0x88); any other
 // status is a literal with the indexed name ":status" (static 8).
-// content-type / content-length / content-encoding use the
-// literal-with-indexed-name form (static 31 / 28 / 26) with a plain
-// 7-bit-prefix string length. Status 204 carries no content-type or
-// content-length, matching the HTTP/1 encoder.
+// content-type / content-length / content-range / content-encoding use
+// the literal-with-indexed-name form (static 31 / 28 / 30 / 26) with a
+// plain 7-bit-prefix string length. Status 204 carries no content-type
+// or content-length, matching the HTTP/1 encoder.
 //
 // input
 // x0 = client fd
@@ -1830,10 +2183,72 @@ h2_write_headers:
     	mov w3, #0x0d           // 28 - 15 = 13 → content-length
     	strb w3, [x24, x23]
     	add x23, x23, #1
+    	// the value is end - start + 1 for a ranged response, else the
+    	// total resource length — mirroring the HTTP/1 encoder
+    	ldr x0, [x20, #RESP_RANGE_START]
+    	cmn x0, #1
+    	b.eq .Lh2wh_cl_total
+    	ldr x1, [x20, #RESP_RANGE_END]
+    	sub x0, x1, x0
+    	add x0, x0, #1
+    	b .Lh2wh_cl_done
+    .Lh2wh_cl_total:
     	ldr x0, [x20, #RESP_CONTENT_LENGTH]
+    .Lh2wh_cl_done:
     	bl itoa
     	mov x2, x1
     	mov x1, x0
+    	bl .Lh2wh_append_str
+    	// ── content-range — only for ranged (206) responses ──
+    	// The name is static-table index 30, which needs the two-octet
+    	// 4-bit-prefix form: 0x0f then 30 - 15 = 15
+    	ldr x0, [x20, #RESP_RANGE_START]
+    	cmn x0, #1
+    	b.eq .Lh2wh_encoding
+    	mov w3, #0x0f
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	mov w3, #0x0f           // 30 - 15 = 15 → content-range
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	// the value "start-end/total" is assembled in h2_cr_buf first so
+    	// the HPACK string length prefix can be written before the data.
+    	// x10 = value base, x11 = cursor — neither is clobbered by itoa
+    	// (x0-x5), memcpy (x0-x4) or the ldr_l/str_l macros (x9)
+    	adr_l x10, h2_cr_buf
+    	mov x11, x10
+    	ldr x0, [x20, #RESP_RANGE_START]
+    	bl itoa
+    	mov x5, x1
+    	mov x1, x0
+    	mov x0, x11
+    	mov x2, x5
+    	bl memcpy
+    	add x11, x11, x5
+    	mov w3, #'-'
+    	strb w3, [x11]
+    	add x11, x11, #1
+    	ldr x0, [x20, #RESP_RANGE_END]
+    	bl itoa
+    	mov x5, x1
+    	mov x1, x0
+    	mov x0, x11
+    	mov x2, x5
+    	bl memcpy
+    	add x11, x11, x5
+    	mov w3, #'/'
+    	strb w3, [x11]
+    	add x11, x11, #1
+    	ldr x0, [x20, #RESP_CONTENT_LENGTH]
+    	bl itoa
+    	mov x5, x1
+    	mov x1, x0
+    	mov x0, x11
+    	mov x2, x5
+    	bl memcpy
+    	add x11, x11, x5
+    	mov x1, x10
+    	sub x2, x11, x10
     	bl .Lh2wh_append_str
     .Lh2wh_encoding:
     	// ── content-encoding: gzip — only for gzipped embedded assets. The

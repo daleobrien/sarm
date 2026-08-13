@@ -502,7 +502,10 @@
 .equ REQ_QUERY_LENGTH, 32
 .equ REQ_AUTHORITY,    40   // ptr to authority (Host) value, or 0 if none
 .equ REQ_STREAM_ID,    48   // HTTP/2 stream id; HTTP/1 is always 0
-.equ REQUEST_SIZE,     56
+.equ REQ_RANGE_PTR,    56   // ptr to the Range header value ("bytes=..."), or 0 (HTTP/2; Stage 10)
+.equ REQ_RANGE_LEN,    64   // range value length
+.equ REQ_FORBIDDEN,    72   // 1 = path rejected by server policy → reply 403 (Stage 10)
+.equ REQUEST_SIZE,     80
 
 // authority_buf (parse.S) holds a NUL-terminated copy of the request's
 // authority — the HTTP/1 Host header or the HTTP/2 :authority
