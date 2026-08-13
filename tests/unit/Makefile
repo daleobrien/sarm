@@ -148,15 +148,19 @@ $(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs
 $(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
-# test_http2: Stages 4-7 frame engine + connection preface + stream
-# management (http2.S) and minimal HPACK (h2_hpack.S). h2_verify_preface
-# reads the client preface and stores connection_mode (data.S),
-# h2_send_settings tail-calls write_all (util.S) to emit the opening
-# SETTINGS frame, the stream functions operate on the global h2_streams
-# table, and the HPACK decoder operates on the static table and
-# h2_hpack_fields in h2_hpack.S.
-$(TEST_HTTP2): test_http2.c $(http2_o) $(hpack_o) $(data_o) $(util_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(http2_o) $(hpack_o) $(data_o) $(util_o) $(LDFLAGS) -o $@
+# test_http2: Stages 4-8 frame engine + connection preface + stream
+# management (http2.S), minimal HPACK (h2_hpack.S) and the HEADERS →
+# HPACK → common request pipeline. h2_verify_preface reads the client
+# preface and stores connection_mode (data.S), h2_send_settings
+# tail-calls write_all (util.S) to emit the opening SETTINGS frame, the
+# stream functions operate on the global h2_streams table, and the HPACK
+# decoder operates on the static table and h2_hpack_fields in h2_hpack.S.
+# Since Stage 8 the HEADERS handler builds the `request` struct through
+# parse_h2_path (parse.S) and decode_url/check_path_* (file.S), so
+# parse.o/file.o (and stubs.o for their reply_status / embedded stubs)
+# join the link; the 8.4 equivalence tests call parse_request directly.
+$(TEST_HTTP2): test_http2.c $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────
 

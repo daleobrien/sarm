@@ -504,6 +504,11 @@
 .equ REQ_STREAM_ID,    48   // HTTP/2 stream id; HTTP/1 is always 0
 .equ REQUEST_SIZE,     56
 
+// authority_buf (parse.S) holds a NUL-terminated copy of the request's
+// authority — the HTTP/1 Host header or the HTTP/2 :authority
+// pseudo-header. Both protocol parsers share the buffer and this bound.
+.equ AUTHORITY_BUF_SIZE, 256
+
 // ── Protocol-neutral response representation ─────────────────────────
 // The seam between response generation and the protocol encoders. A
 // handler (get/head/reply_status today, an HTTP/2 encoder later) fills

@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stages 4, 5, 6 & 7.
+// Unit tests for src/http2.S — Stages 4, 5, 6, 7 & 8.
 // Stage 4: the HTTP/2 frame engine — h2_parse_frame_header (4.1),
 // h2_validate_frame (4.2), h2_dispatch_frame (4.3), h2_handle_settings
 // (4.4) and SETTINGS ACK (4.5). SETTINGS tests go through
@@ -19,6 +19,16 @@
 // (7.6): the opening SETTINGS frame advertises SETTINGS_HEADER_TABLE_SIZE
 // = 0, and the decoder rejects every dynamic-table representation with
 // COMPRESSION_ERROR.
+// Stage 8: HEADERS → HPACK → the common request. h2_handle_headers
+// extracts stream id, the header block and the END_STREAM/END_HEADERS
+// flags and feeds the block to the HPACK decoder (8.1); h2_build_request
+// decodes the request pseudo-headers :method/:path/:scheme/:authority
+// into the protocol-neutral `request` struct (8.2); malformed requests
+// — missing/empty :method, missing :path, duplicate pseudo-headers,
+// undefined pseudo-headers, pseudo-headers after a regular header — are
+// rejected with PROTOCOL_ERROR (8.3); and an HTTP/2 /index.html request
+// produces byte-identical path/query/authority to the HTTP/1 parse of
+// the same request (8.4), the one difference being REQ_STREAM_ID.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -50,6 +60,14 @@
 
 #define H2_FLAG_ACK         0x1
 #define H2_FLAG_END_STREAM  0x1
+#define H2_FLAG_END_HEADERS 0x4
+
+// request type ids, mirroring defs.S
+#define GET_ID     0
+#define HEAD_ID    1
+#define OPTIONS_ID 2
+#define BREW_ID    3
+#define UNKNOWN_ID 4
 
 #define H2_ERR_PROTOCOL_ERROR     1
 #define H2_ERR_FLOW_CONTROL_ERROR 3
@@ -148,6 +166,40 @@ typedef struct {
 	const uint8_t *value;
 	int64_t value_len;
 } h2_hpack_field_t;
+
+// ── the protocol-neutral request struct, mirroring the REQ_* offsets in
+// defs.S. Storage lives in data.S as the symbol `request`; test_request.c
+// shares this layout.
+typedef struct {
+	int64_t method;
+	const char *path;
+	int64_t path_length;
+	const char *query;
+	int64_t query_length;
+	const char *authority;
+	int64_t stream_id;
+} request_t;
+
+static inline const request_t *request_addr(void) {
+	request_t *p;
+	asm volatile(
+		"adrp x0, request@PAGE\n"
+		"add  x0, x0, request@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+#define REQ (request_addr())
+
+#define LITLEN(s) ((int64_t)(sizeof(s) - 1))
+
+// a minimal valid request header block: :method GET, :path / — both
+// static-table indices, so this is the smallest block that passes
+// h2_build_request's pseudo-header validation.
+static const uint8_t H2_REQ_BLOCK[] = { 0x82, 0x84 };
+#define H2_REQ_BLOCK_LEN ((int64_t)sizeof(H2_REQ_BLOCK))
 
 // ── wire frame builders ────────────────────────────────────────────
 
@@ -579,6 +631,49 @@ static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t le
 	return count;
 }
 
+// ── Stage 8 wrappers for asm functions ──────────────────────────────
+
+// h2_build_request(stream_id=x0, count=x1) → (rc=x0, carry). The function
+// runs parse_h2_path (parse.S), decode_url / check_path_* (file.S) and
+// memcpy (util.S), so the clobber list covers every register those touch.
+static inline int64_t h2_build_request_wrapper(int64_t stream_id, int64_t count,
+                                              int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_build_request\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(stream_id), "r"(count)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", "memory");
+	*carry_out = carry;
+	return rc;
+}
+
+// parse_request(buf=x0, len=x1) → carry — the HTTP/1 side of the 8.4
+// equivalence tests (parse.o, the same function the server uses).
+static inline int64_t parse_request_wrapper(const char *buf, int64_t len) {
+	int64_t carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %1\n"
+		"mov x1, %2\n"
+		"bl parse_request\n"
+		"cset %0, cs\n"
+		: "=r"(carry)
+		: "r"(buf), "r"(len)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
+		  "memory");
+	return carry;
+}
+
 static inline h2_hpack_field_t *h2_hpack_fields_addr(void) {
 	h2_hpack_field_t *p;
 	asm volatile(
@@ -696,15 +791,18 @@ static void test_h2_dispatch_frame(void) {
 	// RST_STREAM closes it. Connection-scoped frames (SETTINGS, PING,
 	// GOAWAY) keep stream id 0; the remaining stream-scoped types are
 	// still stubs and accept any id. RST_STREAM needs its 4-byte
-	// payload to pass the §6.4 length check.
+	// payload to pass the §6.4 length check. Since Stage 8 the HEADERS
+	// payload is HPACK and must be a valid request block — the 2-byte
+	// :method GET + :path / block from H2_REQ_BLOCK.
 	static const uint8_t types[] = {
 		H2_FRAME_HEADERS, H2_FRAME_DATA, H2_FRAME_PRIORITY, H2_FRAME_RST_STREAM,
 		H2_FRAME_SETTINGS, H2_FRAME_PUSH_PROMISE, H2_FRAME_PING, H2_FRAME_GOAWAY,
 		H2_FRAME_WINDOW_UPDATE, H2_FRAME_CONTINUATION,
 	};
 	static const uint8_t streams[] = { 1, 1, 1, 1, 0, 1, 0, 0, 1, 1 };
-	static const uint32_t lens[]   = { 0, 0, 0, 4, 0, 0, 0, 0, 0, 0 };
-	uint8_t payload[6] = {0};
+	static const uint32_t lens[]   = { 2, 0, 0, 4, 0, 0, 0, 0, 0, 0 };
+	uint8_t payload[6];
+	memcpy(payload, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN); // HEADERS' HPACK block
 	h2_conn_t conn;
 	reset_conn(&conn);
 	reset_streams();
@@ -1257,7 +1355,8 @@ static void test_h2_headers_stream_creation(void) {
 	TEST_SUITE("h2_handle_headers — 6.2 stream creation");
 
 	uint8_t wire[9];
-	uint8_t payload[1] = {0};
+	uint8_t payload[4];
+	memcpy(payload, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN); // valid HPACK request
 	h2_frame_header_t hdr;
 	h2_conn_t conn;
 	int64_t carry;
@@ -1266,7 +1365,7 @@ static void test_h2_headers_stream_creation(void) {
 	reset_conn(&conn);
 
 	// a HEADERS frame on stream 0 is a PROTOCOL_ERROR
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 0);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 0);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS id 0 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1274,14 +1373,14 @@ static void test_h2_headers_stream_creation(void) {
 	ASSERT_EQ("no stream created", 0, (int64_t)h2_stream_find_wrapper(1));
 
 	// an even stream id is a PROTOCOL_ERROR
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 2);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 2);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS id 2 → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
 	ASSERT_EQ("no stream created", 0, (int64_t)h2_stream_find_wrapper(2));
 
 	// a valid HEADERS opens the stream and bumps the high-water mark
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS id 1 accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1292,14 +1391,14 @@ static void test_h2_headers_stream_creation(void) {
 	ASSERT_EQ("conn last stream id = 1", 1, conn.last_stream_id);
 
 	// the next stream must use a larger id
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 3);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 3);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS id 3 accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
 	ASSERT_EQ("conn last stream id = 3", 3, conn.last_stream_id);
 
 	// a HEADERS for an existing stream is fine (trailers, §5.1 open)
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS on existing stream accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1422,7 +1521,8 @@ static void test_h2_end_stream_flags(void) {
 	TEST_SUITE("h2 HEADERS/DATA — 6.3 END_STREAM flag");
 
 	uint8_t wire[9];
-	uint8_t payload[1] = {0};
+	uint8_t payload[4];
+	memcpy(payload, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN); // valid HPACK request
 	h2_frame_header_t hdr;
 	h2_conn_t conn;
 	int64_t carry;
@@ -1430,7 +1530,7 @@ static void test_h2_end_stream_flags(void) {
 	// HEADERS without END_STREAM → OPEN
 	reset_streams();
 	reset_conn(&conn);
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1439,7 +1539,7 @@ static void test_h2_end_stream_flags(void) {
 	// HEADERS with END_STREAM → HALF_CLOSED_REMOTE
 	reset_streams();
 	reset_conn(&conn);
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS+END_STREAM accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1449,7 +1549,7 @@ static void test_h2_end_stream_flags(void) {
 	// DATA without END_STREAM → stays OPEN
 	reset_streams();
 	reset_conn(&conn);
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS accepted", 0,
 	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
@@ -1482,6 +1582,8 @@ static void test_h2_rst_stream(void) {
 
 	uint8_t wire[9];
 	uint8_t payload[4] = {0, 0, 0, H2_ERR_CANCEL}; // 4-byte error code
+	uint8_t block[4];
+	memcpy(block, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN); // valid HPACK request
 	h2_frame_header_t hdr;
 	h2_conn_t conn;
 	int64_t carry;
@@ -1489,10 +1591,10 @@ static void test_h2_rst_stream(void) {
 	// the happy path: HEADERS opens a stream, RST_STREAM closes it
 	reset_streams();
 	reset_conn(&conn);
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 1);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, 0, 1);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS accepted", 0,
-	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	          h2_dispatch_wrapper(&hdr, block, &conn, &carry));
 	h2_stream_t *s = h2_stream_find_wrapper(1);
 	ASSERT_EQ("stream OPEN", H2_STREAM_OPEN, s->state);
 
@@ -1531,10 +1633,10 @@ static void test_h2_rst_stream(void) {
 
 	// RST_STREAM on a half-closed (remote) stream also closes it
 	// (stream 1 is closed now; use a fresh stream 3)
-	put_wire_header(wire, 0, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 3);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS, H2_FLAG_END_STREAM, 3);
 	h2_parse_wrapper(wire, &hdr);
 	ASSERT_EQ("HEADERS+END_STREAM accepted", 0,
-	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	          h2_dispatch_wrapper(&hdr, block, &conn, &carry));
 	h2_stream_t *s3 = h2_stream_find_wrapper(3);
 	ASSERT_EQ("stream 3 HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
 	          s3->state);
@@ -1622,6 +1724,27 @@ static void check_field_error(const char *label, const uint8_t *next,
 		      (long long)carry, (const void *)next);
 	else
 		_PASS(label);
+}
+
+// ── Stage 8 helpers ────────────────────────────────────────────────
+
+// Build one decoded header field the way h2_hpack_decode_block would.
+static h2_hpack_field_t field(const char *name, const char *value) {
+	h2_hpack_field_t f;
+	size_t nl = 0, vl = 0;
+	while (name[nl]) nl++;
+	while (value[vl]) vl++;
+	f.name = (const uint8_t *)name;
+	f.name_len = (int64_t)nl;
+	f.value = (const uint8_t *)value;
+	f.value_len = (int64_t)vl;
+	return f;
+}
+
+// Stage the decoded fields h2_build_request will read.
+static void set_fields(const h2_hpack_field_t *fields, int n) {
+	memcpy(h2_hpack_fields_addr(), fields,
+	       (unsigned long)n * sizeof(h2_hpack_field_t));
 }
 
 // ── 7.1 — the RFC 7541 Appendix A static table ─────────────────────
@@ -2025,6 +2148,311 @@ static void test_h2_hpack_block(void) {
 	ASSERT_EQ("carry set", 1, carry);
 }
 
+// ── Stage 8 — HEADERS → HPACK → the common request ──────────────────
+
+// 8.1 — a HEADERS frame reaches the HPACK decoder: stream id, the
+// header block and the END_STREAM/END_HEADERS flags are extracted, the
+// block is decoded, and the request is built end-to-end.
+static void test_h2_headers_hpack(void) {
+	TEST_SUITE("h2_handle_headers — 8.1 HEADERS reaches the HPACK decoder");
+
+	uint8_t wire[9];
+	uint8_t payload[32];
+	// :method GET, :scheme https, :path /index.html,
+	// :authority example.com (literal without indexing, indexed name)
+	static const uint8_t block[] = {
+		0x82, 0x87, 0x85,
+		0x01, 0x0b, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+	};
+	memcpy(payload, block, sizeof(block));
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+
+	put_wire_header(wire, sizeof(block), H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// stream id + flags extracted onto the stream entry
+	h2_stream_t *s = h2_stream_find_wrapper(1);
+	ASSERT_NOT_NULL("stream 1 created", s);
+	ASSERT_EQ("END_STREAM extracted", H2_FLAG_END_STREAM,
+	          s->flags & H2_FLAG_END_STREAM);
+	ASSERT_EQ("END_HEADERS extracted", H2_FLAG_END_HEADERS,
+	          s->flags & H2_FLAG_END_HEADERS);
+	ASSERT_EQ("state HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
+	          s->state);
+
+	// the header block reached the HPACK decoder
+	h2_hpack_field_t *f = h2_hpack_fields_addr();
+	check_field("field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+	check_field("field 1 :scheme https", 0, f[1].name, f[1].name_len,
+	            f[1].value, f[1].value_len, ":scheme", "https");
+	check_field("field 2 :path /index.html", 0, f[2].name, f[2].name_len,
+	            f[2].value, f[2].value_len, ":path", "/index.html");
+	check_field("field 3 :authority example.com", 0, f[3].name, f[3].name_len,
+	            f[3].value, f[3].value_len, ":authority", "example.com");
+	ASSERT_EQ("exactly 4 fields decoded", 0, f[4].name_len);
+
+	// ... and the request was built from them
+	ASSERT_EQ("request method GET", GET_ID, REQ->method);
+	ASSERT_EQ("request stream id", 1, REQ->stream_id);
+	ASSERT_STR_EQ("request path www/index.html", "www/index.html",
+	              REQ->path, LITLEN("www/index.html"));
+}
+
+// 8.2 — the request pseudo-headers become the common request struct.
+static void test_h2_pseudo_request(void) {
+	TEST_SUITE("h2_build_request — 8.2 pseudo-headers → common request");
+
+	uint8_t wire[9];
+	uint8_t payload[32];
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+
+	// :method GET, :path / — the required pair, nothing else
+	reset_streams();
+	reset_conn(&conn);
+	memcpy(payload, H2_REQ_BLOCK, H2_REQ_BLOCK_LEN);
+	put_wire_header(wire, H2_REQ_BLOCK_LEN, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("GET / accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("method == GET_ID", GET_ID, REQ->method);
+	ASSERT_EQ("stream_id == 1", 1, REQ->stream_id);
+	ASSERT_STR_EQ("path = www/index.html (default file)", "www/index.html",
+	              REQ->path, LITLEN("www/index.html"));
+	ASSERT_EQ("path_length", LITLEN("www/index.html"), REQ->path_length);
+	ASSERT_EQ("query == NULL", 0, (int64_t)REQ->query);
+	ASSERT_EQ("query_length == 0", 0, REQ->query_length);
+	ASSERT_EQ("authority == NULL", 0, (int64_t)REQ->authority);
+
+	// :scheme and :authority are carried along
+	reset_streams();
+	reset_conn(&conn);
+	static const uint8_t full[] = {
+		0x82, 0x87, 0x84,
+		0x01, 0x0b, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+	};
+	memcpy(payload, full, sizeof(full));
+	put_wire_header(wire, sizeof(full), H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 3);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("GET / with scheme+authority accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("stream_id == 3", 3, REQ->stream_id);
+	ASSERT_STR_EQ("authority = example.com", "example.com",
+	              REQ->authority, LITLEN("example.com"));
+
+	// HEAD / — the default file applies to HEAD too (HEAD is not in the
+	// RFC 7541 static table, so it must be sent as a literal value)
+	reset_streams();
+	reset_conn(&conn);
+	static const uint8_t head_block[] = {
+		0x02, 0x04, 'H', 'E', 'A', 'D', 0x84, // :method HEAD, :path /
+	};
+	memcpy(payload, head_block, sizeof(head_block));
+	put_wire_header(wire, sizeof(head_block), H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 5);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("HEAD / accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("method == HEAD_ID", HEAD_ID, REQ->method);
+	ASSERT_STR_EQ("path = www/index.html", "www/index.html",
+	              REQ->path, LITLEN("www/index.html"));
+
+	// OPTIONS / — no default file, the bare docroot path
+	reset_streams();
+	reset_conn(&conn);
+	static const uint8_t options_block[] = {
+		0x02, 0x07, 'O', 'P', 'T', 'I', 'O', 'N', 'S', 0x84,
+	};
+	memcpy(payload, options_block, sizeof(options_block));
+	put_wire_header(wire, sizeof(options_block), H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 7);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("OPTIONS / accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("method == OPTIONS_ID", OPTIONS_ID, REQ->method);
+	ASSERT_STR_EQ("path = www/", "www/", REQ->path, LITLEN("www/"));
+	ASSERT_EQ("path_length = 4", LITLEN("www/"), REQ->path_length);
+}
+
+// 8.3 — malformed pseudo-header blocks are rejected with PROTOCOL_ERROR.
+static void test_h2_pseudo_validate(void) {
+	TEST_SUITE("h2_build_request — 8.3 malformed pseudo-headers rejected");
+
+	h2_hpack_field_t f[4];
+	int64_t carry;
+
+	// missing :method
+	f[0] = field(":path", "/");
+	set_fields(f, 1);
+	ASSERT_EQ("missing :method → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 1, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	// an empty block — no pseudo-headers at all
+	set_fields(f, 0);
+	ASSERT_EQ("empty block → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 0, &carry));
+
+	// empty :method counts as missing
+	f[0] = field(":method", "");
+	f[1] = field(":path", "/");
+	set_fields(f, 2);
+	ASSERT_EQ("empty :method → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 2, &carry));
+
+	// missing :path for a normal (GET) request
+	f[0] = field(":method", "GET");
+	set_fields(f, 1);
+	ASSERT_EQ("missing :path → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 1, &carry));
+
+	// duplicate pseudo-headers
+	f[0] = field(":method", "GET");
+	f[1] = field(":method", "GET");
+	f[2] = field(":path", "/");
+	set_fields(f, 3);
+	ASSERT_EQ("duplicate :method → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 3, &carry));
+
+	// a pseudo-header after a regular header
+	f[0] = field(":method", "GET");
+	f[1] = field("accept", "text/html");
+	f[2] = field(":path", "/");
+	set_fields(f, 3);
+	ASSERT_EQ("pseudo after regular → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 3, &carry));
+
+	// an undefined pseudo-header (:status is response-only)
+	f[0] = field(":method", "GET");
+	f[1] = field(":status", "200");
+	f[2] = field(":path", "/");
+	set_fields(f, 3);
+	ASSERT_EQ("undefined pseudo-header → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 3, &carry));
+
+	// a path that is not origin-form (no leading '/') is malformed
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "index.html");
+	set_fields(f, 2);
+	ASSERT_EQ("non-origin :path → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
+	          h2_build_request_wrapper(1, 2, &carry));
+
+	// BREW is not a normal request — no :path required, like HTTP/1
+	f[0] = field(":method", "BREW");
+	set_fields(f, 1);
+	ASSERT_EQ("BREW without :path accepted", 0,
+	          h2_build_request_wrapper(3, 1, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("method == BREW_ID", BREW_ID, REQ->method);
+	ASSERT_EQ("stream_id == 3", 3, REQ->stream_id);
+}
+
+// 8.4 — the critical boundary: /index.html over HTTP/2 must produce
+// exactly the same internal request representation as HTTP/1. Both sides
+// share the parse buffers (filename_buf/query_buf/authority_buf), so the
+// HTTP/1 result is snapshotted before the HTTP/2 build overwrites them.
+static void test_h2_request_equivalence(void) {
+	TEST_SUITE("8.4 HTTP/2 request == HTTP/1 request (same internal form)");
+
+	h2_hpack_field_t f[3];
+	int64_t carry;
+	char path1[64], auth1[64], q1buf[64];
+
+	// ── /index.html, no query ──
+	const char *req1 = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+	ASSERT_EQ("HTTP/1 parse carries clear", 0,
+	          parse_request_wrapper(req1, LITLEN("GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n")));
+
+	int64_t method1 = REQ->method;
+	int64_t plen1 = REQ->path_length;
+	int64_t qptr1 = (int64_t)REQ->query;
+	int64_t qlen1 = REQ->query_length;
+	int64_t alen1 = 0;
+	while (REQ->authority[alen1]) alen1++;
+	memcpy(path1, REQ->path, (unsigned long)plen1);
+	memcpy(auth1, REQ->authority, (unsigned long)alen1);
+
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "/index.html");
+	f[2] = field(":authority", "example.com");
+	set_fields(f, 3);
+	ASSERT_EQ("HTTP/2 build succeeds", 0,
+	          h2_build_request_wrapper(1, 3, &carry));
+
+	ASSERT_EQ("method identical", method1, REQ->method);
+	ASSERT_EQ("path_length identical", plen1, REQ->path_length);
+	ASSERT_TRUE("path bytes identical",
+	            memcmp(path1, REQ->path, (unsigned long)plen1) == 0);
+	ASSERT_EQ("query identical (NULL)", qptr1, (int64_t)REQ->query);
+	ASSERT_EQ("query_length identical", qlen1, REQ->query_length);
+	int64_t alen2 = 0;
+	while (REQ->authority[alen2]) alen2++;
+	ASSERT_EQ("authority length identical", alen1, alen2);
+	ASSERT_TRUE("authority bytes identical",
+	            memcmp(auth1, REQ->authority, (unsigned long)alen1) == 0);
+	// the one intentional difference: HTTP/2 carries the stream id
+	ASSERT_EQ("stream_id = 1 (HTTP/2)", 1, REQ->stream_id);
+
+	// ── /index.html?x=1&y=2 — the query is carried raw on both sides ──
+	const char *req2 =
+		"GET /index.html?x=1&y=2 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+	ASSERT_EQ("HTTP/1 parse carries clear", 0,
+	          parse_request_wrapper(req2, LITLEN(
+		          "GET /index.html?x=1&y=2 HTTP/1.1\r\nHost: example.com\r\n\r\n")));
+
+	plen1 = REQ->path_length;
+	qlen1 = REQ->query_length;
+	memcpy(path1, REQ->path, (unsigned long)plen1);
+	memcpy(q1buf, REQ->query, (unsigned long)qlen1);
+
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "/index.html?x=1&y=2");
+	f[2] = field(":authority", "example.com");
+	set_fields(f, 3);
+	ASSERT_EQ("HTTP/2 build succeeds", 0,
+	          h2_build_request_wrapper(1, 3, &carry));
+
+	ASSERT_EQ("query_length identical", qlen1, REQ->query_length);
+	ASSERT_TRUE("query bytes identical",
+	            memcmp(q1buf, REQ->query, (unsigned long)qlen1) == 0);
+	ASSERT_EQ("path_length identical", plen1, REQ->path_length);
+	ASSERT_TRUE("path bytes identical",
+	            memcmp(path1, REQ->path, (unsigned long)plen1) == 0);
+
+	// ── percent-encoding — both sides decode %XX the same way ──
+	const char *req3 = "GET /a%20b HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	ASSERT_EQ("HTTP/1 parse carries clear", 0,
+	          parse_request_wrapper(req3, LITLEN("GET /a%20b HTTP/1.1\r\nHost: localhost\r\n\r\n")));
+
+	plen1 = REQ->path_length;
+	memcpy(path1, REQ->path, (unsigned long)plen1);
+
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "/a%20b");
+	set_fields(f, 2);
+	ASSERT_EQ("HTTP/2 build succeeds", 0,
+	          h2_build_request_wrapper(1, 2, &carry));
+
+	ASSERT_EQ("path_length identical", plen1, REQ->path_length);
+	ASSERT_TRUE("path bytes identical",
+	            memcmp(path1, REQ->path, (unsigned long)plen1) == 0);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -2057,6 +2485,11 @@ int main(void) {
 	test_h2_hpack_literal();
 	test_h2_hpack_dynamic_disabled();
 	test_h2_hpack_block();
+	// Stage 8 — HEADERS → HPACK → the common request
+	test_h2_headers_hpack();
+	test_h2_pseudo_request();
+	test_h2_pseudo_validate();
+	test_h2_request_equivalence();
 	test_summary();
 	return 0;
 }

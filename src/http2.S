@@ -45,6 +45,20 @@
 // h2_hpack.S can reject every dynamic-table representation. Flow control
 // arrives in a later stage.
 //
+// Stage 8 — the HEADERS frame becomes a request. h2_handle_headers now
+// extracts the stream id, the header block and the END_STREAM/END_HEADERS
+// flags, decodes the block with h2_hpack_decode_block and converts the
+// decoded fields into the protocol-neutral `request` struct via
+// h2_build_request (8.1). h2_build_request extracts the request
+// pseudo-headers (:method, :path, :scheme, :authority; 8.2) and rejects
+// malformed ones — a missing or empty :method, a missing :path for the
+// methods we process, duplicate pseudo-headers, undefined
+// pseudo-headers, or pseudo-headers after a regular header — with
+// PROTOCOL_ERROR (8.3). The path is assembled through parse_h2_path in
+// parse.S plus the shared decode_url/check_path_* safety checks, so an
+// HTTP/2 request gets exactly the same internal representation as its
+// HTTP/1 twin (8.4). CONTINUATION and trailers are still later stages.
+//
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
 //   carry set   = failure, x0 = HTTP/2 error code (H2_ERR_*)
@@ -68,6 +82,7 @@
 .global h2_stream_create
 .global h2_validate_stream_id
 .global h2_stream_event
+.global h2_build_request
 
 .data
 .align 3
@@ -131,6 +146,36 @@ h2_stream_transitions:
     .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // HALF_CLOSED_REMOTE
     .byte 0xff, 0xff, H2_STREAM_CLOSED, H2_STREAM_CLOSED                 // HALF_CLOSED_LOCAL
     .byte 0xff, 0xff, 0xff, H2_STREAM_CLOSED                             // CLOSED (RST tolerated)
+
+// ── Stage 8 — request pseudo-header and method name constants ────────
+// Byte-exact names h2_build_request compares decoded field names and
+// values against. The pseudo-headers are the four a request may carry;
+// the method strings mirror parse_request's case-sensitive detection.
+.align 1
+h2_pseudo_method:
+    .asciz ":method"
+.equ h2_pseudo_method_len, . - h2_pseudo_method - 1
+h2_pseudo_path:
+    .asciz ":path"
+.equ h2_pseudo_path_len, . - h2_pseudo_path - 1
+h2_pseudo_scheme:
+    .asciz ":scheme"
+.equ h2_pseudo_scheme_len, . - h2_pseudo_scheme - 1
+h2_pseudo_authority:
+    .asciz ":authority"
+.equ h2_pseudo_authority_len, . - h2_pseudo_authority - 1
+h2_method_get:
+    .asciz "GET"
+.equ h2_method_get_len, . - h2_method_get - 1
+h2_method_head:
+    .asciz "HEAD"
+.equ h2_method_head_len, . - h2_method_head - 1
+h2_method_options:
+    .asciz "OPTIONS"
+.equ h2_method_options_len, . - h2_method_options - 1
+h2_method_brew:
+    .asciz "BREW"
+.equ h2_method_brew_len, . - h2_method_brew - 1
 
 .bss
 .align 3
@@ -267,49 +312,71 @@ h2_dispatch_frame:
 // dispatcher leaves the flags from its type compare, so a handler may
 // not assume anything about them on entry.
 
-// ── 6.3/6.2 — HEADERS ───────────────────────────────────────────────
+// ── 6.3/6.2 + 8.1 — HEADERS ─────────────────────────────────────────
 // Open or update the stream named by the frame. A HEADERS frame is the
 // only thing that may open a new client stream (§5.1): the id must pass
 // h2_validate_stream_id, the stream is created in IDLE and moved to
 // OPEN, and the END_STREAM flag then moves it to HALF_CLOSED_REMOTE.
-// The HPACK payload is not decoded yet — that is the HPACK stage.
+// Since Stage 8 the frame's flags are recorded on the stream entry
+// (END_STREAM/END_HEADERS are extracted there), the HPACK-encoded
+// header block is decoded with h2_hpack_decode_block, and the decoded
+// fields are converted into the protocol-neutral `request` struct by
+// h2_build_request. An undecodable block is a COMPRESSION_ERROR
+// connection error (§4.3); a malformed request is a PROTOCOL_ERROR
+// stream error (§8.1.1).
 //
 // NOTE: the dispatcher reaches us with br, so x30 is the return address
 // of the dispatcher's caller — save it before our own bl calls.
 //
 // input/output: as h2_dispatch_frame
 //
-// clobbers x0-x11, x9, x30 (saved/restored)
+// clobbers x0-x15, x19 (saved/restored), x30 (saved/restored)
 h2_handle_headers:
-    str x30, [sp, #-16]!   // save the return address
-    // the id must be nonzero, odd and, for a brand-new stream, higher
-    // than every client id seen on this connection (§5.1.1)
-    mov x10, x0            // hdr — saved across the validate call
-    mov x11, x2            // conn — saved across the validate call
-    mov x1, x2             // validate's second argument is the conn
+    stp x19, x30, [sp, #-32]!
+    mov x10, x0             // hdr — saved across the validate/create calls
+    mov x11, x2             // conn — saved across the validate/create calls
+    mov x12, x1             // payload — reaches the HPACK decoder later
+    ldr w13, [x0, #H2F_FLAGS]
+    str x13, [sp, #16]      // frame flags — saved across the decode/build
+    mov x1, x2              // validate's second argument is the conn
     bl h2_validate_stream_id
-    b.cs .Lh2_stream_error
+    b.cs .Lh2_headers_err
     ldr w0, [x10, #H2F_STREAM_ID]
     mov x1, x11
     bl h2_stream_create
-    b.cs .Lh2_stream_error
-    mov x8, x0             // stream entry — survives the event calls
+    b.cs .Lh2_headers_err
+    mov x19, x0             // stream entry — survives the decode/build calls
+    ldr x13, [sp, #16]
+    str x13, [x19, #H2S_FLAGS]  // extract END_STREAM / END_HEADERS / ...
     mov x1, #H2_EVENT_RECV_HEADERS
     bl h2_stream_event
-    b.cs .Lh2_stream_error
+    b.cs .Lh2_headers_err
+    // the HPACK-encoded header block reaches the decoder here
+    mov x0, x12             // payload
+    ldr w1, [x10, #H2F_LENGTH]
+    bl h2_hpack_decode_block
+    b.cs .Lh2_headers_err   // x0 = COMPRESSION_ERROR (connection error)
+    // convert the decoded fields into the common request
+    mov x1, x0              // decoded field count
+    ldr w0, [x10, #H2F_STREAM_ID]
+    bl h2_build_request
+    b.cs .Lh2_headers_err   // x0 = PROTOCOL_ERROR (stream error)
     // END_STREAM closes the client's send side → HALF_CLOSED_REMOTE
-    ldr w3, [x10, #H2F_FLAGS]
-    tst w3, #H2_FLAG_END_STREAM
+    ldr x13, [sp, #16]
+    tst w13, #H2_FLAG_END_STREAM
     b.eq .Lh2_headers_ok
-    mov x0, x8
+    mov x0, x19
     mov x1, #H2_EVENT_RECV_END_STREAM
     bl h2_stream_event
-    b.cs .Lh2_stream_error
+    b.cs .Lh2_headers_err
 .Lh2_headers_ok:
-    ldr x30, [sp], #16    // restore the return address
-    cmn xzr, xzr // success — carry clear
+    ldp x19, x30, [sp], #32
+    cmn xzr, xzr             // success — carry clear
     mov x0, #0
     ret
+.Lh2_headers_err:
+    ldp x19, x30, [sp], #32
+    ret                      // x0 = error, carry set
 
 // ── 6.3 — DATA ──────────────────────────────────────────────────────
 // DATA frames carry request body bytes. Only an existing stream may
@@ -588,6 +655,297 @@ h2_stream_event:
 .Lh2_stream_idle_violation:
     cmp xzr, xzr
     mov x0, #H2_ERR_PROTOCOL_ERROR
+    ret
+
+// ── 8.2/8.3 — the HEADERS block becomes the common request ──────────
+// Convert a decoded HEADERS block (h2_hpack_fields[0..count)) into the
+// protocol-neutral `request` struct. The request pseudo-headers are
+// extracted and validated (RFC 9113 §8.3):
+//
+//   - every pseudo-header must precede the regular header fields
+//   - a pseudo-header may appear at most once
+//   - undefined pseudo-headers (e.g. :status in a request) are malformed
+//   - :method is required and must not be empty
+//   - :path is required for the methods we process (GET/HEAD/OPTIONS)
+//     and must be origin-form or asterisk-form (§8.3.1)
+//   - :scheme and :authority are carried but not otherwise validated
+//
+// Any violation is a PROTOCOL_ERROR stream error (RFC 9113 §8.1.1).
+//
+// The path is assembled exactly like HTTP/1's parse_request: parse_h2_path
+// (parse.S) builds the docroot-prefixed filename and splits the query,
+// then decode_url / check_path_safety / check_path_traversal (file.S)
+// percent-decode and validate it, and the :authority value is copied
+// into authority_buf — the same buffers and helpers HTTP/1 uses, so an
+// HTTP/2 request and its HTTP/1 twin reach the handlers identically
+// (8.4). BREW/unknown methods skip path handling entirely, matching
+// parse_request; only REQ_METHOD and REQ_STREAM_ID are set for them.
+//
+// input
+// x0 = stream id
+// x1 = number of decoded header fields
+//
+// output
+// success — carry clear, x0 = 0; the `request` struct is filled
+// failure — carry set, x0 = H2_ERR_PROTOCOL_ERROR
+//
+// clobbers x0-x18, x19-x24 (saved/restored), x30
+h2_build_request:
+    stp x19, x20, [sp, #-128]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    str x30, [sp, #48]
+    // zero the pseudo-header value slots: method, path, scheme,
+    // authority — each a (ptr, len) pair
+    stp xzr, xzr, [sp, #64]
+    stp xzr, xzr, [sp, #80]
+    stp xzr, xzr, [sp, #96]
+    stp xzr, xzr, [sp, #112]
+
+    mov x19, x0             // stream id
+    mov x20, x1             // field count
+    adr_l x21, h2_hpack_fields
+    mov x22, #0             // field index
+    mov x23, #0             // a regular header has been seen
+    mov x24, #UNKNOWN_ID    // method id
+
+.Lh2_req_loop:
+    cmp x22, x20
+    b.hs .Lh2_req_scan_done
+    ldr x0, [x21, #H2_HPACK_FIELD_NAME_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_NAME_LEN]
+    ldr x4, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x5, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    ldrb w6, [x0]
+    cmp w6, #':'
+    b.ne .Lh2_req_normal
+    // a pseudo-header — it must come before any regular header
+    cbnz x23, .Lh2_req_pseudo_after_normal
+    // classify the name with exact byte compares
+    adr_l x2, h2_pseudo_method
+    mov x3, h2_pseudo_method_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_method_hit
+    ldr x0, [x21, #H2_HPACK_FIELD_NAME_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_NAME_LEN]
+    adr_l x2, h2_pseudo_path
+    mov x3, h2_pseudo_path_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_path_hit
+    ldr x0, [x21, #H2_HPACK_FIELD_NAME_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_NAME_LEN]
+    adr_l x2, h2_pseudo_scheme
+    mov x3, h2_pseudo_scheme_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_scheme_hit
+    ldr x0, [x21, #H2_HPACK_FIELD_NAME_PTR]
+    ldr x1, [x21, #H2_HPACK_FIELD_NAME_LEN]
+    adr_l x2, h2_pseudo_authority
+    mov x3, h2_pseudo_authority_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_authority_hit
+    b .Lh2_req_unknown_pseudo
+.Lh2_req_method_hit:
+    ldr x6, [sp, #64]       // already seen — duplicate
+    cbnz x6, .Lh2_req_dup
+    ldr x6, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x7, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    str x6, [sp, #64]
+    str x7, [sp, #72]
+    b .Lh2_req_next
+.Lh2_req_path_hit:
+    ldr x6, [sp, #80]
+    cbnz x6, .Lh2_req_dup
+    ldr x6, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x7, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    str x6, [sp, #80]
+    str x7, [sp, #88]
+    b .Lh2_req_next
+.Lh2_req_scheme_hit:
+    ldr x6, [sp, #96]
+    cbnz x6, .Lh2_req_dup
+    ldr x6, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x7, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    str x6, [sp, #96]
+    str x7, [sp, #104]
+    b .Lh2_req_next
+.Lh2_req_authority_hit:
+    ldr x6, [sp, #112]
+    cbnz x6, .Lh2_req_dup
+    ldr x6, [x21, #H2_HPACK_FIELD_VALUE_PTR]
+    ldr x7, [x21, #H2_HPACK_FIELD_VALUE_LEN]
+    str x6, [sp, #112]
+    str x7, [sp, #120]
+    b .Lh2_req_next
+.Lh2_req_normal:
+    mov x23, #1             // regular headers follow the pseudo-headers
+.Lh2_req_next:
+    add x21, x21, #H2_HPACK_FIELD_SIZE
+    add x22, x22, #1
+    b .Lh2_req_loop
+
+.Lh2_req_scan_done:
+    // :method must be present and non-empty (§8.3.1)
+    ldr x0, [sp, #64]
+    cbz x0, .Lh2_req_missing_method
+    ldr x1, [sp, #72]
+    cbz x1, .Lh2_req_missing_method
+    // map the method string to a method id (case-sensitive, like HTTP/1)
+    adr_l x2, h2_method_get
+    mov x3, h2_method_get_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_m_get
+    ldr x0, [sp, #64]
+    ldr x1, [sp, #72]
+    adr_l x2, h2_method_head
+    mov x3, h2_method_head_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_m_head
+    ldr x0, [sp, #64]
+    ldr x1, [sp, #72]
+    adr_l x2, h2_method_options
+    mov x3, h2_method_options_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_m_options
+    ldr x0, [sp, #64]
+    ldr x1, [sp, #72]
+    adr_l x2, h2_method_brew
+    mov x3, h2_method_brew_len
+    bl h2_name_eq
+    cbnz x0, .Lh2_req_m_brew
+    b .Lh2_req_method_done  // unknown method — x24 stays UNKNOWN_ID
+.Lh2_req_m_get:
+    mov x24, #GET_ID
+    b .Lh2_req_method_done
+.Lh2_req_m_head:
+    mov x24, #HEAD_ID
+    b .Lh2_req_method_done
+.Lh2_req_m_options:
+    mov x24, #OPTIONS_ID
+    b .Lh2_req_method_done
+.Lh2_req_m_brew:
+    mov x24, #BREW_ID
+.Lh2_req_method_done:
+    // BREW/UNKNOWN get no path handling — mirroring parse_request, only
+    // the method and stream id are recorded
+    cmp x24, #OPTIONS_ID
+    b.hi .Lh2_req_store_method_only
+    // :path is required for the methods we process
+    ldr x0, [sp, #80]
+    cbz x0, .Lh2_req_missing_path
+    ldr x1, [sp, #88]
+    cbz x1, .Lh2_req_missing_path
+    // assemble the docroot-prefixed path; the default file is for
+    // GET/HEAD only, OPTIONS keeps the bare docroot
+    mov x2, #1
+    cmp x24, #OPTIONS_ID
+    b.ne 1f
+    mov x2, #0
+1:
+    bl parse_h2_path
+    b.cs .Lh2_req_bad_path
+    str x0, [sp, #80]       // assembled filename (filename_buf)
+    str x1, [sp, #88]       // filename length
+    str x2, [sp, #96]       // query string (query_buf), or 0
+    str x3, [sp, #104]      // query length
+    // percent-decode in place, then the same safety checks as HTTP/1
+    ldr x0, [sp, #80]
+    ldr x1, [sp, #88]
+    bl decode_url
+    cbz x0, .Lh2_req_bad_path
+    str x0, [sp, #80]
+    str x1, [sp, #88]
+    ldr x0, [sp, #80]
+    ldr x1, [sp, #88]
+    bl check_path_safety
+    cbz x0, .Lh2_req_bad_path
+    ldr x0, [sp, #80]
+    ldr x1, [sp, #88]
+    bl check_path_traversal
+    cbz x0, .Lh2_req_bad_path
+    // copy :authority into authority_buf, NUL-terminated (bounded)
+    ldr x0, [sp, #112]
+    cbz x0, .Lh2_req_no_authority
+    ldr x1, [sp, #120]
+    adr_l x8, authority_buf
+    mov x9, #0              // bytes copied
+1:
+    cbz x1, 2f
+    cmp x9, AUTHORITY_BUF_SIZE
+    b.hs 2f                 // too long — truncate
+    ldrb w3, [x0, x9]
+    strb w3, [x8, x9]
+    add x9, x9, #1
+    sub x1, x1, #1
+    b 1b
+2:
+    strb wzr, [x8, x9]
+    mov x7, x8
+    b .Lh2_req_store
+.Lh2_req_no_authority:
+    mov x7, #0
+.Lh2_req_store:
+    adr_l x0, request
+    str x24, [x0, #REQ_METHOD]
+    str x19, [x0, #REQ_STREAM_ID]
+    ldr x1, [sp, #80]
+    str x1, [x0, #REQ_PATH]
+    ldr x2, [sp, #88]
+    str x2, [x0, #REQ_PATH_LENGTH]
+    ldr x3, [sp, #96]
+    str x3, [x0, #REQ_QUERY]
+    ldr x4, [sp, #104]
+    str x4, [x0, #REQ_QUERY_LENGTH]
+    str x7, [x0, #REQ_AUTHORITY]
+    b .Lh2_req_ok
+.Lh2_req_store_method_only:
+    adr_l x0, request
+    str x24, [x0, #REQ_METHOD]
+    str x19, [x0, #REQ_STREAM_ID]
+.Lh2_req_ok:
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    b .Lh2_req_epilogue
+.Lh2_req_dup:
+.Lh2_req_pseudo_after_normal:
+.Lh2_req_unknown_pseudo:
+.Lh2_req_missing_method:
+.Lh2_req_missing_path:
+.Lh2_req_bad_path:
+.Lh2_req_bad:
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+.Lh2_req_epilogue:
+    ldr x30, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #128
+    ret
+
+// h2_name_eq — byte-exact compare of (x0, len x1) with the string at
+// x2 (of length x3). Returns x0 = 1 if equal, 0 otherwise. Reading is
+// bounded by the lengths, so a decoded name or value that points into a
+// header block (not NUL-terminated) is safe to compare.
+//
+// clobbers x0-x6
+h2_name_eq:
+    cmp x1, x3
+    b.ne .Lh2_name_ne
+    mov x4, #0
+.Lh2_name_loop:
+    cmp x4, x1
+    b.hs .Lh2_name_eq_yes
+    ldrb w5, [x0, x4]
+    ldrb w6, [x2, x4]
+    cmp w5, w6
+    b.ne .Lh2_name_ne
+    add x4, x4, #1
+    b .Lh2_name_loop
+.Lh2_name_eq_yes:
+    mov x0, #1
+    ret
+.Lh2_name_ne:
+    mov x0, #0
     ret
 
 // ── 4.4 + 4.5 — SETTINGS ────────────────────────────────────────────
