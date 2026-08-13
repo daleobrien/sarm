@@ -21,6 +21,46 @@ void *memcpy(void *dst, const void *src, unsigned long n);
 void *memmove(void *dst, const void *src, unsigned long n);
 void *memset(void *s, int c, unsigned long n);
 
+// ── self-imposed test timeout ──────────────────────────────────────
+// Every test binary arms a SIGALRM timer at load time so a hung test
+// (an infinite loop or a blocking read in the code under test) can
+// never block `make test` forever. 124 is the conventional timeout
+// exit code (same as GNU timeout / curl --max-time failures).
+// Declared manually to keep this header free of <signal.h>/<unistd.h>,
+// matching the style above.
+#define TEST_TIMEOUT_SECS 5
+
+// SIGALRM is 14 on macOS, Linux, and the rest of POSIX.
+#ifndef SIGALRM
+#define SIGALRM 14
+#endif
+
+#define _TEST_STR(x)  #x
+#define _TEST_XSTR(x) _TEST_STR(x)
+
+typedef void (*_test_sighandler_t)(int);
+
+extern unsigned int alarm(unsigned int seconds);
+extern _test_sighandler_t signal(int signum, _test_sighandler_t handler);
+extern long write(int fd, const void *buf, unsigned long n);
+extern void _exit(int status);
+
+static void _test_timeout_handler(int sig) {
+    (void)sig;
+    static const char _msg[] =
+        "\n  ✗ test timed out after " _TEST_XSTR(TEST_TIMEOUT_SECS)
+        " seconds (max runtime exceeded)\n";
+    (void)write(2, _msg, sizeof(_msg) - 1);
+    _exit(124);
+}
+
+// Runs before main(); arms the timeout for every unit test binary.
+__attribute__((constructor))
+static void _test_arm_timeout(void) {
+    signal(SIGALRM, _test_timeout_handler);
+    alarm(TEST_TIMEOUT_SECS);
+}
+
 // ── test runner state ──────────────────────────────────────────────
 
 static int _tests_passed = 0;

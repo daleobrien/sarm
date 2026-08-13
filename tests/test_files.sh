@@ -119,9 +119,11 @@ check_file() {
     local tmphead
     tmphead=$(mktemp "/tmp/ymawky_file_head_XXXXXX")
 
-    # Fetch file and response headers in one go
+    # Fetch file and response headers in one go.
+    # --max-time keeps a single request from hanging the whole suite if
+    # the server stops responding.
     local http_code
-    http_code=$(curl -s -o "$tmpfile" -w '%{http_code}' \
+    http_code=$(curl -s --max-time 5 -o "$tmpfile" -w '%{http_code}' \
         -D "$tmphead" "${BASE}${url_path}" 2>/dev/null) || true
 
     # 1. HTTP status must be 200
@@ -247,9 +249,15 @@ else
 fi
 SERVER_PID=$!
 
+# Wait up to 10s for the server. Every probe curl is bounded with
+# --max-time so a server that accepts connections but never answers
+# (a stuck request handler) can't hang the suite forever.
 if [ $QUIET -eq 0 ]; then echo -n "waiting for server (pid ${SERVER_PID}) …"; fi
-for i in $(seq 1 40); do
-    if curl -s -o /dev/null "${BASE}/" 2>/dev/null; then
+ready=0
+deadline=$((SECONDS + 10))
+while [ $SECONDS -lt $deadline ]; do
+    if curl -s --max-time 2 -o /dev/null "${BASE}/" 2>/dev/null; then
+        ready=1
         if [ $QUIET -eq 0 ]; then echo " ready"; fi
         break
     fi
@@ -258,14 +266,14 @@ for i in $(seq 1 40); do
         nope "server process exited unexpectedly"
         exit 1
     fi
-    if [ "$i" -eq 40 ]; then
-        if [ $QUIET -eq 0 ]; then echo " TIMEOUT"; fi
-        nope "server did not start within 10 seconds"
-        cleanup; exit 1
-    fi
     if [ $QUIET -eq 0 ]; then echo -n .; fi
     sleep 0.25
 done
+if [ "$ready" -ne 1 ]; then
+    if [ $QUIET -eq 0 ]; then echo " TIMEOUT"; fi
+    nope "server did not start within 10 seconds"
+    cleanup; exit 1
+fi
 if [ $QUIET -eq 0 ]; then echo ""; fi
 
 # ══════════════════════════════════════════════════════════════════
