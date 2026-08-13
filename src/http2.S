@@ -37,8 +37,13 @@
 // (h2_stream_event; IDLE/OPEN/HALF_CLOSED_*/CLOSED, §5.1) and the
 // RST_STREAM handler (§6.4). HEADERS and DATA now drive the state
 // machine instead of just acknowledging receipt; PRIORITY, PUSH_PROMISE,
-// PING, GOAWAY, WINDOW_UPDATE and CONTINUATION remain stubs. HPACK
-// decoding and flow control arrive in later stages.
+// PING, GOAWAY, WINDOW_UPDATE and CONTINUATION remain stubs.
+//
+// Stage 7 — HPACK lands in its own file (h2_hpack.S). Here the opening
+// SETTINGS frame now advertises SETTINGS_HEADER_TABLE_SIZE = 0 (§6.5.2),
+// disabling the HPACK dynamic table so the static-table-only decoder in
+// h2_hpack.S can reject every dynamic-table representation. Flow control
+// arrives in a later stage.
 //
 // Error convention (shared with the rest of ymawky):
 //   carry clear = success, x0 = 0
@@ -84,14 +89,18 @@ h2_conn:
     .quad 0                               // H2C_LAST_STREAM_ID
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
-// §3.5, §6.5): a potentially empty SETTINGS frame, so it is just the
-// 9-byte frame header. Empty is valid; real parameters (e.g.
-// MAX_CONCURRENT_STREAMS) arrive in the SETTINGS stage.
+// §3.5, §6.5): a single SETTINGS_HEADER_TABLE_SIZE = 0 entry (§6.5.2),
+// which tells the client its HPACK encoder may not use a dynamic table.
+// Our decoder is static-table-only (h2_hpack.S) and rejects any
+// dynamic-table representation, so advertising the limit up front lets
+// conforming clients avoid the COMPRESSION_ERROR entirely.
 h2_settings_frame:
-    .byte 0x00, 0x00, 0x00            // payload length (24-bit) = 0
+    .byte 0x00, 0x00, 0x06            // payload length (24-bit) = 6
     .byte H2_FRAME_SETTINGS           // type = SETTINGS
     .byte 0x00                        // flags = 0
     .byte 0x00, 0x00, 0x00, 0x00      // stream id = 0
+    .byte 0x00, H2_SETTINGS_HEADER_TABLE_SIZE // identifier (16-bit BE)
+    .byte 0x00, 0x00, 0x00, 0x00      // value = 0 — dynamic table disabled
 .equ h2_settings_frame_len, . - h2_settings_frame
 
 // frame-type dispatch table, indexed by frame type (§6). The dispatcher
@@ -804,19 +813,20 @@ h2_verify_preface:
     ret
 
 // ── 3.5 — send the server's opening SETTINGS frame ──────────────────
-// Emit h2_settings_frame — an empty SETTINGS frame, valid as the first
-// frame of the server connection preface (§3.5, §6.5). Delegates to
-// write_all (util.S) so partial writes are completed.
+// Emit h2_settings_frame — the opening SETTINGS frame with
+// SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table disabled), valid as the
+// first frame of the server connection preface (§3.5, §6.5). Delegates
+// to write_all (util.S) so partial writes are completed.
 //
 // input
 // x0 -> client file descriptor
 //
 // output
-// success — carry clear, x0 = bytes written (H2_WIRE_HEADER_LEN)
+// success — carry clear, x0 = bytes written (h2_settings_frame_len)
 // failure — carry set, x0 = errno (EPIPE, ECONNRESET, ...)
 //
 // clobbers x0, x1, x2, x8, x16 (syscall registers; see write_all)
 h2_send_settings:
     adr_l x1, h2_settings_frame
-    mov x2, #H2_WIRE_HEADER_LEN
+    mov x2, #(H2_WIRE_HEADER_LEN + H2_SETTINGS_ENTRY_LEN) // header + 1 entry
     b write_all

@@ -631,3 +631,33 @@
 .equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...)
 .equ H2S_WINDOW,     24   // u64 stream flow-control window
 .equ H2S_SIZE,       32
+
+// ── HPACK (RFC 7541) — Stage 7 ───────────────────────────────────────
+// Minimal HPACK: the RFC 7541 Appendix A static table only. The dynamic
+// table is disabled — the opening SETTINGS frame advertises
+// SETTINGS_HEADER_TABLE_SIZE = 0 (http2.S) and the decoder rejects the
+// representations that would need a dynamic table (literal with
+// incremental indexing §6.2.1, size updates above 0 §6.3, indices
+// beyond the static table) with H2_ERR_COMPRESSION_ERROR (RFC 9113
+// §4.3). Huffman-coded strings (§5.2) are rejected until the Huffman
+// stage.
+
+.equ H2_HPACK_STATIC_TABLE_SIZE, 61  // RFC 7541 Appendix A
+.equ H2_HPACK_HEADER_TABLE_SIZE,  0  // our decoder's dynamic-table max
+
+// one header-table entry (static or, later, dynamic) — 32 bytes
+.equ H2_HPACK_ENTRY_NAME_PTR,  0
+.equ H2_HPACK_ENTRY_NAME_LEN,  8
+.equ H2_HPACK_ENTRY_VALUE_PTR, 16
+.equ H2_HPACK_ENTRY_VALUE_LEN, 24
+.equ H2_HPACK_ENTRY_SIZE,      32
+
+// one decoded header field (h2_hpack_fields entry) — 32 bytes
+.equ H2_HPACK_FIELD_NAME_PTR,  0
+.equ H2_HPACK_FIELD_NAME_LEN,  8
+.equ H2_HPACK_FIELD_VALUE_PTR, 16
+.equ H2_HPACK_FIELD_VALUE_LEN, 24
+.equ H2_HPACK_FIELD_SIZE,      32
+
+// the fixed decode output area holds at most this many fields per block
+.equ H2_HPACK_MAX_FIELDS, 32

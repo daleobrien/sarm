@@ -1,4 +1,4 @@
-// Unit tests for src/http2.S — Stages 4, 5 & 6.
+// Unit tests for src/http2.S — Stages 4, 5, 6 & 7.
 // Stage 4: the HTTP/2 frame engine — h2_parse_frame_header (4.1),
 // h2_validate_frame (4.2), h2_dispatch_frame (4.3), h2_handle_settings
 // (4.4) and SETTINGS ACK (4.5). SETTINGS tests go through
@@ -12,6 +12,13 @@
 // (6.2, h2_validate_stream_id), the receive-side state machine (6.3,
 // h2_stream_event) and RST_STREAM handling (6.4). HEADERS/DATA handlers
 // drive the machine through h2_dispatch_frame.
+// Stage 7: minimal HPACK (src/h2_hpack.S) — the RFC 7541 Appendix A
+// static table (7.1), integer decoding §5.1 (7.2), plain-string
+// decoding §5.2 (7.3), indexed header fields §6.1 (7.4), literal
+// header fields §6.2.2/§6.2.3 (7.5), and the disabled dynamic table
+// (7.6): the opening SETTINGS frame advertises SETTINGS_HEADER_TABLE_SIZE
+// = 0, and the decoder rejects every dynamic-table representation with
+// COMPRESSION_ERROR.
 //
 // NOTE: avoids libc string.h/stdlib.h per test_harness.h guidance.
 
@@ -50,6 +57,7 @@
 #define H2_ERR_FRAME_SIZE_ERROR   6
 #define H2_ERR_REFUSED_STREAM     7
 #define H2_ERR_CANCEL             8
+#define H2_ERR_COMPRESSION_ERROR  9
 
 // RFC 9113 §6.5.2 default values
 #define H2_DEF_HEADER_TABLE_SIZE       4096
@@ -80,6 +88,13 @@
 #define H2S_SIZE      32
 
 #define H2_STREAMS_BYTES (H2_MAX_STREAMS * H2S_SIZE)
+
+// ── HPACK constants, mirroring defs.S (RFC 7541) ────────────────────
+#define H2_HPACK_STATIC_TABLE_SIZE 61 // RFC 7541 Appendix A
+#define H2_HPACK_FIELD_SIZE 32
+#define H2_HPACK_MAX_FIELDS 32
+
+#define H2_HPACK_FIELDS_BYTES (H2_HPACK_MAX_FIELDS * H2_HPACK_FIELD_SIZE)
 
 // ── the 24-byte client connection preface (RFC 9113 §3.4) ─────────
 // 25 bytes with the NUL terminator; only the first 24 are sent.
@@ -125,6 +140,15 @@ typedef struct {
 	int64_t window;
 } h2_stream_t;
 
+// one decoded header field (h2_hpack_fields entry) — mirrors the
+// H2_HPACK_FIELD_* layout in defs.S
+typedef struct {
+	const uint8_t *name;
+	int64_t name_len;
+	const uint8_t *value;
+	int64_t value_len;
+} h2_hpack_field_t;
+
 // ── wire frame builders ────────────────────────────────────────────
 
 // Write a 9-byte big-endian frame header (RFC 9113 §4.1).
@@ -149,6 +173,26 @@ static void put_setting(uint8_t *p, uint16_t id, uint32_t value) {
 	p[3] = (uint8_t)(value >> 16);
 	p[4] = (uint8_t)(value >> 8);
 	p[5] = (uint8_t)value;
+}
+
+// RFC 7541 §5.1 — encode an integer into a prefix of `bits` bits.
+// Returns the number of bytes written; the first octet's bits above the
+// prefix are zero (callers may OR in pattern bits).
+static int put_hpack_int(uint8_t *p, uint32_t value, int bits) {
+	int mask = (1 << bits) - 1;
+	if (value < (uint32_t)mask) {
+		p[0] = (uint8_t)value;
+		return 1;
+	}
+	p[0] = (uint8_t)mask;
+	value -= (uint32_t)mask;
+	int n = 1;
+	while (value >= 128) {
+		p[n++] = (uint8_t)((value % 128) + 128);
+		value /= 128;
+	}
+	p[n++] = (uint8_t)value;
+	return n;
 }
 
 // ── wrappers for asm functions ─────────────────────────────────────
@@ -405,6 +449,150 @@ static inline int64_t h2_send_settings_wrapper(int64_t fd, int64_t *carry_out) {
 		  "memory");
 	*carry_out = carry;
 	return rc;
+}
+
+// ── Stage 7 wrappers for asm functions (h2_hpack.S) ────────────────
+
+// h2_hpack_decode_int(ptr=x0, n=x1) → (value=x0, consumed=x1, carry)
+static inline int64_t h2_hpack_decode_int_wrapper(const uint8_t *p, int64_t n,
+                                                  int64_t *consumed_out,
+                                                  int64_t *carry_out) {
+	int64_t value, consumed, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %3\n"
+		"mov x1, %4\n"
+		"bl h2_hpack_decode_int\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"cset %2, cs\n"
+		: "=r"(value), "=r"(consumed), "=r"(carry)
+		: "r"(p), "r"(n)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "memory");
+	*consumed_out = consumed;
+	*carry_out = carry;
+	return value;
+}
+
+// h2_hpack_decode_string(ptr=x0) → (str=x0, len=x1, consumed=x2, carry)
+static inline const uint8_t *h2_hpack_decode_string_wrapper(const uint8_t *p,
+                                                            int64_t *len_out,
+                                                            int64_t *consumed_out,
+                                                            int64_t *carry_out) {
+	const uint8_t *s;
+	int64_t len, consumed, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %4\n"
+		"bl h2_hpack_decode_string\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"cset %3, cs\n"
+		: "=r"(s), "=r"(len), "=r"(consumed), "=r"(carry)
+		: "r"(p)
+		: "x0", "x1", "x2", "x3", "x4", "x19", "x30", "memory");
+	*len_out = len;
+	*consumed_out = consumed;
+	*carry_out = carry;
+	return s;
+}
+
+// h2_hpack_static_lookup(idx=x0) → (name=x0, name_len=x1, value=x2,
+//                                  value_len=x3, carry)
+static inline const uint8_t *h2_hpack_static_lookup_wrapper(int64_t idx,
+                                                            int64_t *name_len_out,
+                                                            const uint8_t **value_out,
+                                                            int64_t *value_len_out,
+                                                            int64_t *carry_out) {
+	const uint8_t *name, *value;
+	int64_t name_len, value_len, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %5\n"
+		"bl h2_hpack_static_lookup\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"mov %3, x3\n"
+		"cset %4, cs\n"
+		: "=r"(name), "=r"(name_len), "=r"(value), "=r"(value_len),
+		  "=r"(carry)
+		: "r"(idx)
+		: "x0", "x1", "x2", "x3", "x4", "x9", "memory");
+	*name_len_out = name_len;
+	*value_out = value;
+	*value_len_out = value_len;
+	*carry_out = carry;
+	return name;
+}
+
+// h2_hpack_decode_field(ptr=x0) → (next=x0, name=x1, name_len=x2,
+//                                  value=x3, value_len=x4, carry)
+static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
+                                                           const uint8_t **name_out,
+                                                           int64_t *name_len_out,
+                                                           const uint8_t **value_out,
+                                                           int64_t *value_len_out,
+                                                           int64_t *carry_out) {
+	const uint8_t *next, *name, *value;
+	int64_t name_len, value_len, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %6\n"
+		"bl h2_hpack_decode_field\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"mov %3, x3\n"
+		"mov %4, x4\n"
+		"cset %5, cs\n"
+		: "=r"(next), "=r"(name), "=r"(name_len), "=r"(value),
+		  "=r"(value_len), "=r"(carry)
+		: "r"(p)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x9",
+		  "x19", "x20", "x21", "x30", "memory");
+	*name_out = name;
+	*name_len_out = name_len;
+	*value_out = value;
+	*value_len_out = value_len;
+	*carry_out = carry;
+	return next;
+}
+
+// h2_hpack_decode_block(ptr=x0, len=x1) → (count=x0, carry)
+static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t len,
+                                                    int64_t *carry_out) {
+	int64_t count, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_hpack_decode_block\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(count), "=r"(carry)
+		: "r"(p), "r"(len)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x19", "x20", "x21", "x22", "x30", "memory");
+	*carry_out = carry;
+	return count;
+}
+
+static inline h2_hpack_field_t *h2_hpack_fields_addr(void) {
+	h2_hpack_field_t *p;
+	asm volatile(
+		"adrp x0, h2_hpack_fields@PAGE\n"
+		"add  x0, x0, h2_hpack_fields@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+// Zero the whole decoded-field area — a fresh decode in tests.
+static void reset_fields(void) {
+	memset(h2_hpack_fields_addr(), 0, H2_HPACK_FIELDS_BYTES);
 }
 
 static void test_h2_conn_defaults(void) {
@@ -885,18 +1073,18 @@ static void test_h2_send_settings(void) {
 	write(sv[0], H2_PREFACE, H2_PREFACE_LEN);
 	ASSERT_EQ("preface verified", CONNECTION_HTTP2,
 	          h2_verify_preface_wrapper(sv[1], buf, &carry));
-	ASSERT_EQ("settings sent — 9 bytes written", 9,
+	ASSERT_EQ("settings sent — 15 bytes written", 15,
 	          h2_send_settings_wrapper(sv[1], &carry));
 	ASSERT_EQ("carry clear", 0, carry);
 
 	// capture the frame from the client side and check every header field
-	uint8_t frame[9];
-	long n = read(sv[0], frame, 9);
-	ASSERT_EQ("9-byte frame captured", 9, n);
+	uint8_t frame[15];
+	long n = read(sv[0], frame, 15);
+	ASSERT_EQ("15-byte frame captured", 15, n);
 
 	uint32_t length = ((uint32_t)frame[0] << 16) |
 	                  ((uint32_t)frame[1] << 8) | frame[2];
-	ASSERT_EQ("payload length = 0 (empty SETTINGS)", 0, length);
+	ASSERT_EQ("payload length = 6 (one SETTINGS entry)", 6, length);
 	ASSERT_EQ("type = SETTINGS", H2_FRAME_SETTINGS, frame[3]);
 	ASSERT_EQ("flags = 0", 0, frame[4]);
 	uint32_t stream = ((uint32_t)frame[5] << 24) |
@@ -904,9 +1092,17 @@ static void test_h2_send_settings(void) {
 	                  ((uint32_t)frame[7] << 8) | frame[8];
 	ASSERT_EQ("stream id = 0", 0, stream);
 
+	// the single entry: SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table off)
+	uint32_t id = ((uint32_t)frame[9] << 8) | frame[10];
+	ASSERT_EQ("entry id = SETTINGS_HEADER_TABLE_SIZE",
+	          H2_SETTINGS_HEADER_TABLE_SIZE, id);
+	uint32_t value = ((uint32_t)frame[11] << 24) | ((uint32_t)frame[12] << 16) |
+	                 ((uint32_t)frame[13] << 8) | frame[14];
+	ASSERT_EQ("entry value = 0 (dynamic table disabled)", 0, value);
+
 	// the captured frame matches the asm constant byte-for-byte
 	ASSERT_STR_EQ("frame matches h2_settings_frame constant",
-	              h2_settings_frame_addr(), frame, 9);
+	              h2_settings_frame_addr(), frame, 15);
 
 	close(sv[0]);
 	close(sv[1]);
@@ -1359,6 +1555,476 @@ static void test_h2_rst_stream(void) {
 	          h2_stream_find_wrapper(1)->state);
 }
 
+// ── Stage 7 — minimal HPACK (h2_hpack.S) ───────────────────────────
+
+// Assert a decoded name/value pair matches the expected C strings.
+static void check_field(const char *label, int64_t carry,
+                        const uint8_t *name, int64_t name_len,
+                        const uint8_t *value, int64_t value_len,
+                        const char *exp_name, const char *exp_value) {
+	size_t en = 0, ev = 0;
+	while (exp_name[en]) en++;
+	while (exp_value[ev]) ev++;
+	if (carry != 0) {
+		_FAIL("%s — decode failed (carry set)", label);
+	} else if (name_len != (int64_t)en ||
+	           memcmp(name, exp_name, (unsigned long)en) != 0) {
+		_FAIL("%s — wrong name", label);
+	} else if (value_len != (int64_t)ev ||
+	           memcmp(value, exp_value, (unsigned long)ev) != 0) {
+		_FAIL("%s — wrong value", label);
+	} else {
+		_PASS(label);
+	}
+}
+
+// Assert a decoded string matches the expected C string and consumption.
+static void check_string(const char *label, int64_t carry, const uint8_t *s,
+                         int64_t len, const char *exp, int64_t consumed,
+                         int64_t exp_consumed) {
+	size_t n = 0;
+	while (exp[n]) n++;
+	if (carry != 0) {
+		_FAIL("%s — decode failed (carry set)", label);
+	} else if (len != (int64_t)n || memcmp(s, exp, (unsigned long)n) != 0) {
+		_FAIL("%s — wrong string", label);
+	} else if (consumed != exp_consumed) {
+		_FAIL("%s — consumed %lld, expected %lld", label,
+		      (long long)consumed, (long long)exp_consumed);
+	} else {
+		_PASS(label);
+	}
+}
+
+// Assert an integer decoded to the expected value and consumption.
+static void check_int(const char *label, const uint8_t *bytes, int64_t prefix,
+                      int64_t exp_value, int64_t exp_consumed) {
+	int64_t consumed, carry;
+	int64_t got = h2_hpack_decode_int_wrapper(bytes, prefix, &consumed, &carry);
+	if (carry != 0) {
+		_FAIL("%s — decode failed (carry set)", label);
+	} else if (got != exp_value) {
+		_FAIL("%s — value %lld, expected %lld", label,
+		      (long long)got, (long long)exp_value);
+	} else if (consumed != exp_consumed) {
+		_FAIL("%s — consumed %lld, expected %lld", label,
+		      (long long)consumed, (long long)exp_consumed);
+	} else {
+		_PASS(label);
+	}
+}
+
+// Assert a decode failed with COMPRESSION_ERROR (rc passed through x0).
+static void check_field_error(const char *label, const uint8_t *next,
+                              int64_t carry) {
+	if (carry != 1 || (int64_t)(uintptr_t)next != H2_ERR_COMPRESSION_ERROR)
+		_FAIL("%s — expected COMPRESSION_ERROR (carry=%lld, x0=%p)", label,
+		      (long long)carry, (const void *)next);
+	else
+		_PASS(label);
+}
+
+// ── 7.1 — the RFC 7541 Appendix A static table ─────────────────────
+
+static void test_h2_hpack_static_table(void) {
+	TEST_SUITE("h2_hpack_static_lookup — RFC 7541 Appendix A (7.1)");
+
+	ASSERT_EQ("h2_hpack_field_t layout matches H2_HPACK_FIELD_SIZE",
+	          H2_HPACK_FIELD_SIZE, (int64_t)sizeof(h2_hpack_field_t));
+
+	const uint8_t *name, *value;
+	int64_t name_len, value_len, carry;
+
+	// index 2: :method = GET — the canonical indexed request header
+	name = h2_hpack_static_lookup_wrapper(2, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 2 → :method GET", carry, name, name_len, value, value_len,
+	            ":method", "GET");
+
+	// index 5: :path = /index.html
+	name = h2_hpack_static_lookup_wrapper(5, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 5 → :path /index.html", carry, name, name_len,
+	            value, value_len, ":path", "/index.html");
+
+	// index 1: :authority, empty value
+	name = h2_hpack_static_lookup_wrapper(1, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 1 → :authority (empty)", carry, name, name_len,
+	            value, value_len, ":authority", "");
+
+	// index 16: accept-encoding = gzip, deflate
+	name = h2_hpack_static_lookup_wrapper(16, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 16 → accept-encoding gzip, deflate", carry, name,
+	            name_len, value, value_len, "accept-encoding", "gzip, deflate");
+
+	// index 31: content-type, empty value
+	name = h2_hpack_static_lookup_wrapper(31, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 31 → content-type (empty)", carry, name, name_len,
+	            value, value_len, "content-type", "");
+
+	// the last entry of the table
+	name = h2_hpack_static_lookup_wrapper(61, &name_len, &value, &value_len,
+	                                      &carry);
+	check_field("index 61 → www-authenticate (empty)", carry, name, name_len,
+	            value, value_len, "www-authenticate", "");
+
+	// index 0 and indices past the static table are decoding errors
+	const uint8_t *v;
+	int64_t rc = (int64_t)(uintptr_t)h2_hpack_static_lookup_wrapper(
+	    0, &name_len, &v, &value_len, &carry);
+	check_field_error("index 0 rejected", (const uint8_t *)rc, carry);
+	rc = (int64_t)(uintptr_t)h2_hpack_static_lookup_wrapper(
+	    62, &name_len, &v, &value_len, &carry);
+	check_field_error("index 62 rejected (no dynamic table)",
+	                  (const uint8_t *)rc, carry);
+}
+
+// ── 7.2 — integer decoding (§5.1) ──────────────────────────────────
+
+static void test_h2_hpack_int(void) {
+	TEST_SUITE("h2_hpack_decode_int — RFC 7541 §5.1 (7.2)");
+
+	// the Stage 7 required values, all with a 7-bit prefix. The
+	// continuation octets carry 7 bits each, least significant group
+	// first (§5.1); a prefix of all ones always means "more octets
+	// follow", so 2^N - 1 itself needs one more octet.
+	check_int("0 decodes",   (const uint8_t *)"\x00", 7, 0, 1);
+	check_int("1 decodes",   (const uint8_t *)"\x01", 7, 1, 1);
+	check_int("10 decodes",  (const uint8_t *)"\x0a", 7, 10, 1);
+	check_int("127 decodes", (const uint8_t *)"\x7f\x00", 7, 127, 2);
+	check_int("128 decodes", (const uint8_t *)"\x7f\x01", 7, 128, 2);
+	check_int("255 decodes", (const uint8_t *)"\x7f\x80\x01", 7, 255, 3);
+	check_int("4096 decodes", (const uint8_t *)"\x7f\x81\x1f", 7, 4096, 3);
+
+	// other prefix widths: the 4-bit literal index (15, 16, 30), the
+	// 5-bit size update (31, 32) and the 6-bit incremental index (63, 64)
+	check_int("N=4: 15",   (const uint8_t *)"\x0f\x00", 4, 15, 2);
+	check_int("N=4: 16",   (const uint8_t *)"\x0f\x01", 4, 16, 2);
+	check_int("N=4: 30",   (const uint8_t *)"\x0f\x0f", 4, 30, 2);
+	check_int("N=5: 31",   (const uint8_t *)"\x1f\x00", 5, 31, 2);
+	check_int("N=5: 32",   (const uint8_t *)"\x1f\x01", 5, 32, 2);
+	check_int("N=6: 63",   (const uint8_t *)"\x3f\x00", 6, 63, 2);
+	check_int("N=6: 64",   (const uint8_t *)"\x3f\x01", 6, 64, 2);
+
+	// encode → decode round trips across prefix widths, including the
+	// 32-bit ceiling, so the encoder and decoder agree on §5.1
+	static const uint32_t values[] = {
+		0, 1, 10, 62, 63, 64, 126, 127, 128, 255, 256, 1024, 4096,
+		65535, 0xffffffffu,
+	};
+	static const int prefixes[] = { 4, 5, 6, 7 };
+	uint8_t enc[8];
+	for (unsigned vi = 0; vi < sizeof(values) / sizeof(values[0]); vi++) {
+		for (unsigned pi = 0; pi < sizeof(prefixes) / sizeof(prefixes[0]); pi++) {
+			int n = put_hpack_int(enc, values[vi], prefixes[pi]);
+			int64_t consumed, carry;
+			int64_t got = h2_hpack_decode_int_wrapper(enc, prefixes[pi],
+			                                          &consumed, &carry);
+			if (carry != 0) {
+				_FAIL("roundtrip value %u prefix %d — decode failed",
+				      (unsigned)values[vi], prefixes[pi]);
+			} else if (got != (int64_t)values[vi]) {
+				_FAIL("roundtrip value %u prefix %d — got %lld",
+				      (unsigned)values[vi], prefixes[pi], (long long)got);
+			} else if (consumed != n) {
+				_FAIL("roundtrip value %u prefix %d — consumed %lld != %d",
+				      (unsigned)values[vi], prefixes[pi],
+				      (long long)consumed, n);
+			} else {
+				_PASS("roundtrip");
+			}
+		}
+	}
+
+	// a value that cannot fit in 32 bits is a decoding error — and the
+	// decoder must stop reading, not walk off into memory
+	int64_t consumed, carry;
+	static const uint8_t overflow[] = { 0x7f, 0xff, 0xff, 0xff, 0xff,
+	                                    0xff, 0xff, 0xff, 0xff, 0x01 };
+	int64_t rc = h2_hpack_decode_int_wrapper(overflow, 7, &consumed, &carry);
+	ASSERT_EQ("32-bit overflow rejected", H2_ERR_COMPRESSION_ERROR, rc);
+	ASSERT_EQ("carry set", 1, carry);
+}
+
+// ── 7.3 — string decoding (§5.2, plain only) ───────────────────────
+
+static void test_h2_hpack_string(void) {
+	TEST_SUITE("h2_hpack_decode_string — RFC 7541 §5.2 (7.3)");
+
+	int64_t len, consumed, carry;
+	const uint8_t *s;
+
+	// the Stage 7 required strings
+	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x03" "GET",
+	                                   &len, &consumed, &carry);
+	check_string("\"GET\" decodes", carry, s, len, "GET", consumed, 4);
+
+	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x0b" "/index.html",
+	                                   &len, &consumed, &carry);
+	check_string("\"/index.html\" decodes", carry, s, len, "/index.html",
+	             consumed, 12);
+
+	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x09" "text/html",
+	                                   &len, &consumed, &carry);
+	check_string("\"text/html\" decodes", carry, s, len, "text/html",
+	             consumed, 10);
+
+	// empty string
+	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x00",
+	                                   &len, &consumed, &carry);
+	check_string("empty string decodes", carry, s, len, "", consumed, 1);
+
+	// multi-octet lengths: 130 = 127 + 3, 1000 = 127 + 105 + 6*128
+	uint8_t s130[133];
+	s130[0] = 0x7f; s130[1] = 0x03;
+	for (int i = 0; i < 130; i++) s130[2 + i] = (uint8_t)('a' + (i % 26));
+	s = h2_hpack_decode_string_wrapper(s130, &len, &consumed, &carry);
+	ASSERT_EQ("130-byte length decodes", 130, len);
+	ASSERT_EQ("130-byte string consumed", 132, consumed);
+	ASSERT_EQ("130-byte string carry clear", 0, carry);
+	ASSERT_TRUE("130-byte string data matches",
+	            memcmp(s, s130 + 2, 130) == 0);
+
+	uint8_t s1000[1003];
+	s1000[0] = 0x7f; s1000[1] = 0xe9; s1000[2] = 0x06;
+	for (int i = 0; i < 1000; i++) s1000[3 + i] = (uint8_t)('a' + (i % 26));
+	s = h2_hpack_decode_string_wrapper(s1000, &len, &consumed, &carry);
+	ASSERT_EQ("1000-byte length decodes", 1000, len);
+	ASSERT_EQ("1000-byte string consumed", 1003, consumed);
+	ASSERT_EQ("1000-byte string carry clear", 0, carry);
+	ASSERT_TRUE("1000-byte string data matches",
+	            memcmp(s, s1000 + 3, 1000) == 0);
+
+	// Huffman-coded strings (H bit set) are rejected until the Huffman stage
+	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x83GET",
+	                                   &len, &consumed, &carry);
+	check_field_error("Huffman string rejected", s, carry);
+}
+
+// ── 7.4 — indexed header fields (§6.1) ─────────────────────────────
+
+static void test_h2_hpack_indexed(void) {
+	TEST_SUITE("h2_hpack_decode_field — indexed (6.1 / 7.4)");
+
+	const uint8_t *next, *name, *value;
+	int64_t name_len, value_len, carry;
+
+	// 0x82 → index 2 → :method: GET — the canonical encoded request header
+	next = h2_hpack_decode_field_wrapper((const uint8_t *)"\x82", &name,
+	                                     &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("0x82 → :method GET", carry, name, name_len, value, value_len,
+	            ":method", "GET");
+	ASSERT_EQ("next advances one byte", 1, next - (const uint8_t *)"\x82");
+
+	// 0x81 → index 1 → :authority with an empty value
+	next = h2_hpack_decode_field_wrapper((const uint8_t *)"\x81", &name,
+	                                     &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("0x81 → :authority (empty)", carry, name, name_len, value,
+	            value_len, ":authority", "");
+
+	// 0x87 → index 7 → :scheme: https
+	next = h2_hpack_decode_field_wrapper((const uint8_t *)"\x87", &name,
+	                                     &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("0x87 → :scheme https", carry, name, name_len, value, value_len,
+	            ":scheme", "https");
+
+	// multi-octet index: 0xbf 0x07 → 127 + 7 = 134, beyond the static table
+	static const uint8_t big_idx[] = { 0xbf, 0x07 };
+	next = h2_hpack_decode_field_wrapper(big_idx, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("index 134 rejected", next, carry);
+
+	// index 0 is never valid (§6.1)
+	next = h2_hpack_decode_field_wrapper((const uint8_t *)"\x80", &name,
+	                                     &name_len, &value, &value_len,
+	                                     &carry);
+	check_field_error("index 0 rejected", next, carry);
+}
+
+// ── 7.5 — literal header fields (§6.2.2/§6.2.3) ─────────────────────
+
+static void test_h2_hpack_literal(void) {
+	TEST_SUITE("h2_hpack_decode_field — literal (6.2.2/6.2.3 / 7.5)");
+
+	const uint8_t *next, *name, *value;
+	int64_t name_len, value_len, carry;
+
+	// literal without indexing, indexed name: 0x04 + "/index.html" → :path
+	static const uint8_t w1[] = { 0x04, 0x0b, '/', 'i', 'n', 'd', 'e', 'x', '.',
+	                              'h', 't', 'm', 'l' };
+	next = h2_hpack_decode_field_wrapper(w1, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("0x04 + \"/index.html\" → :path", carry, name, name_len,
+	            value, value_len, ":path", "/index.html");
+	ASSERT_EQ("next at block end", 13, next - w1);
+
+	// never indexed, indexed name: 0x14 → the same field
+	static const uint8_t w2[] = { 0x14, 0x0b, '/', 'i', 'n', 'd', 'e', 'x', '.',
+	                              'h', 't', 'm', 'l' };
+	next = h2_hpack_decode_field_wrapper(w2, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("0x14 + \"/index.html\" → :path (never indexed)", carry, name,
+	            name_len, value, value_len, ":path", "/index.html");
+
+	// literal without indexing, new name: the name string follows the 0x00
+	static const uint8_t w3[] = { 0x00, 0x05, ':', 'p', 'a', 't', 'h',
+	                              0x0b, '/', 'i', 'n', 'd', 'e', 'x', '.',
+	                              'h', 't', 'm', 'l' };
+	next = h2_hpack_decode_field_wrapper(w3, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("new name :path, value /index.html", carry, name, name_len,
+	            value, value_len, ":path", "/index.html");
+	ASSERT_EQ("next at block end", 19, next - w3);
+
+	// never indexed, new name: 0x10 → the same field
+	static const uint8_t w4[] = { 0x10, 0x05, ':', 'p', 'a', 't', 'h',
+	                              0x0b, '/', 'i', 'n', 'd', 'e', 'x', '.',
+	                              'h', 't', 'm', 'l' };
+	next = h2_hpack_decode_field_wrapper(w4, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("new name :path (never indexed)", carry, name, name_len,
+	            value, value_len, ":path", "/index.html");
+
+	// an empty value string
+	static const uint8_t w5[] = { 0x04, 0x00 };
+	next = h2_hpack_decode_field_wrapper(w5, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field(":path with an empty value", carry, name, name_len, value,
+	            value_len, ":path", "");
+	ASSERT_EQ("next at block end", 2, next - w5);
+
+	// a multi-octet name index: 0x0f 0x01 → index 16 (accept-encoding),
+	// value "gzip, deflate" — exercises the multi-octet prefix path
+	static const uint8_t w7[] = { 0x0f, 0x01, 0x0d, 'g', 'z', 'i', 'p', ',', ' ',
+	                              'd', 'e', 'f', 'l', 'a', 't', 'e' };
+	next = h2_hpack_decode_field_wrapper(w7, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("index 16 (accept-encoding) via 2-octet index", carry, name,
+	            name_len, value, value_len, "accept-encoding", "gzip, deflate");
+	ASSERT_EQ("next at block end", 16, next - w7);
+
+	// a literal name index beyond the static table (62) → decoding error
+	static const uint8_t w6[] = { 0x0f, 0x2f, 0x01, 'x' };
+	next = h2_hpack_decode_field_wrapper(w6, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("name index 62 rejected", next, carry);
+}
+
+// ── 7.6 — the dynamic table is disabled ─────────────────────────────
+
+static void test_h2_hpack_dynamic_disabled(void) {
+	TEST_SUITE("h2_hpack_decode_field — dynamic table disabled (7.6)");
+
+	const uint8_t *next, *name, *value;
+	int64_t name_len, value_len, carry;
+
+	// literal with incremental indexing (§6.2.1) is rejected outright —
+	// it would add the field to the dynamic table
+	static const uint8_t w1[] = { 0x41, 0x05, 'h', 'e', 'l', 'l', 'o' };
+	next = h2_hpack_decode_field_wrapper(w1, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("incremental indexing (indexed name) rejected", next,
+	                  carry);
+
+	// incremental indexing with a new name
+	static const uint8_t w2[] = { 0x40, 0x05, ':', 'p', 'a', 't', 'h',
+	                              0x01, 'x' };
+	next = h2_hpack_decode_field_wrapper(w2, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("incremental indexing (new name) rejected", next, carry);
+
+	// a dynamic table size update of 0 is accepted as a no-op
+	static const uint8_t w3[] = { 0x20, 0x82 };
+	next = h2_hpack_decode_field_wrapper(w3, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	ASSERT_EQ("size update 0 accepted", 0, carry);
+	ASSERT_EQ("not a field — name is 0", 0, (int64_t)(uintptr_t)name);
+	ASSERT_EQ("next skips the update", 1, next - w3);
+
+	// a size update above 0 (4096) exceeds our advertised maximum (0)
+	static const uint8_t w4[] = { 0x3f, 0xe1, 0x1f }; // 31 + 97 + 31*128
+	next = h2_hpack_decode_field_wrapper(w4, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("size update 4096 rejected", next, carry);
+}
+
+// ── whole header blocks ─────────────────────────────────────────────
+
+static void test_h2_hpack_block(void) {
+	TEST_SUITE("h2_hpack_decode_block — whole header block");
+
+	int64_t carry;
+	h2_hpack_field_t *f = h2_hpack_fields_addr();
+
+	// a request-like block: :method GET, :scheme https, :path /index.html,
+	// :authority example.com (literal without indexing, indexed name)
+	static const uint8_t block[] = {
+		0x82, 0x87, 0x85,
+		0x01, 0x0b, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm',
+	};
+	reset_fields();
+	ASSERT_EQ("4 fields decoded", 4,
+	          h2_hpack_decode_block_wrapper(block, sizeof(block), &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	check_field("field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+	check_field("field 1 :scheme https", 0, f[1].name, f[1].name_len,
+	            f[1].value, f[1].value_len, ":scheme", "https");
+	check_field("field 2 :path /index.html", 0, f[2].name, f[2].name_len,
+	            f[2].value, f[2].value_len, ":path", "/index.html");
+	check_field("field 3 :authority example.com", 0, f[3].name, f[3].name_len,
+	            f[3].value, f[3].value_len, ":authority", "example.com");
+
+	// a size update is skipped and does not count as a field
+	static const uint8_t block2[] = { 0x20, 0x82 };
+	reset_fields();
+	ASSERT_EQ("size update skipped — 1 field", 1,
+	          h2_hpack_decode_block_wrapper(block2, sizeof(block2), &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	check_field("after size update, :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+
+	// an empty block decodes to zero fields
+	reset_fields();
+	ASSERT_EQ("empty block → 0 fields", 0,
+	          h2_hpack_decode_block_wrapper((const uint8_t *)"", 0, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// a truncated block — the value string overruns the block end
+	static const uint8_t block3[] = { 0x01, 0x0a, 'e', 'x' }; // claims 10, has 2
+	reset_fields();
+	int64_t rc = h2_hpack_decode_block_wrapper(block3, sizeof(block3), &carry);
+	ASSERT_EQ("truncated block rejected", H2_ERR_COMPRESSION_ERROR, rc);
+	ASSERT_EQ("carry set", 1, carry);
+	ASSERT_EQ("no field stored for the truncated block", 0, f[0].name_len);
+
+	// dynamic-table input at the block level poisons the connection: the
+	// size update is fine, but the incremental-indexing field that follows
+	// fails the whole block with COMPRESSION_ERROR and stores nothing
+	static const uint8_t block4[] = { 0x20, 0x41, 0x05, 'h', 'e', 'l', 'l', 'o' };
+	reset_fields();
+	rc = h2_hpack_decode_block_wrapper(block4, sizeof(block4), &carry);
+	ASSERT_EQ("incremental indexing in block → COMPRESSION_ERROR",
+	          H2_ERR_COMPRESSION_ERROR, rc);
+	ASSERT_EQ("carry set", 1, carry);
+	ASSERT_EQ("no fields stored before the error", 0, f[0].name_len);
+
+	// more than H2_HPACK_MAX_FIELDS (32) — the fixed output area is full
+	uint8_t many[33];
+	memset(many, 0x82, sizeof(many)); // :method GET × 33
+	reset_fields();
+	rc = h2_hpack_decode_block_wrapper(many, sizeof(many), &carry);
+	ASSERT_EQ("33-field block rejected (decode area full)",
+	          H2_ERR_COMPRESSION_ERROR, rc);
+	ASSERT_EQ("carry set", 1, carry);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -1383,6 +2049,14 @@ int main(void) {
 	test_h2_stream_transitions();
 	test_h2_end_stream_flags();
 	test_h2_rst_stream();
+	// Stage 7 — minimal HPACK
+	test_h2_hpack_static_table();
+	test_h2_hpack_int();
+	test_h2_hpack_string();
+	test_h2_hpack_indexed();
+	test_h2_hpack_literal();
+	test_h2_hpack_dynamic_disabled();
+	test_h2_hpack_block();
 	test_summary();
 	return 0;
 }
