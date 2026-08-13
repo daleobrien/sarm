@@ -52,22 +52,32 @@ all: test
 test: $(TESTS)
 	@failures=0; \
 	logs=""; \
-	passed=0; \
+	total_passed=0; \
+	total_failed=0; \
 	for t in $(TESTS); do \
 		out=$$(./$$t 2>&1); rc=$$?; \
+		name=$$(basename $$t); \
+		suite=$${name#test_}; \
+		t_passed=$$(printf '%s\n' "$$out" | sed -n 's/.*TOTAL_TESTS \([0-9][0-9]*\) \([0-9][0-9]*\).*/\1/p'); \
+		t_failed=$$(printf '%s\n' "$$out" | sed -n 's/.*TOTAL_TESTS \([0-9][0-9]*\) \([0-9][0-9]*\).*/\2/p'); \
+		[ -n "$$t_passed" ] || t_passed=0; \
+		[ -n "$$t_failed" ] || t_failed=0; \
+		total_passed=$$((total_passed + t_passed)); \
+		total_failed=$$((total_failed + t_failed)); \
 		if [ $$rc -eq 0 ]; then \
-			passed=$$((passed + 1)); \
+			printf "── test (%-19s ... (%3d tests) \033[0;32m✓\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
 		else \
 			failures=$$((failures + 1)); \
-			logs="$${logs}$$(printf "\n━━━ %s ━━━\n%s\n" "$$(basename $$t)" "$$out")"; \
+			printf "── test (%-19s ... (%3d tests) \033[0;31m✗\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
+			logs="$${logs}$$(printf "\n━━━ %s ━━━\n%s\n" "$$name" "$$out")"; \
 		fi; \
 	done; \
 	if [ $$failures -eq 0 ]; then \
-		printf "  \033[0;32m✓\033[0m all unit tests passed (%d suites)\n" "$$passed"; \
+		exit 0; \
 	else \
 		printf '%s\n' "$$logs"; \
 		echo ""; \
-		echo "❌ $$failures test suite(s) failed."; \
+		echo "❌ $$failures test suite(s) failed ($$total_passed passed, $$total_failed failed)."; \
 		exit 1; \
 	fi
 
@@ -112,9 +122,13 @@ $(hpack_o): ../../src/h2_hpack.S | $(OBJ_DIR)
 
 # ── test executable link rules ─────────────────────────────────────
 
+# Every suite includes test_harness.h, so it must be a prerequisite of
+# each link rule to force a rebuild when the harness changes.
+HARNESS := test_harness.h
+
 # test_util: only needs util.o (pure functions).
 # The C test code uses inline asm wrappers to call asm functions.
-$(TEST_UTIL): test_util.c $(util_o) | $(OBJ_DIR)
+$(TEST_UTIL): test_util.c $(HARNESS) $(util_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(LDFLAGS) -o $@
 
 # test_parse: needs util.o + parse.o + data.o + file.o + stubs.o.
@@ -122,21 +136,21 @@ $(TEST_UTIL): test_util.c $(util_o) | $(OBJ_DIR)
 # parse_range calls get_header_field + atoi_n. Error paths go to
 # reply_status (stubs.o). Cross-references to decode_url etc in
 # parse_request require file.o.
-$(TEST_PARSE): test_parse.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
+$(TEST_PARSE): test_parse.c $(HARNESS) $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
 # test_file: needs file.o + util.o + stubs.o.
 # check_path_traversal/check_path_safety are self-contained.
 # get_filetype calls streqn_i and strlen from util.S.
 # lookup_embedded references embedded_files/embedded_count from stubs.o.
-$(TEST_FILE): test_file.c $(util_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
+$(TEST_FILE): test_file.c $(HARNESS) $(util_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
 # test_request: needs parse.o + data.o + file.o + util.o + stubs.o.
 # parse_request parses into the `request` struct (data.o), calls
 # parse_path/get_header_field (parse.o) and decode_url/check_path_*
 # (file.o), with error paths going to reply_status (stubs.o).
-$(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
+$(TEST_REQUEST): test_request.c $(HARNESS) $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs_o) $(LDFLAGS) -o $@
 
 # test_response: Stage 2 response abstraction. Links the REAL header.o
@@ -145,7 +159,7 @@ $(TEST_REQUEST): test_request.c $(util_o) $(parse_o) $(data_o) $(file_o) $(stubs
 # parse.o/file.o for parse_range/get_filetype. stubs_response.o replaces
 # stubs.o (no duplicate reply_status/build_header stubs) and adds a
 # child_end stub.
-$(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
+$(TEST_RESPONSE): test_response.c $(HARNESS) $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
 # test_http2: Stages 4-9 — frame engine + connection preface + stream
@@ -162,7 +176,7 @@ $(TEST_RESPONSE): test_response.c $(util_o) $(data_o) $(parse_o) $(file_o) $(hea
 # / h2_write_body exercises the real response machinery, so header.o
 # (http1_write_response, reply_status) and stubs_response.o (child_end,
 # the embedded table) join like test_response.
-$(TEST_HTTP2): test_http2.c $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
+$(TEST_HTTP2): test_http2.c $(HARNESS) $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────

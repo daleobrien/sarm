@@ -314,6 +314,7 @@ check_file "/index.html" "$WWW_DIR/index.html"
 # ══════════════════════════════════════════════════════════════════
 if [ $QUIET -eq 1 ]; then
     if [ "$FAIL" -gt 0 ]; then
+        printf '%s\n' "── test (file integrity) ──"
         echo ""
         printf '%s' "$LOG"
         echo ""
@@ -326,7 +327,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some tests failed!${CLR}"
         exit 1
     else
-        printf "  ${GRN}✓${CLR} all file-integrity tests passed (%d files)\n" "$PASS"
+        printf "── test (%-19s ... (%3d files) ${GRN}✓${CLR}\n" "file integrity)" "$PASS"
         exit 0
     fi
 else

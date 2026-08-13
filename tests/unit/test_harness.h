@@ -144,6 +144,9 @@ static void test_summary(void) {
 	printf("  Passed:  %d\n", _tests_passed);
 	printf("  Failed:  %d\n", _tests_failed);
 	printf("═══════════════════════════════════════════\n");
+	// Machine-readable counts for the `make test` aggregator in
+	// tests/unit/Makefile, which sums these across every executable.
+	printf("TOTAL_TESTS %d %d\n", _tests_passed, _tests_failed);
 	if (_tests_failed > 0) {
 		printf("\nSome tests failed!\n");
 		exit(1);

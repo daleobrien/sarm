@@ -183,6 +183,7 @@ check_http 400 \
 
 if [ $QUIET -eq 1 ]; then
     if [ "$FAIL" -gt 0 ]; then
+        printf '%s\n' "── test (security) ──"
         echo ""
         printf '%s' "$LOG"
         echo ""
@@ -194,7 +195,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some security tests failed!${CLR}"
         exit 1
     else
-        printf "  ${GRN}✓${CLR} all security tests passed (%d tests)\n" "$PASS"
+        printf "── test (%-19s ... (%3d tests) ${GRN}✓${CLR}\n" "security)" "$PASS"
         exit 0
     fi
 else

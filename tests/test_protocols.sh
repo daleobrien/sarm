@@ -326,6 +326,7 @@ fi
 # ══════════════════════════════════════════════════════════════════
 if [ $QUIET -eq 1 ]; then
     if [ "$FAIL" -gt 0 ]; then
+        printf '%s\n' "── test (protocol detection) ──"
         echo ""
         printf '%s' "$LOG"
         echo ""
@@ -338,7 +339,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some protocol tests failed!${CLR}"
         exit 1
     else
-        printf "  ${GRN}✓${CLR} all protocol tests passed (%d tests)\n" "$PASS"
+        printf "── test (%-19s ... (%3d tests) ${GRN}✓${CLR}\n" "protocol detection)" "$PASS"
         exit 0
     fi
 else
