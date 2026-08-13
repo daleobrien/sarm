@@ -83,6 +83,12 @@
 .global h2_validate_stream_id
 .global h2_stream_event
 .global h2_build_request
+.global h2_probe
+.global h2_connection_loop
+.global h2_process_request
+.global h2_write_headers
+.global h2_write_body
+.global h2_reply_status
 
 .data
 .align 3
@@ -177,6 +183,12 @@ h2_method_brew:
     .asciz "BREW"
 .equ h2_method_brew_len, . - h2_method_brew - 1
 
+// the content-encoding value the response encoder appends for gzipped
+// embedded assets (HTTP/1's encoder sends the same header)
+h2_gzip_str:
+    .ascii "gzip"
+.equ h2_gzip_str_len, . - h2_gzip_str
+
 .bss
 .align 3
 // h2_frame_header — scratch for the parsed frame header. The connection
@@ -190,6 +202,16 @@ h2_frame_header:
 // CLOSED — a later stage decides when closed entries may be reused.
 h2_streams:
     .skip H2_MAX_STREAMS * H2S_SIZE
+
+// h2_frame_buf — one outgoing frame: a 9-byte frame header followed by
+// its payload (an HPACK header block or a DATA chunk). The response
+// encoders build the whole frame here and write it in one write_all, so
+// a partial write can't split a frame. Sized for the largest accepted
+// frame (h2_validate_frame caps payloads at H2C_MAX_RX_FRAME_SIZE).
+.equ h2_frame_buf_size, H2_WIRE_HEADER_LEN + H2_DEFAULT_MAX_FRAME_SIZE
+.align 4
+h2_frame_buf:
+    .skip h2_frame_buf_size
 
 .text
 .align 2
@@ -1188,3 +1210,918 @@ h2_send_settings:
     adr_l x1, h2_settings_frame
     mov x2, #(H2_WIRE_HEADER_LEN + H2_SETTINGS_ENTRY_LEN) // header + 1 entry
     b write_all
+
+// ═══════════════════════════════════════════════════════════════════
+//  Stage 9 — the first working HTTP/2 GET
+//
+//  The connection loop (h2_connection_loop) turns a new connection into
+//  an HTTP/2 conversation: finish the client connection preface (§3.4),
+//  send our opening SETTINGS (§3.5), then loop over frames. Whenever a
+//  stream's request is complete (the stream has reached
+//  HALF_CLOSED_REMOTE), the request is served through the existing
+//  static-file machinery — h2_process_request resolves the common
+//  `request` struct with lookup_embedded and create_response, and the
+//  HTTP/2 encoder (h2_write_headers + h2_write_body) sends HEADERS and
+//  DATA frames.
+//
+//  Error convention stays the same as the rest of the file:
+//    carry clear = success
+//    carry set   = failure
+//  The loop treats a dispatch error as a connection error (GOAWAY and
+//  close), except STREAM_CLOSED, which is a stream error (RST_STREAM
+//  and keep going).
+// ═══════════════════════════════════════════════════════════════════
+
+// ── read exactly len bytes from the fd into buf ─────────────────────
+// Loops over short reads; EINTR is retried; EOF or any other error
+// returns with carry set. The frame loop relies on this so a frame is
+// never partially buffered.
+//
+// input
+// x0 = fd, x1 -> buffer, x2 = length
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = errno (0 on EOF)
+//
+// clobbers x0-x4, x19-x21, x30 (x19-x21 saved/restored)
+h2_read_exact:
+    stp x19, x20, [sp, #-32]!
+    stp x21, x30, [sp, #16]
+    mov x19, x0             // fd
+    mov x20, x1             // buffer
+    mov x21, x2             // bytes remaining
+.Lh2rex_loop:
+    cbz x21, .Lh2rex_done
+    SCWINUM SYS_read
+    mov x0, x19
+    mov x1, x20
+    mov x2, x21
+    SCWISVC
+    SCERR
+    b.cs .Lh2rex_fail
+    cbz x0, .Lh2rex_eof
+    add x20, x20, x0
+    sub x21, x21, x0
+    b .Lh2rex_loop
+.Lh2rex_done:
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    ldp x21, x30, [sp, #16]
+    ldp x19, x20, [sp], #32
+    ret
+.Lh2rex_fail:
+    cmp x0, #EINTR
+    b.eq .Lh2rex_loop       // interrupted — nothing was consumed, retry
+    cmp xzr, xzr            // failure — carry set
+    ldp x21, x30, [sp, #16]
+    ldp x19, x20, [sp], #32
+    ret                     // x0 = errno
+.Lh2rex_eof:
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #0
+    ldp x21, x30, [sp, #16]
+    ldp x19, x20, [sp], #32
+    ret
+
+// ── protocol detection — is this an HTTP/2 client? (Phase 16, Option B)
+// Compare buf[0..n) against the start of the 24-byte HTTP/2 connection
+// preface. Returns 1 when the bytes are a (possibly partial) prefix of
+// the preface — the connection loop then takes over, finishes reading
+// the preface and verifies it in full — and 0 for anything else, in
+// which case the caller keeps the bytes and parses HTTP/1. The buffer
+// is never consumed, so both paths see the same data. An empty buffer
+// is never the preface.
+//
+// input
+// x0 -> buffer, x1 = bytes available
+//
+// output
+// x0 = 1 (preface prefix) or 0
+//
+// clobbers x0-x5, x9
+h2_probe:
+    cbz x1, .Lh2probe_no
+    mov x2, #H2_PREFACE_LEN
+    cmp x1, x2
+    csel x2, x1, x2, lo     // x2 = min(n, 24)
+    adr_l x9, h2_preface
+    mov x3, #0
+1:
+    cmp x3, x2
+    b.hs .Lh2probe_yes
+    ldrb w4, [x0, x3]
+    ldrb w5, [x9, x3]
+    cmp w4, w5
+    b.ne .Lh2probe_no
+    add x3, x3, #1
+    b 1b
+.Lh2probe_yes:
+    mov x0, #1
+    ret
+.Lh2probe_no:
+    mov x0, #0
+    ret
+
+// ── 9.4 — the HTTP/2 connection loop ────────────────────────────────
+// The per-connection lifecycle for an HTTP/2 client (RFC 9113 §3.4-3.5):
+// finish verifying the client connection preface against the bytes
+// already buffered (reading more if needed), send our opening SETTINGS
+// frame, then loop over frames — read a complete frame, dispatch it,
+// and serve any stream whose request became complete (HALF_CLOSED_REMOTE)
+// through h2_process_request. Connection errors send GOAWAY; STREAM_CLOSED
+// stream errors send RST_STREAM; a timeout or EOF closes the connection.
+//
+// input
+// x0 = client fd
+// x1 -> buffer holding the first `n` bytes (a prefix of the preface)
+// x2 = n
+//
+// output
+// (none — returns when the connection ends; the caller closes the fd)
+//
+// clobbers x0-x8, x19-x23 (saved/restored), x30
+h2_connection_loop:
+    stp x19, x20, [sp, #-64]!
+    stp x21, x22, [sp, #16]
+    stp x23, x30, [sp, #32]
+    mov x19, x0             // fd
+    mov x20, x1             // buffer
+    mov x21, x2             // bytes already buffered
+
+    // record the request start for the timing log (child_end logs it)
+    SCWINUM SYS_gettimeofday
+    adr_l x0, req_start
+    mov x1, #0
+    SCWISVC
+    SCERR
+
+    // ── fresh per-connection state (RFC 9113 §6.5.2 defaults) ──
+    // The server handles connections sequentially, so a new HTTP/2
+    // connection must not inherit the previous one's settings, stream
+    // high-water mark or stream table entries.
+    adr_l x9, h2_conn
+    str xzr, [x9, #H2C_LAST_FRAME_TYPE]
+    mov x10, #H2_DEFAULT_MAX_FRAME_SIZE
+    str x10, [x9, #H2C_MAX_RX_FRAME_SIZE]
+    mov x10, #H2_DEFAULT_HEADER_TABLE_SIZE
+    str x10, [x9, #H2C_SETTINGS_HEADER_TABLE_SIZE]
+    mov x10, #1
+    str x10, [x9, #H2C_SETTINGS_ENABLE_PUSH]
+    mov x10, #-1            // 0xffffffff — unlimited
+    str x10, [x9, #H2C_SETTINGS_MAX_CONCURRENT_STREAMS]
+    mov x10, #H2_DEFAULT_INITIAL_WINDOW_SIZE
+    str x10, [x9, #H2C_SETTINGS_INITIAL_WINDOW_SIZE]
+    mov x10, #H2_DEFAULT_MAX_FRAME_SIZE
+    str x10, [x9, #H2C_SETTINGS_MAX_FRAME_SIZE]
+    mov x10, #-1
+    str x10, [x9, #H2C_SETTINGS_MAX_HEADER_LIST_SIZE]
+    str xzr, [x9, #H2C_ACK_RECEIVED]
+    str xzr, [x9, #H2C_LAST_STREAM_ID]
+    adr_l x9, h2_streams
+    mov x10, #(H2_MAX_STREAMS * H2S_SIZE) / 16
+1:
+    stp xzr, xzr, [x9], #16
+    subs x10, x10, #1
+    b.ne 1b
+
+    // ── 3.4 — verify the client connection preface ──
+    cmp x21, #H2_PREFACE_LEN
+    b.hs 1f
+    // the preface is not fully buffered yet — read the remainder
+    mov x0, x19
+    add x1, x20, x21
+    mov x2, #H2_PREFACE_LEN
+    sub x2, x2, x21
+    bl h2_read_exact
+    b.cs .Lh2cl_end          // EOF/error before the preface — just close
+    mov x21, #H2_PREFACE_LEN
+1:
+    adr_l x9, h2_preface
+    ldr x2, [x20]
+    ldr x3, [x9]
+    cmp x2, x3
+    b.ne .Lh2cl_end
+    ldr x2, [x20, #8]
+    ldr x3, [x9, #8]
+    cmp x2, x3
+    b.ne .Lh2cl_end
+    ldr x2, [x20, #16]
+    ldr x3, [x9, #16]
+    cmp x2, x3
+    b.ne .Lh2cl_end
+    // preface confirmed — the connection speaks HTTP/2
+    mov x0, #CONNECTION_HTTP2
+    str_l x0, connection_mode
+    // any bytes beyond the preface are the first frames; compact them to
+    // the front of the buffer (forward memcpy is safe: src > dst)
+    sub x22, x21, #H2_PREFACE_LEN
+    cbz x22, 1f
+    mov x0, x20
+    add x1, x20, #H2_PREFACE_LEN
+    mov x2, x22
+    bl memcpy
+1:
+    mov x21, x22            // leftover frame bytes
+    mov x22, #0             // buffer cursor
+
+    // ── 3.5 — our opening SETTINGS (the server connection preface) ──
+    mov x0, x19
+    bl h2_send_settings
+    b.cs .Lh2cl_end
+
+.Lh2cl_frame_loop:
+    // ── ensure a full 9-byte frame header is buffered ──
+    cmp x21, #H2_WIRE_HEADER_LEN
+    b.hs .Lh2cl_have_header
+    cbz x21, 1f
+    mov x0, x20
+    add x1, x20, x22
+    mov x2, x21
+    bl memcpy               // compact the leftover to the front
+    mov x22, #0
+1:
+    mov x0, x19
+    add x1, x20, x21
+    mov x2, #H2_WIRE_HEADER_LEN
+    sub x2, x2, x21
+    bl h2_read_exact
+    b.cs .Lh2cl_end          // timeout / EOF / error — close
+    mov x21, #H2_WIRE_HEADER_LEN
+    mov x22, #0
+.Lh2cl_have_header:
+    add x0, x20, x22
+    adr_l x1, h2_frame_header
+    bl h2_parse_frame_header
+    add x22, x22, #H2_WIRE_HEADER_LEN
+    sub x21, x21, #H2_WIRE_HEADER_LEN
+    adr_l x0, h2_frame_header
+    adr_l x1, h2_conn
+    bl h2_validate_frame
+    b.cs .Lh2cl_conn_error
+    adr_l x0, h2_frame_header
+    ldr w23, [x0, #H2F_LENGTH]
+
+    // ── ensure the whole payload is buffered ──
+    cmp x21, x23
+    b.hs .Lh2cl_have_payload
+    cbz x21, 1f
+    mov x0, x20
+    add x1, x20, x22
+    mov x2, x21
+    bl memcpy
+    mov x22, #0
+1:
+    mov x0, x19
+    add x1, x20, x21
+    sub x2, x23, x21
+    bl h2_read_exact
+    b.cs .Lh2cl_end
+    mov x21, x23
+    mov x22, #0
+.Lh2cl_have_payload:
+    adr_l x0, h2_frame_header
+    add x1, x20, x22
+    adr_l x2, h2_conn
+    bl h2_dispatch_frame
+    b.cs .Lh2cl_dispatch_error
+    // the frame is fully consumed
+    add x22, x22, x23
+    sub x21, x21, x23
+
+    // ── request processing hook ──
+    // A stream whose request is complete (HALF_CLOSED_REMOTE) is served
+    // immediately through the common request → resource handler. The
+    // stream is never left in HALF_CLOSED_REMOTE: h2_process_request
+    // moves it to CLOSED once the response is on the wire.
+    adr_l x0, h2_frame_header
+    ldr w0, [x0, #H2F_STREAM_ID]
+    cbz w0, .Lh2cl_frame_loop
+    bl h2_stream_find
+    cbz x0, .Lh2cl_frame_loop
+    ldr x1, [x0, #H2S_STATE]
+    cmp x1, #H2_STREAM_HALF_CLOSED_REMOTE
+    b.ne .Lh2cl_frame_loop
+    adr_l x0, h2_frame_header
+    ldr w0, [x0, #H2F_STREAM_ID]
+    mov x1, x19
+    bl h2_process_request
+    b .Lh2cl_frame_loop
+
+.Lh2cl_dispatch_error:
+    // consume the frame regardless, so the connection stays in sync
+    add x22, x22, x23
+    sub x21, x21, x23
+    // STREAM_CLOSED is a stream error — RST_STREAM and keep serving;
+    // anything else poisons the connection — GOAWAY and close
+    cmp x0, #H2_ERR_STREAM_CLOSED
+    b.eq .Lh2cl_rst_stream
+    mov x1, x0
+    mov x0, x19
+    bl h2_send_goaway
+    b .Lh2cl_end
+.Lh2cl_rst_stream:
+    adr_l x9, h2_frame_header
+    ldr w1, [x9, #H2F_STREAM_ID]
+    cbz w1, .Lh2cl_end
+    mov x2, x0
+    mov x0, x19
+    bl h2_send_rst_stream
+    b .Lh2cl_frame_loop
+
+.Lh2cl_conn_error:
+    // frame validation failed — GOAWAY with the reason, then close
+    mov x1, x0
+    mov x0, x19
+    bl h2_send_goaway
+    b .Lh2cl_end
+
+.Lh2cl_end:
+    ldp x23, x30, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #64
+    ret
+
+// ── 9.1 — serve a completed request through the existing handlers ───
+// The glue between the HTTP/2 HEADERS decoder and the static-file
+// machinery: read the protocol-neutral `request` struct (filled by
+// h2_build_request) and serve it the way HTTP/1 does — lookup_embedded
+// resolves the path, the embedded_* globals are stored exactly as
+// get_setup stores them, create_response fills the protocol-neutral
+// response struct, and the HTTP/2 encoder (h2_write_headers +
+// h2_write_body) sends it. GET sends headers + body; HEAD sends headers
+// only (END_STREAM on the HEADERS frame); OPTIONS is 204 when the path
+// resolves and 404 otherwise; BREW is 418; any unknown method is 501.
+// A failed resource lookup is a 404. The stream is moved to CLOSED
+// once the response is on the wire.
+//
+// input
+// x0 = stream id
+// x1 = client fd
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = errno
+//
+// clobbers x0-x9, x19-x26 (saved/restored), x30
+h2_process_request:
+    stp x19, x20, [sp, #-80]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x26, [sp, #48]
+    str x30, [sp, #64]
+    mov x19, x0             // stream id
+    mov x20, x1             // fd
+    adr_l x9, request
+    ldr x21, [x9, #REQ_METHOD]
+
+    cmp x21, #GET_ID
+    b.eq .Lh2pr_resolve
+    cmp x21, #HEAD_ID
+    b.eq .Lh2pr_resolve
+    cmp x21, #OPTIONS_ID
+    b.eq .Lh2pr_options
+    cmp x21, #BREW_ID
+    b.eq .Lh2pr_brew
+    // unknown method — 501 (headers only)
+    mov x0, #501
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+
+.Lh2pr_brew:
+    mov x0, #418
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+
+.Lh2pr_options:
+    // like options.S: 204 when the path resolves, 404 otherwise
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
+    bl lookup_embedded
+    b.cc 1f
+    mov x0, #404
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+1:
+    mov x0, #204
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+
+.Lh2pr_resolve:
+    // GET/HEAD — resolve the resource through the same lookup the HTTP/1
+    // path uses; a miss returns here with carry (no reply_status side
+    // effects), so the HTTP/2 encoder answers with the 404
+    adr_l x9, request
+    ldr x0, [x9, #REQ_PATH]
+    ldr x1, [x9, #REQ_PATH_LENGTH]
+    bl lookup_embedded
+    b.cs .Lh2pr_404
+    // x0=content, x1=size, x2=ct, x3=ct_len, x4=gzip, x5=etag, x6=etag_len
+    mov x22, x0             // content
+    mov x23, x1             // size
+    mov x24, x2             // ct
+    mov x25, x3             // ct_len
+    mov x26, x4             // gzip flag
+    	// the response builders read the embedded_* globals. NOTE: str_l with
+    	// x9 as the source needs an explicit scratch register — the default
+    	// (x9) would be clobbered by adrp before the store.
+    	str_l x0, embedded_content
+    	str_l x2, embedded_ct
+    	str_l x3, embedded_ct_len
+    	str_l x4, embedded_gzip
+    	str_l x5, embedded_etag
+    	str_l x6, embedded_etag_len
+    	mov x9, #1
+    	str_l x9, resource_type, x10
+    	mov x9, #-1
+    	str_l x9, file_des, x10  // nothing is open — child_end must not close
+    // resolve resource → create response (GET: full body, HEAD: none)
+    adr_l x0, response
+    mov x1, #200
+    mov x2, x23             // content_length
+    mov x3, #-1             // range start — ranges are a later stage
+    mov x4, #-1             // range end
+    mov x5, x22             // body ptr
+    mov x6, x23             // body length
+    cmp x21, #HEAD_ID
+    b.ne 1f
+    mov x6, #0              // HEAD — headers only
+1:
+    bl create_response
+    // encode — GET finishes the stream with DATA frames; HEAD puts
+    // END_STREAM on the HEADERS frame
+    mov x0, x20
+    adr_l x1, response
+    mov x2, x19
+    mov x3, #0
+    cmp x21, #HEAD_ID
+    b.ne 1f
+    mov x3, #H2_FLAG_END_STREAM
+1:
+    bl h2_write_headers
+    b.cs .Lh2pr_500
+    cmp x21, #HEAD_ID
+    b.eq .Lh2pr_done
+    mov x0, x20
+    adr_l x1, response
+    mov x2, x19
+    bl h2_write_body
+    b.cs .Lh2pr_500
+    b .Lh2pr_done
+
+.Lh2pr_404:
+    mov x0, #404
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+    b .Lh2pr_done
+.Lh2pr_500:
+    mov x0, #500
+    mov x1, x20
+    mov x2, x19
+    bl h2_reply_status
+.Lh2pr_done:
+    // the response is fully sent — the stream is closed on our side
+    mov x0, x19
+    bl h2_stream_find
+    cbz x0, 1f
+    mov x1, #H2_STREAM_CLOSED
+    str x1, [x0, #H2S_STATE]
+1:
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    ldr x30, [sp, #64]
+    ldp x25, x26, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #80
+    ret
+
+// ── 9 — h2_reply_status: a headers-only HTTP/2 status response ─────
+// Mirrors reply_status's fallback path: with no embedded error pages in
+// the current build, the body is empty. create_response → h2_write_headers
+// with END_STREAM, so the stream ends on the HEADERS frame. When error
+// pages are embedded, this can serve them like reply_status does.
+//
+// input
+// x0 = status code, x1 = client fd, x2 = stream id
+//
+// output
+// (none — write failures are ignored; the caller closes the stream)
+//
+// clobbers x0-x6, x9-x14, x19-x22 (saved/restored), x30
+h2_reply_status:
+    stp x19, x20, [sp, #-48]!
+    stp x21, x22, [sp, #16]
+    str x30, [sp, #32]
+    mov x19, x0             // status
+    mov x20, x1             // fd
+    mov x21, x2             // stream id
+    str_l x0, response_code
+    str_l xzr, resource_type
+    adr_l x0, response
+    mov x1, x19
+    mov x2, #0              // content_length
+    mov x3, #-1             // range start
+    mov x4, #-1             // range end
+    mov x5, #0              // body ptr
+    mov x6, #0              // body length
+    bl create_response
+    mov x0, x20
+    adr_l x1, response
+    mov x2, x21
+    mov x3, #H2_FLAG_END_STREAM
+    bl h2_write_headers
+    ldr x30, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #48
+    ret
+
+// ── 9.2 — h2_write_headers: encode the response struct as a HEADERS ─
+// frame. The HPACK block carries :status, content-type and
+// content-length — plus content-encoding: gzip when the embedded asset
+// is gzipped (the HTTP/1 encoder sends the same header). The block is
+// built into h2_frame_buf right after the 9-byte frame header and the
+// whole frame is written in one write_all, so a partial write can't
+// split the frame.
+//
+// HPACK notes: :status 200 is a static-table index (0x88); any other
+// status is a literal with the indexed name ":status" (static 8).
+// content-type / content-length / content-encoding use the
+// literal-with-indexed-name form (static 31 / 28 / 26) with a plain
+// 7-bit-prefix string length. Status 204 carries no content-type or
+// content-length, matching the HTTP/1 encoder.
+//
+// input
+// x0 = client fd
+// x1 -> response struct
+// x2 = stream id
+// x3 = extra frame flags (H2_FLAG_END_STREAM for a bodyless response)
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = errno (or H2_ERR_INTERNAL_ERROR if the
+//           header block doesn't fit the frame buffer)
+//
+// clobbers x0-x8, x19-x24 (saved/restored), x30
+h2_write_headers:
+    stp x19, x20, [sp, #-64]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    str x30, [sp, #48]
+    mov x19, x0             // fd
+    mov x20, x1             // response
+    mov x21, x2             // stream id
+    mov x22, x3             // extra flags
+    adr_l x24, h2_frame_buf
+    add x24, x24, #H2_WIRE_HEADER_LEN  // block base
+    mov x23, #0             // block length
+
+    // ── :status ──
+    ldr x0, [x20, #RESP_STATUS]
+    cmp x0, #200
+    b.ne 1f
+    mov w3, #0x88           // indexed header field — :status: 200 (§6.1)
+    strb w3, [x24, x23]
+    add x23, x23, #1
+    b 2f
+1:  // any other status — literal with the indexed name ":status" (8)
+    mov w3, #0x08
+    strb w3, [x24, x23]
+    add x23, x23, #1
+    ldr x0, [x20, #RESP_STATUS]
+    bl itoa                // x0 -> digits, x1 = length
+    mov x2, x1
+    mov x1, x0
+    bl .Lh2wh_append_str
+2:
+    	// ── content-type / content-length (skipped for 204, like HTTP/1) ──
+    	ldr x0, [x20, #RESP_STATUS]
+    	cmp x0, #204
+    	b.eq .Lh2wh_encoding
+    	// content-type — skipped for empty resources (matches HTTP/1). The
+    	// static index is 31, which needs the two-octet 4-bit-prefix form:
+    	// 0x0f (prefix max) then 31 - 15 = 16
+    	ldr x0, [x20, #RESP_CONTENT_LENGTH]
+    	cbz x0, .Lh2wh_length
+    	mov w3, #0x0f           // literal without indexing, 4-bit index max
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	mov w3, #0x10           // 31 - 15 = 16 → content-type
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	ldr x1, [x20, #RESP_CONTENT_TYPE]
+    	ldr x2, [x20, #RESP_CONTENT_TYPE_LEN]
+    	bl .Lh2wh_append_str
+    .Lh2wh_length:
+    	// content-length — static index 28: 0x0f then 28 - 15 = 13
+    	mov w3, #0x0f
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	mov w3, #0x0d           // 28 - 15 = 13 → content-length
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	ldr x0, [x20, #RESP_CONTENT_LENGTH]
+    	bl itoa
+    	mov x2, x1
+    	mov x1, x0
+    	bl .Lh2wh_append_str
+    .Lh2wh_encoding:
+    	// ── content-encoding: gzip — only for gzipped embedded assets. The
+    	// static index is 26: 0x0f then 26 - 15 = 11
+    	ldr_l x9, resource_type
+    	cmp x9, #1              // RES_EMBEDDED
+    	b.ne .Lh2wh_build_done
+    	ldr_l x9, embedded_gzip
+    	cbz x9, .Lh2wh_build_done
+    	mov w3, #0x0f
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	mov w3, #0x0b           // 26 - 15 = 11 → content-encoding
+    	strb w3, [x24, x23]
+    	add x23, x23, #1
+    	adr_l x1, h2_gzip_str
+    	mov x2, #h2_gzip_str_len
+    	bl .Lh2wh_append_str
+.Lh2wh_build_done:
+    // the fixed frame buffer must hold the block behind the 9-byte
+    // header — the known content types are far below this
+    cmp x23, #(h2_frame_buf_size - H2_WIRE_HEADER_LEN)
+    b.hi .Lh2wh_too_big
+
+    // ── frame header (RFC 9113 §4.1) ──
+    adr_l x13, h2_frame_buf
+    mov w3, w23             // payload length — 24-bit big-endian
+    lsr w4, w3, #16
+    strb w4, [x13, #0]
+    lsr w4, w3, #8
+    strb w4, [x13, #1]
+    strb w3, [x13, #2]
+    mov w3, #H2_FRAME_HEADERS
+    strb w3, [x13, #3]
+    mov w3, #H2_FLAG_END_HEADERS
+    orr w3, w3, w22         // + END_STREAM when the caller asked for it
+    strb w3, [x13, #4]
+    mov w3, w21             // stream id — 31-bit big-endian
+    lsr w4, w3, #24
+    strb w4, [x13, #5]
+    lsr w4, w3, #16
+    strb w4, [x13, #6]
+    lsr w4, w3, #8
+    strb w4, [x13, #7]
+    strb w3, [x13, #8]
+
+    // ── one write — header + block can't be split by a partial write ──
+    mov x0, x19
+    adr_l x1, h2_frame_buf
+    mov x2, #H2_WIRE_HEADER_LEN
+    add x2, x2, x23
+    bl write_all
+    b.cs .Lh2wh_err
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+    b .Lh2wh_done
+.Lh2wh_too_big:
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #H2_ERR_INTERNAL_ERROR
+    b .Lh2wh_done
+.Lh2wh_err:
+    // x0 = errno, carry set (write_all failed)
+.Lh2wh_done:
+    ldr x30, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #64
+    ret
+
+// Append the RFC 7541 §5.2 string representation of (x1, length x2) to
+// the block at x24+x23, advancing x23. Handles the 7-bit-prefix long
+// form, so content types longer than 127 bytes still encode correctly.
+// The return address is saved on entry: the memcpy below clobbers x30,
+// and this helper is entered via bl and must ret to its caller. Named
+// labels only — numeric labels here would hijack the b.cond/b 1f,2f
+// branches in h2_write_headers.
+//
+// clobbers x0-x5, x30 (saved/restored)
+.Lh2wh_append_str:
+    str x30, [sp, #-16]!
+    cmp x2, #127
+    b.hi .Lh2wh_str_long
+    strb w2, [x24, x23]
+    add x23, x23, #1
+    b .Lh2wh_str_data
+.Lh2wh_str_long:
+    mov w3, #127
+    strb w3, [x24, x23]
+    add x23, x23, #1
+    sub x3, x2, #127
+.Lh2wh_str_long_loop:
+    cmp x3, #128
+    b.lo .Lh2wh_str_long_done
+    and w4, w3, #0x7f
+    orr w4, w4, #0x80       // continuation bit
+    strb w4, [x24, x23]
+    add x23, x23, #1
+    lsr x3, x3, #7
+    b .Lh2wh_str_long_loop
+.Lh2wh_str_long_done:
+    strb w3, [x24, x23]
+    add x23, x23, #1
+.Lh2wh_str_data:
+    mov x0, x24
+    add x0, x0, x23
+    // x1 -> string, x2 = length — memcpy clobbers x0-x4 (and x30), so
+    // save the length in x5 (untouched) across the copy
+    mov x5, x2
+    bl memcpy
+    add x23, x23, x5
+    ldr x30, [sp], #16
+    ret
+
+// ── 9.3 — h2_write_body: send the response body as DATA frames ─────
+// The body is split into H2_DEFAULT_MAX_FRAME_SIZE (2^14) chunks; the
+// last chunk carries END_STREAM. An empty body sends a single empty
+// DATA frame with END_STREAM. Flow control is a later stage — bodies
+// must fit within the 65535-byte initial stream window for now.
+//
+// input
+// x0 = client fd
+// x1 -> response struct
+// x2 = stream id
+//
+// output
+// success — carry clear, x0 = 0
+// failure — carry set, x0 = errno
+//
+// clobbers x0-x8, x19-x25 (saved/restored), x30
+h2_write_body:
+    stp x19, x20, [sp, #-64]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x30, [sp, #48]
+    mov x19, x0             // fd
+    mov x20, x1             // response
+    mov x21, x2             // stream id
+    ldr x22, [x20, #RESP_BODY]
+    ldr x23, [x20, #RESP_BODY_LENGTH]
+.Lh2wb_loop:
+    // this chunk = min(remaining, max frame size)
+    mov x24, #H2_DEFAULT_MAX_FRAME_SIZE
+    cmp x23, x24
+    csel x24, x23, x24, lo
+    // END_STREAM rides on the final chunk
+    mov w25, #0
+    cmp x24, x23
+    b.ne 1f
+    mov w25, #H2_FLAG_END_STREAM
+1:
+    // frame header at h2_frame_buf
+    adr_l x13, h2_frame_buf
+    mov w3, w24
+    lsr w4, w3, #16
+    strb w4, [x13, #0]
+    lsr w4, w3, #8
+    strb w4, [x13, #1]
+    strb w3, [x13, #2]
+    mov w3, #H2_FRAME_DATA
+    strb w3, [x13, #3]
+    strb w25, [x13, #4]
+    mov w3, w21
+    lsr w4, w3, #24
+    strb w4, [x13, #5]
+    lsr w4, w3, #16
+    strb w4, [x13, #6]
+    lsr w4, w3, #8
+    strb w4, [x13, #7]
+    strb w3, [x13, #8]
+    // copy the chunk behind the header (zero-copy DATA is a later stage)
+    add x0, x13, #H2_WIRE_HEADER_LEN
+    mov x1, x22
+    mov x2, x24
+    bl memcpy
+    // one write per frame
+    mov x0, x19
+    adr_l x1, h2_frame_buf
+    mov x2, #H2_WIRE_HEADER_LEN
+    add x2, x2, x24
+    bl write_all
+    b.cs .Lh2wb_err
+    // advance
+    add x22, x22, x24
+    sub x23, x23, x24
+    cbnz x23, .Lh2wb_loop
+    cmn xzr, xzr            // success — carry clear
+    mov x0, #0
+.Lh2wb_err:
+.Lh2wb_done:
+    ldp x25, x30, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #64
+    ret
+
+// ── 6.8 — h2_send_goaway: send a GOAWAY frame and let the caller ───
+// close the connection. Carries the connection's high-water stream id
+// and the given error code (RFC 9113 §6.8).
+//
+// input
+// x0 = fd, x1 = error code
+//
+// output
+// (none — write failures are ignored; the connection is closing anyway)
+//
+// clobbers x0-x4, x9, x30 (saved/restored)
+h2_send_goaway:
+    str x30, [sp, #-16]!
+    sub sp, sp, #32
+    // payload length = 8
+    mov w3, #8
+    strb wzr, [sp, #0]
+    strb wzr, [sp, #1]
+    strb w3, [sp, #2]
+    // type = GOAWAY, flags = 0, stream id = 0
+    mov w3, #H2_FRAME_GOAWAY
+    strb w3, [sp, #3]
+    strb wzr, [sp, #4]
+    strb wzr, [sp, #5]
+    strb wzr, [sp, #6]
+    strb wzr, [sp, #7]
+    strb wzr, [sp, #8]
+    // payload: last client-initiated stream id (4 bytes, big-endian)
+    adr_l x9, h2_conn
+    ldr w3, [x9, #H2C_LAST_STREAM_ID]
+    lsr w4, w3, #24
+    strb w4, [sp, #9]
+    lsr w4, w3, #16
+    strb w4, [sp, #10]
+    lsr w4, w3, #8
+    strb w4, [sp, #11]
+    strb w3, [sp, #12]
+    // payload: error code (4 bytes, big-endian)
+    lsr w4, w1, #24
+    strb w4, [sp, #13]
+    lsr w4, w1, #16
+    strb w4, [sp, #14]
+    lsr w4, w1, #8
+    strb w4, [sp, #15]
+    strb w1, [sp, #16]
+    mov x1, sp
+    mov x2, #17
+    bl write_all
+    add sp, sp, #32
+    ldr x30, [sp], #16
+    ret
+
+// ── 6.4 — h2_send_rst_stream: send an RST_STREAM frame for a stream ─
+// error, so the connection can keep serving other streams.
+//
+// input
+// x0 = fd, x1 = stream id, x2 = error code
+//
+// output
+// (none — write failures are ignored)
+//
+// clobbers x0-x4, x30 (saved/restored)
+h2_send_rst_stream:
+    str x30, [sp, #-16]!
+    sub sp, sp, #32
+    // payload length = 4
+    mov w3, #4
+    strb wzr, [sp, #0]
+    strb wzr, [sp, #1]
+    strb w3, [sp, #2]
+    // type = RST_STREAM, flags = 0
+    mov w3, #H2_FRAME_RST_STREAM
+    strb w3, [sp, #3]
+    strb wzr, [sp, #4]
+    // stream id (4 bytes, big-endian)
+    lsr w4, w1, #24
+    strb w4, [sp, #5]
+    lsr w4, w1, #16
+    strb w4, [sp, #6]
+    lsr w4, w1, #8
+    strb w4, [sp, #7]
+    strb w1, [sp, #8]
+    // error code (4 bytes, big-endian)
+    lsr w4, w2, #24
+    strb w4, [sp, #9]
+    lsr w4, w2, #16
+    strb w4, [sp, #10]
+    lsr w4, w2, #8
+    strb w4, [sp, #11]
+    strb w2, [sp, #12]
+    mov x1, sp
+    mov x2, #13
+    bl write_all
+    add sp, sp, #32
+    ldr x30, [sp], #16
+    ret

@@ -319,6 +319,7 @@ child:
 
     // read(client_fd, buffer, buffer_size)
     mov x7, #0
+    mov x25, #0 // protocol not yet detected (0 = undetected, 1 = decided)
 read_loop:
     SCWINUM SYS_read
     ldr_l x0, clientfd
@@ -333,6 +334,25 @@ read_loop:
 
     add x7, x7, x0 // save x0 because parse_header_end clobbers it. cumulatively
 
+    // ── protocol detection — the first data decides HTTP/2 vs HTTP/1 ──
+    // The HTTP/2 client connection preface ("PRI * HTTP/2.0\r\n\r\n...")
+    // starts every HTTP/2 connection (RFC 9113 §3.4); if the buffered
+    // bytes match its prefix, hand the connection to the HTTP/2 loop,
+    // which finishes reading the preface and then serves frames. Anything
+    // else keeps the existing HTTP/1 flow. The bytes are never consumed
+    // here, so both paths see the same data (Phase 16, Option B).
+    cbnz x25, 1f          // already decided — skip
+    mov x25, #1           // detect once, on the first data
+    adr_l x0, buf
+    mov x1, x7
+    bl h2_probe
+    cbz x0, 1f            // not the preface → HTTP/1
+    ldr_l x0, clientfd
+    adr_l x1, buf
+    mov x2, x7
+    bl h2_connection_loop
+    b child_end           // the loop returns when the connection ends
+1:
     adr_l x0, buf
     mov x1, x7
     bl parse_header_end

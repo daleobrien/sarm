@@ -17,31 +17,37 @@
 
 // HPACK header compression (RFC 7541) — Stage 7, minimal HPACK.
 //
-// A decoder for the four header field representations a static-table-
-// only implementation accepts:
+// A decoder for the header field representations a static-table-only
+// implementation accepts:
 //   - indexed header field (§6.1)
+//   - literal header field with incremental indexing (§6.2.1) — accepted
+//     but never stored: the dynamic table max size is 0, so an entry
+//     added to it would be evicted immediately
 //   - literal header field without indexing (§6.2.2)
 //   - literal header field never indexed (§6.2.3)
 //   - dynamic table size update (§6.3) — only size 0
-// Integer decoding (§5.1) and plain (non-Huffman) string decoding (§5.2)
-// are the building blocks; the RFC 7541 Appendix A static table
-// (h2_hpack_static_table) provides the names and values for indices
-// 1..61. h2_hpack_decode_field handles one representation,
-// h2_hpack_decode_block loops over a whole HEADERS payload into the
-// fixed h2_hpack_fields array.
+// Integer decoding (§5.1) and string decoding (§5.2) are the building
+// blocks. Strings may be Huffman-coded; the RFC 7541 Appendix B static
+// Huffman table (h2_huffman_table, generated into h2_huffman_table.S)
+// drives the decoder, which writes decoded bytes into h2_hpack_str_buf.
+// The RFC 7541 Appendix A static table (h2_hpack_static_table) provides
+// the names and values for indices 1..61. h2_hpack_decode_field
+// handles one representation, h2_hpack_decode_block loops over a whole
+// HEADERS payload into the fixed h2_hpack_fields array.
 //
 // The dynamic table is disabled: the opening SETTINGS frame advertises
-// SETTINGS_HEADER_TABLE_SIZE = 0 (http2.S), and the decoder rejects
-// everything that would need a dynamic table — literal with incremental
-// indexing (§6.2.1), any size update above 0 (§6.3), and any index
-// beyond the static table. Huffman-coded strings (§5.2) are rejected
-// too, until the Huffman stage. Every rejection is a
-// H2_ERR_COMPRESSION_ERROR connection error (RFC 9113 §4.3): a client
-// that ignores the settings gets a clean GOAWAY, never corrupted state.
+// SETTINGS_HEADER_TABLE_SIZE = 0 (http2.S). The decoder rejects
+// everything that would need a dynamic table — any size update above 0
+// (§6.3) and any index beyond the static table — as
+// H2_ERR_COMPRESSION_ERROR connection errors (RFC 9113 §4.3). A
+// Huffman string whose padding is invalid, that contains the EOS
+// symbol, or that decodes past h2_hpack_str_buf is rejected the same
+// way.
 //
-// The decoded fields point into the input block (zero-copy); the block
-// lives in the connection buffer, so fields are only valid for the
-// duration of the connection's copy of the frame. h2_hpack_decode_block
+// The decoded fields point into the input block (zero-copy) or into
+// h2_hpack_str_buf (Huffman-decoded); the block lives in the
+// connection buffer, so fields are only valid for the duration of the
+// connection's copy of the frame. h2_hpack_decode_block
 // bounds-checks its consumption against the block length, so a
 // truncated block is rejected rather than accepted. The primitives
 // below assume the caller has a well-formed block in memory.
@@ -57,6 +63,7 @@
 .global h2_hpack_static_lookup
 .global h2_hpack_decode_field
 .global h2_hpack_decode_block
+.global h2_huffman_decode
 
 // ── RFC 7541 Appendix A — the 61-entry static table ──────────────────
 // Each entry is four quadwords: name pointer, name length, value
@@ -398,6 +405,13 @@ hp_v_gzip_deflate:
     .asciz "gzip, deflate"
 .equ hp_l_gzip_deflate, . - hp_v_gzip_deflate - 1
 
+// ── RFC 7541 Appendix B — the static Huffman code ───────────────────
+// (code length, code) plus a per-length start index. See the decoder
+// below for how the two tables drive h2_huffman_decode.
+.global h2_huffman_table
+.global h2_huffman_len_start
+#include "h2_huffman_table.S"
+
 // ── decoded-field output area ────────────────────────────────────────
 // h2_hpack_decode_block fills this with H2_HPACK_MAX_FIELDS entries of
 // H2_HPACK_FIELD_SIZE bytes (name ptr, name len, value ptr, value len).
@@ -406,6 +420,21 @@ hp_v_gzip_deflate:
 .align 3
 h2_hpack_fields:
     .skip H2_HPACK_MAX_FIELDS * H2_HPACK_FIELD_SIZE
+
+// h2_hpack_str_buf — decoded Huffman string output. Huffman strings
+// don't point into the input block (they are re-expanded), so the
+// decoder writes them here, appending within one header block decode.
+// h2_hpack_decode_block resets the write offset on entry; a decoded
+// string that would overflow the buffer is a COMPRESSION_ERROR. The
+// decoded strings stay valid until the next block decode, which is long
+// enough for h2_build_request to copy out the pseudo-headers.
+.align 3
+h2_hpack_str_buf:
+    .skip H2_HPACK_STR_BUF_SIZE
+
+// current write offset into h2_hpack_str_buf
+h2_hpack_str_off:
+    .skip 8
 
 .text
 .align 2
@@ -469,9 +498,10 @@ h2_hpack_decode_int:
 
 // ── 5.2 — string decoding ────────────────────────────────────────────
 // Decode the RFC 7541 §5.2 string that starts at x0. The H bit (§5.2)
-// selects Huffman coding; only plain strings are supported in this
-// stage, so a Huffman-coded string is a decoding error. The length is a
-// 7-bit-prefix integer; the string data follows verbatim.
+// selects Huffman coding: a Huffman string's length prefix is decoded
+// the same way, then h2_huffman_decode expands the code into
+// h2_hpack_str_buf. The length is a 7-bit-prefix integer; the string
+// data follows verbatim.
 //
 // input
 // x0 -> first octet of the string representation
@@ -481,11 +511,14 @@ h2_hpack_decode_int:
 //   x0 -> the string data (first byte)
 //   x1 = string length in bytes
 //   x2 = bytes consumed by the whole representation (prefix + data)
-// failure — carry set, x0 = H2_ERR_COMPRESSION_ERROR (Huffman-coded)
+// failure — carry set, x0 = H2_ERR_COMPRESSION_ERROR
+//   (invalid Huffman padding, EOS symbol, output overflow)
 //
-// clobbers x0-x4, x19, x30 (x19/x30 saved/restored)
+// clobbers x0-x7, x19-x21, x30 (x19-x21/x30 saved/restored)
 h2_hpack_decode_string:
-    stp x19, x30, [sp, #-16]!
+    stp x19, x30, [sp, #-32]!
+    str x20, [sp, #16]
+    str x21, [sp, #24]
     mov x19, x0                 // input ptr — decode_int clobbers x0-x7
     ldrb w3, [x0]
     tbnz w3, #7, .Lhpack_str_huffman
@@ -497,17 +530,33 @@ h2_hpack_decode_string:
     add x0, x19, x4             // string data follows the length prefix
     mov x1, x3                  // length
     add x2, x4, x3              // total consumed = prefix + data
-    ldp x19, x30, [sp], #16
+    ldp x19, x30, [sp], #32
     cmn xzr, xzr
     ret
 .Lhpack_str_huffman:
-    ldp x19, x30, [sp], #16
-    cmp xzr, xzr                // failure — carry set
-    mov x0, #H2_ERR_COMPRESSION_ERROR
+    // Huffman-coded string (§5.2) — decode the length, then expand the
+    // code with h2_huffman_decode into h2_hpack_str_buf
+    mov x1, #7
+    bl h2_hpack_decode_int
+    b.cs .Lhpack_str_error
+    mov x20, x0                 // encoded length (bytes)
+    mov x21, x1                 // prefix bytes consumed
+    add x0, x19, x21            // the Huffman code bytes
+    mov x1, x20
+    bl h2_huffman_decode
+    b.cs .Lhpack_str_error
+    // h2_huffman_decode: x0 -> decoded, x1 = decoded len, x2 = consumed
+    add x2, x21, x20            // total consumed = prefix + encoded bytes
+    ldr x21, [sp, #24]
+    ldr x20, [sp, #16]
+    ldp x19, x30, [sp], #32
+    cmn xzr, xzr
     ret
 .Lhpack_str_error:
-    ldp x19, x30, [sp], #16
-    ret                         // carry + error already set by decode_int
+    ldr x21, [sp, #24]
+    ldr x20, [sp, #16]
+    ldp x19, x30, [sp], #32
+    ret                         // carry + error already set
 
 // ── 6.1 — static table lookup ────────────────────────────────────────
 // Resolve a static-table index (RFC 7541 Appendix A) to its name and
@@ -550,8 +599,10 @@ h2_hpack_static_lookup:
 //   1xxxxxxx  indexed header field (§6.1) — the name/value come from
 //             the table, so the index must be 1..61 (index 0 is a
 //             decoding error; the dynamic table would start at 62)
-//   01xxxxxx  literal with incremental indexing (§6.2.1) — REJECTED:
-//             it adds the field to the dynamic table, which is disabled
+//   01xxxxxx  literal with incremental indexing (§6.2.1) — decoded like
+//             the other literals but with a 6-bit name index, and never
+//             stored (the dynamic table max size is 0, so an entry
+//             "added" to it would be evicted immediately)
 //   001xxxxx  dynamic table size update (§6.3) — only size 0 is
 //             acceptable; anything above our advertised maximum (0) is
 //             a decoding error, and size 0 is a no-op, not a field
@@ -560,7 +611,8 @@ h2_hpack_static_lookup:
 //   0001xxxx  literal never indexed (§6.2.3): identical structure, the
 //             never-index hint is ignored by a decoder
 //
-// The decoded name and value point into the input block (zero-copy).
+// The decoded name and value point into the input block (zero-copy) or
+// into h2_hpack_str_buf (Huffman-decoded).
 //
 // input
 // x0 -> first octet of the field
@@ -576,8 +628,9 @@ h2_hpack_static_lookup:
 //
 // clobbers x0-x6, x9, x19, x20, x21, x30 (x19/x20/x21/x30 saved/restored)
 h2_hpack_decode_field:
-    stp x19, x30, [sp, #-32]!
+    stp x19, x30, [sp, #-48]!
     stp x20, x21, [sp, #16]
+    str x22, [sp, #32]
     mov x21, x0                 // input ptr — survives the sub-calls
     ldrb w6, [x0]               // first octet
     tbz w6, #7, .Lhpack_field_not_indexed
@@ -600,10 +653,34 @@ h2_hpack_decode_field:
 
 .Lhpack_field_not_indexed:
     tbz w6, #6, .Lhpack_field_not_incremental
-    // ── literal with incremental indexing (§6.2.1) — rejected: the
-    // dynamic table is disabled (we advertise SETTINGS_HEADER_TABLE_SIZE
-    // = 0), so nothing may be added to it ──
-    b .Lhpack_field_bad
+    // ── literal with incremental indexing (§6.2.1) — accepted, never
+    // stored: our dynamic table max size is 0 (SETTINGS_HEADER_TABLE_SIZE
+    // = 0), so an entry "added" to it would be evicted immediately. The
+    // decode is identical to §6.2.2/§6.2.3, except the name index uses
+    // a 6-bit prefix ──
+    mov x1, #6
+    bl h2_hpack_decode_int
+    b.cs .Lhpack_field_err
+    mov x6, x1                  // prefix bytes consumed
+    cbz x0, .Lhpack_field_inc_new_name
+    bl h2_hpack_static_lookup   // indexed name
+    b.cs .Lhpack_field_err
+    mov x19, x0                 // name ptr — survives the string decode
+    mov x20, x1                 // name len
+    add x0, x21, x6             // the value string follows the index
+    b .Lhpack_field_literal_value
+.Lhpack_field_inc_new_name:
+    // the value string follows the name string in the input block — x6
+    // (the index prefix bytes) is clobbered by the name decode, so save
+    // the name string's input start first
+    add x22, x21, x6
+    add x0, x21, x6             // the name string follows the index
+    bl h2_hpack_decode_string
+    b.cs .Lhpack_field_err
+    mov x19, x0                 // name ptr
+    mov x20, x1                 // name len
+    add x0, x22, x2             // the value string follows the name
+    b .Lhpack_field_literal_value
 
 .Lhpack_field_not_incremental:
     tbz w6, #5, .Lhpack_field_literal
@@ -637,26 +714,34 @@ h2_hpack_decode_field:
     add x0, x21, x6             // the value string follows the index
     b .Lhpack_field_literal_value
 .Lhpack_field_new_name:
+    // the value string follows the name string in the input block — x6
+    // (the index prefix bytes) is clobbered by the name decode, so save
+    // the name string's input start first
+    add x22, x21, x6
     add x0, x21, x6             // the name string follows the index
     bl h2_hpack_decode_string
     b.cs .Lhpack_field_err
     mov x19, x0                 // name ptr
     mov x20, x1                 // name len
-    add x0, x19, x20            // the value string follows the name
+    add x0, x22, x2             // the value string follows the name
 .Lhpack_field_literal_value:
+    // remember where the value string starts in the input block — the
+    // decode may put a Huffman-expanded value in h2_hpack_str_buf, so
+    // `next` must come from the input position, never the value pointer
+    mov x22, x0
     bl h2_hpack_decode_string
     b.cs .Lhpack_field_err
-    // decode_string: x0 -> value, x1 = value len; name is in x19/x20
-    mov x2, x1                  // value len
+    // decode_string: x0 -> value, x1 = value len, x2 = consumed
     mov x3, x0                  // value ptr
-    mov x4, x2                  // value len
+    mov x4, x1                  // value len
+    add x0, x22, x2             // next = value start + consumed
     mov x1, x19                 // name ptr
     mov x2, x20                 // name len
-    add x0, x3, x4              // next = value data + value length
 
 .Lhpack_field_ok:
+    ldr x22, [sp, #32]
     ldp x20, x21, [sp, #16]
-    ldp x19, x30, [sp], #32
+    ldp x19, x30, [sp], #48
     cmn xzr, xzr                // success — carry clear
     ret
 
@@ -664,8 +749,9 @@ h2_hpack_decode_field:
     cmp xzr, xzr                // failure — carry set
     mov x0, #H2_ERR_COMPRESSION_ERROR
 .Lhpack_field_err:
+    ldr x22, [sp, #32]
     ldp x20, x21, [sp, #16]
-    ldp x19, x30, [sp], #32
+    ldp x19, x30, [sp], #48
     ret                         // carry + error already set
 
 // ── a whole header block ─────────────────────────────────────────────
@@ -679,6 +765,9 @@ h2_hpack_decode_field:
 // fields decoded so far remain readable, but the caller must treat the
 // whole connection as failed (COMPRESSION_ERROR is a connection error,
 // RFC 9113 §4.3).
+//
+// The field count lives in x20 (callee-saved): the decoder below can
+// reach h2_huffman_decode, which clobbers the caller-saved x8.
 //
 // input
 // x0 -> the block (HEADERS payload)
@@ -696,7 +785,10 @@ h2_hpack_decode_block:
     mov x19, x0                 // cursor
     mov x21, x1                 // bytes remaining
     adr_l x22, h2_hpack_fields
-    mov x8, #0                  // field count
+    mov x20, #0                 // field count
+    // a fresh Huffman output area for this block
+    adr_l x9, h2_hpack_str_off
+    str xzr, [x9]
 .Lhpack_block_loop:
     cbz x21, .Lhpack_block_done
     mov x0, x19
@@ -708,17 +800,17 @@ h2_hpack_decode_block:
     sub x21, x21, x7            // remaining -= consumed
     mov x19, x0                 // cursor = next
     cbz x1, .Lhpack_block_loop  // size update — not a header field
-    cmp x8, #H2_HPACK_MAX_FIELDS
+    cmp x20, #H2_HPACK_MAX_FIELDS
     b.hs .Lhpack_block_bad      // fixed decode area is full
     str x1, [x22, #H2_HPACK_FIELD_NAME_PTR]
     str x2, [x22, #H2_HPACK_FIELD_NAME_LEN]
     str x3, [x22, #H2_HPACK_FIELD_VALUE_PTR]
     str x4, [x22, #H2_HPACK_FIELD_VALUE_LEN]
     add x22, x22, #H2_HPACK_FIELD_SIZE
-    add x8, x8, #1
+    add x20, x20, #1
     b .Lhpack_block_loop
 .Lhpack_block_done:
-    mov x0, x8
+    mov x0, x20
     ldr x22, [sp, #32]
     ldp x20, x21, [sp, #16]
     ldp x19, x30, [sp], #48
@@ -732,3 +824,127 @@ h2_hpack_decode_block:
     ldp x20, x21, [sp, #16]
     ldp x19, x30, [sp], #48
     ret                         // carry + error already set
+
+// ── 5.2 — Huffman string decoding (RFC 7541 Appendix B) ─────────────
+// Expand a Huffman-coded string into h2_hpack_str_buf at the current
+// write offset (appending, so several Huffman strings decoded from one
+// header block coexist). The bitstream is consumed MSB-first; after
+// each bit the accumulated code is looked up in the range of table
+// entries whose code length matches (h2_huffman_len_start[N]), so each
+// look-up only scans the handful of same-length codes. A match emits
+// the symbol and resets the accumulator. After the last byte the
+// leftover bits are padding (§5.2): at most 7 bits, all ones — the
+// most significant bits of the EOS code — and the EOS symbol itself is
+// a decoding error.
+//
+// input
+// x0 -> Huffman-coded bytes
+// x1 = encoded byte count
+//
+// output
+// success — carry clear
+//   x0 -> decoded string (h2_hpack_str_buf + old write offset)
+//   x1 = decoded byte count
+//   x2 = encoded bytes consumed (== x1-in: the length field is exact)
+// failure — carry set, x0 = H2_ERR_COMPRESSION_ERROR
+//   (EOS symbol, invalid padding, output overflow)
+//
+// clobbers x0-x18, x19-x28 (saved/restored), x30
+h2_huffman_decode:
+    stp x19, x20, [sp, #-96]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x26, [sp, #48]
+    stp x27, x28, [sp, #64]
+    str x30, [sp, #80]
+    mov x19, x0             // src
+    mov x20, x1             // encoded byte count
+    adr_l x9, h2_hpack_str_off
+    ldr x21, [x9]           // write offset
+    adr_l x22, h2_hpack_str_buf
+    add x22, x22, x21       // output ptr
+    mov x23, #0             // decoded byte count
+    lsl x24, x20, #3        // total bits in the stream
+    mov x25, #0             // bit position
+    mov x26, #0             // accumulated code
+    mov x27, #0             // accumulated code length
+
+.Lhuff_bit_loop:
+    cmp x25, x24
+    b.hs .Lhuff_padding
+    // bit = (src[pos >> 3] >> (7 - (pos & 7))) & 1
+    lsr x8, x25, #3
+    ldrb w2, [x19, x8]
+    and w3, w25, #7
+    mov w8, #7
+    sub w3, w8, w3
+    lsr w2, w2, w3
+    and w2, w2, #1
+    // acc = (acc << 1) | bit
+    lsl x26, x26, #1
+    orr x26, x26, x2
+    add x27, x27, #1
+    add x25, x25, #1
+    // scan only the entries with this code length
+    adr_l x9, h2_huffman_len_start
+    ldr w2, [x9, x27, lsl #2]
+    add x8, x27, #1
+    ldr w3, [x9, x8, lsl #2]
+    adr_l x10, h2_huffman_table
+.Lhuff_scan:
+    cmp x2, x3
+    b.hs .Lhuff_bit_loop
+    lsl x8, x2, #3          // entry offset (8 bytes each)
+    ldr w11, [x10, x8]      // code (u32, LSB-aligned)
+    cmp w11, w26
+    b.ne .Lhuff_scan_next
+    // code matched — check the output bound, then emit the symbol
+    add x13, x8, #4
+    ldr w11, [x10, x13]     // symbol (u32)
+    cmp w11, #256
+    b.eq .Lhuff_eos         // EOS inside a string is a decoding error
+    add x12, x21, x23       // write offset + decoded so far
+    cmp x12, #H2_HPACK_STR_BUF_SIZE
+    b.hs .Lhuff_overflow
+    strb w11, [x22, x23]
+    add x23, x23, #1
+    mov x26, #0
+    mov x27, #0
+    b .Lhuff_bit_loop
+.Lhuff_scan_next:
+    add x2, x2, #1
+    b .Lhuff_scan
+
+.Lhuff_padding:
+    // the leftover bits are padding: at most 7, all ones (a prefix of
+    // the EOS code, whose 30 bits are all ones)
+    cmp x27, #7
+    b.hi .Lhuff_bad_padding
+    cbz x27, .Lhuff_done
+    mov x8, #1
+    lsl x8, x8, x27
+    sub x8, x8, #1          // (1 << len) - 1 — all ones
+    cmp x26, x8
+    b.ne .Lhuff_bad_padding
+.Lhuff_done:
+    adr_l x9, h2_hpack_str_off
+    add x21, x21, x23
+    str x21, [x9]           // next string appends after this one
+    mov x0, x22             // the decoded string start
+    mov x1, x23             // decoded length
+    mov x2, x20             // encoded bytes consumed
+    cmn xzr, xzr            // success — carry clear
+    b .Lhuff_epilogue
+.Lhuff_eos:
+.Lhuff_overflow:
+.Lhuff_bad_padding:
+    cmp xzr, xzr            // failure — carry set
+    mov x0, #H2_ERR_COMPRESSION_ERROR
+.Lhuff_epilogue:
+    ldr x30, [sp, #80]
+    ldp x27, x28, [sp, #64]
+    ldp x25, x26, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #96
+    ret

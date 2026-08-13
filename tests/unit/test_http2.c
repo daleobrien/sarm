@@ -121,7 +121,9 @@ static const uint8_t H2_PREFACE[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // ── libc declarations (avoid <unistd.h>/<sys/socket.h> per harness) ─
 extern int socketpair(int domain, int type, int protocol, int sv[2]);
 extern long read(int fd, void *buf, unsigned long n);
+extern long write(int fd, const void *buf, unsigned long n);
 extern int close(int fd);
+extern int pipe(int *fds);
 extern int fork(void);
 extern int waitpid(int pid, int *status, int options);
 extern int usleep(unsigned int usec);
@@ -179,6 +181,37 @@ typedef struct {
 	const char *authority;
 	int64_t stream_id;
 } request_t;
+
+// ── Stage 9 — response encoder constants, mirroring defs.S ─────────
+#define H2_WIRE_HEADER_LEN 9
+#define H2_DEFAULT_MAX_FRAME_SIZE 16384
+
+#define RESP_STATUS           0
+#define RESP_CONTENT_TYPE     8
+#define RESP_CONTENT_TYPE_LEN 16
+#define RESP_CONTENT_LENGTH   24
+#define RESP_BODY             32
+#define RESP_BODY_LENGTH      40
+
+// the protocol-neutral response struct, mirroring the RESP_* offsets in
+// defs.S. test_response.c shares this layout.
+typedef struct {
+	int64_t status;
+	const char *content_type;
+	int64_t content_type_len;
+	int64_t content_length;
+	const char *body;
+	int64_t body_length;
+	int64_t range_start;
+	int64_t range_end;
+} response_t;
+
+// ── globals from data.S consulted by the response encoder ──────────
+extern int64_t clientfd          __asm__("clientfd");
+extern int64_t resource_type     __asm__("resource_type");
+extern int64_t embedded_gzip     __asm__("embedded_gzip");
+extern int64_t embedded_etag     __asm__("embedded_etag");
+extern int64_t embedded_etag_len __asm__("embedded_etag_len");
 
 static inline const request_t *request_addr(void) {
 	request_t *p;
@@ -631,6 +664,34 @@ static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t le
 	return count;
 }
 
+// h2_huffman_decode(ptr=x0, len=x1) → (str=x0, out_len=x1, consumed=x2,
+//                                     carry)
+static inline const uint8_t *h2_huffman_decode_wrapper(const uint8_t *p, int64_t n,
+                                                      int64_t *len_out,
+                                                      int64_t *consumed_out,
+                                                      int64_t *carry_out) {
+	const uint8_t *s;
+	int64_t len, consumed, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %4\n"
+		"mov x1, %5\n"
+		"bl h2_huffman_decode\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"cset %3, cs\n"
+		: "=r"(s), "=r"(len), "=r"(consumed), "=r"(carry)
+		: "r"(p), "r"(n)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
+		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x30", "memory");
+	*len_out = len;
+	*consumed_out = consumed;
+	*carry_out = carry;
+	return s;
+}
+
 // ── Stage 8 wrappers for asm functions ──────────────────────────────
 
 // h2_build_request(stream_id=x0, count=x1) → (rc=x0, carry). The function
@@ -671,6 +732,105 @@ static inline int64_t parse_request_wrapper(const char *buf, int64_t len) {
 		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
 		  "memory");
+	return carry;
+}
+
+// ── Stage 9 wrappers for asm functions ──────────────────────────────
+
+// h2_probe(buf=x0, n=x1) → (rc=x0)
+static inline int64_t h2_probe_wrapper(const uint8_t *buf, int64_t n) {
+	int64_t rc;
+	asm volatile(
+		"mov x0, %1\n"
+		"mov x1, %2\n"
+		"bl h2_probe\n"
+		"mov %0, x0\n"
+		: "=r"(rc)
+		: "r"(buf), "r"(n)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+	return rc;
+}
+
+// h2_write_headers(fd=x0, resp=x1, stream_id=x2, flags=x3) → (carry)
+static inline int64_t h2_write_headers_wrapper(int64_t fd, const response_t *resp,
+                                              int64_t stream_id, int64_t flags) {
+	int64_t carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %1\n"
+		"mov x1, %2\n"
+		"mov x2, %3\n"
+		"mov x3, %4\n"
+		"bl h2_write_headers\n"
+		"cset %0, cs\n"
+		: "=r"(carry)
+		: "r"(fd), "r"(resp), "r"(stream_id), "r"(flags)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
+		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", "memory");
+	return carry;
+}
+
+// h2_write_body(fd=x0, resp=x1, stream_id=x2) → (carry)
+static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
+                                           int64_t stream_id) {
+	int64_t carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %1\n"
+		"mov x1, %2\n"
+		"mov x2, %3\n"
+		"bl h2_write_body\n"
+		"cset %0, cs\n"
+		: "=r"(carry)
+		: "r"(fd), "r"(resp), "r"(stream_id)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
+		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x30", "memory");
+	return carry;
+}
+
+// h2_process_request(stream_id=x0, fd=x1) → (rc=x0, carry). Runs
+// lookup_embedded (file.S), create_response (get.S) and the encoder,
+// so the clobber list covers every register those touch.
+static inline int64_t h2_process_request_wrapper(int64_t stream_id, int64_t fd,
+                                                int64_t *carry_out) {
+	int64_t rc, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %2\n"
+		"mov x1, %3\n"
+		"bl h2_process_request\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(stream_id), "r"(fd)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x30",
+		  "memory");
+	*carry_out = carry;
+	return rc;
+}
+
+// h2_connection_loop(fd=x0, buf=x1, n=x2) → (carry). Runs the whole
+// connection lifecycle: preface verification, SETTINGS, the frame loop
+// and the request processing hook (h2_process_request → encoders).
+static inline int64_t h2_connection_loop_wrapper(int64_t fd, uint8_t *buf,
+                                                int64_t n) {
+	int64_t carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %1\n"
+		"mov x1, %2\n"
+		"mov x2, %3\n"
+		"bl h2_connection_loop\n"
+		"cset %0, cs\n"
+		: "=r"(carry)
+		: "r"(fd), "r"(buf), "r"(n)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x30", "memory");
 	return carry;
 }
 
@@ -1921,10 +2081,97 @@ static void test_h2_hpack_string(void) {
 	ASSERT_TRUE("1000-byte string data matches",
 	            memcmp(s, s1000 + 3, 1000) == 0);
 
-	// Huffman-coded strings (H bit set) are rejected until the Huffman stage
-	s = h2_hpack_decode_string_wrapper((const uint8_t *)"\x83GET",
-	                                   &len, &consumed, &carry);
-	check_field_error("Huffman string rejected", s, carry);
+	// Huffman-coded strings (§5.2) decode through h2_huffman_decode —
+	// "www.example.com" is the canonical RFC 7541 Appendix C.4.1 vector
+	static const uint8_t h1[] = { 0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a,
+	                              0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff };
+	s = h2_hpack_decode_string_wrapper(h1, &len, &consumed, &carry);
+	check_string("Huffman \"www.example.com\" decodes", carry, s, len,
+	             "www.example.com", consumed, (int64_t)sizeof(h1));
+}
+
+// ── 7.3b — Huffman decoding (RFC 7541 Appendix B) ───────────────────
+static void test_h2_huffman(void) {
+	TEST_SUITE("h2_huffman_decode — RFC 7541 Appendix B Huffman code");
+
+	int64_t len, consumed, carry;
+	const uint8_t *s;
+
+	// RFC 7541 Appendix C.4.1 — the canonical Huffman test vector
+	static const uint8_t auth[] = { 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a,
+	                                0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff };
+	s = h2_huffman_decode_wrapper(auth, (int64_t)sizeof(auth), &len, &consumed,
+	                              &carry);
+	check_string("www.example.com", carry, s, len, "www.example.com", consumed,
+	             (int64_t)sizeof(auth));
+
+	// C.4.2 — no-cache
+	static const uint8_t nc[] = { 0xa8, 0xeb, 0x10, 0x64, 0x9c, 0xbf };
+	s = h2_huffman_decode_wrapper(nc, (int64_t)sizeof(nc), &len, &consumed,
+	                              &carry);
+	check_string("no-cache", carry, s, len, "no-cache", consumed,
+	             (int64_t)sizeof(nc));
+
+	// C.6.1 — private, 302
+	static const uint8_t priv[] = { 0xae, 0xc3, 0x77, 0x1a, 0x4b };
+	s = h2_huffman_decode_wrapper(priv, (int64_t)sizeof(priv), &len, &consumed,
+	                              &carry);
+	check_string("private", carry, s, len, "private", consumed,
+	             (int64_t)sizeof(priv));
+
+	static const uint8_t s302[] = { 0x64, 0x02 };
+	s = h2_huffman_decode_wrapper(s302, (int64_t)sizeof(s302), &len, &consumed,
+	                              &carry);
+	check_string("302", carry, s, len, "302", consumed, (int64_t)sizeof(s302));
+
+	// curl/8.7.1 — the user-agent captured from a real curl request
+	static const uint8_t ua[] = { 0x25, 0xb6, 0x50, 0xc3, 0xcb, 0xba, 0xb8, 0x7f };
+	s = h2_huffman_decode_wrapper(ua, (int64_t)sizeof(ua), &len, &consumed,
+	                              &carry);
+	check_string("curl/8.7.1", carry, s, len, "curl/8.7.1", consumed,
+	             (int64_t)sizeof(ua));
+
+	// 127.0.0.1:8100 — the :authority captured from a real curl request
+	static const uint8_t ah[] = { 0x08, 0x9d, 0x5c, 0x0b, 0x81, 0x70, 0xdc,
+	                              0x78, 0x20, 0x07 };
+	s = h2_huffman_decode_wrapper(ah, (int64_t)sizeof(ah), &len, &consumed,
+	                              &carry);
+	check_string("127.0.0.1:8100", carry, s, len, "127.0.0.1:8100", consumed,
+	             (int64_t)sizeof(ah));
+
+	// an empty Huffman string (encoded length 0)
+	s = h2_huffman_decode_wrapper((const uint8_t *)"", 0, &len, &consumed,
+	                              &carry);
+	check_string("empty string", carry, s, len, "", consumed, 0);
+
+	// two Huffman strings back-to-back (the header-block scenario): the
+	// second decode appends after the first in h2_hpack_str_buf
+	const uint8_t *first = h2_huffman_decode_wrapper(auth, (int64_t)sizeof(auth),
+	                                                &len, &consumed, &carry);
+	check_string("authority then", carry, s, len, "www.example.com", consumed,
+	             (int64_t)sizeof(auth));
+	s = h2_huffman_decode_wrapper(ua, (int64_t)sizeof(ua), &len, &consumed,
+	                              &carry);
+	check_string("then user-agent", carry, s, len, "curl/8.7.1", consumed,
+	             (int64_t)sizeof(ua));
+	// the first string is still intact at its original position
+	ASSERT_TRUE("first string intact",
+	            memcmp(first, "www.example.com", 15) == 0);
+
+	// invalid padding — the leftover bits must be all ones (§5.2): after
+	// "302" (16 bits, exact) an extra 0x00 byte leaves 000 padding
+	static const uint8_t badpad[] = { 0x64, 0x02, 0x00 };
+	s = h2_huffman_decode_wrapper(badpad, (int64_t)sizeof(badpad), &len,
+	                              &consumed, &carry);
+	ASSERT_EQ("bad padding rejected", 1, carry);
+	ASSERT_EQ("bad padding error", H2_ERR_COMPRESSION_ERROR,
+	          (int64_t)(uintptr_t)s);
+
+	// the EOS symbol inside a string is a decoding error (§5.2)
+	static const uint8_t eos[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+	s = h2_huffman_decode_wrapper(eos, (int64_t)sizeof(eos), &len, &consumed,
+	                              &carry);
+	ASSERT_EQ("EOS symbol rejected", 1, carry);
 }
 
 // ── 7.4 — indexed header fields (§6.1) ─────────────────────────────
@@ -2047,20 +2294,24 @@ static void test_h2_hpack_dynamic_disabled(void) {
 	const uint8_t *next, *name, *value;
 	int64_t name_len, value_len, carry;
 
-	// literal with incremental indexing (§6.2.1) is rejected outright —
-	// it would add the field to the dynamic table
+	// literal with incremental indexing (§6.2.1) is decoded but never
+	// stored: the dynamic table max size is 0, so an entry "added" to it
+	// would be evicted immediately (curl encodes user-agent this way)
 	static const uint8_t w1[] = { 0x41, 0x05, 'h', 'e', 'l', 'l', 'o' };
 	next = h2_hpack_decode_field_wrapper(w1, &name, &name_len, &value,
 	                                     &value_len, &carry);
-	check_field_error("incremental indexing (indexed name) rejected", next,
-	                  carry);
+	check_field("incremental indexing (indexed name) decoded", carry, name,
+	            name_len, value, value_len, ":authority", "hello");
+	ASSERT_EQ("next at block end", 7, next - w1);
 
 	// incremental indexing with a new name
 	static const uint8_t w2[] = { 0x40, 0x05, ':', 'p', 'a', 't', 'h',
 	                              0x01, 'x' };
 	next = h2_hpack_decode_field_wrapper(w2, &name, &name_len, &value,
 	                                     &value_len, &carry);
-	check_field_error("incremental indexing (new name) rejected", next, carry);
+	check_field("incremental indexing (new name) decoded", carry, name,
+	            name_len, value, value_len, ":path", "x");
+	ASSERT_EQ("next at block end", 9, next - w2);
 
 	// a dynamic table size update of 0 is accepted as a no-op
 	static const uint8_t w3[] = { 0x20, 0x82 };
@@ -2127,16 +2378,17 @@ static void test_h2_hpack_block(void) {
 	ASSERT_EQ("carry set", 1, carry);
 	ASSERT_EQ("no field stored for the truncated block", 0, f[0].name_len);
 
-	// dynamic-table input at the block level poisons the connection: the
-	// size update is fine, but the incremental-indexing field that follows
-	// fails the whole block with COMPRESSION_ERROR and stores nothing
+	// a size update followed by an incremental-indexing literal decodes:
+	// the entry is never stored (the dynamic table max size is 0), so the
+	// block is accepted and the field is added to the output
 	static const uint8_t block4[] = { 0x20, 0x41, 0x05, 'h', 'e', 'l', 'l', 'o' };
 	reset_fields();
 	rc = h2_hpack_decode_block_wrapper(block4, sizeof(block4), &carry);
-	ASSERT_EQ("incremental indexing in block → COMPRESSION_ERROR",
-	          H2_ERR_COMPRESSION_ERROR, rc);
-	ASSERT_EQ("carry set", 1, carry);
-	ASSERT_EQ("no fields stored before the error", 0, f[0].name_len);
+	ASSERT_EQ("incremental indexing in block accepted — 1 field", 1, rc);
+	ASSERT_EQ("carry clear", 0, carry);
+	check_field("size update + incremental :authority hello", 0,
+	            f[0].name, f[0].name_len, f[0].value, f[0].value_len,
+	            ":authority", "hello");
 
 	// more than H2_HPACK_MAX_FIELDS (32) — the fixed output area is full
 	uint8_t many[33];
@@ -2146,6 +2398,41 @@ static void test_h2_hpack_block(void) {
 	ASSERT_EQ("33-field block rejected (decode area full)",
 	          H2_ERR_COMPRESSION_ERROR, rc);
 	ASSERT_EQ("carry set", 1, carry);
+}
+
+// ── whole header block — curl 8.7.1's exact GET / request ───────────
+// The block captured on the wire: indexed :method GET and :scheme http,
+// an incremental-indexed Huffman :authority, indexed :path /, an
+// incremental-indexed Huffman user-agent, and an incremental-indexed
+// plain accept — every representation a real client uses together.
+static void test_h2_hpack_block_curl(void) {
+	TEST_SUITE("h2_hpack_decode_block — curl's real request block");
+
+	static const uint8_t block[] = {
+		0x82, 0x86, 0x41, 0x8a, 0x08, 0x9d, 0x5c, 0x0b, 0x81, 0x70,
+		0xdc, 0x78, 0x20, 0x07, 0x84, 0x7a, 0x88, 0x25, 0xb6, 0x50,
+		0xc3, 0xcb, 0xba, 0xb8, 0x7f, 0x53, 0x03, 0x2a, 0x2f, 0x2a,
+	};
+	reset_fields();
+	int64_t carry;
+	int64_t count = h2_hpack_decode_block_wrapper(block, (int64_t)sizeof(block),
+	                                              &carry);
+	ASSERT_EQ("block decodes", 0, carry);
+	ASSERT_EQ("6 fields decoded", 6, count);
+
+	h2_hpack_field_t *f = h2_hpack_fields_addr();
+	check_field("field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+	check_field("field 1 :scheme http", 0, f[1].name, f[1].name_len,
+	            f[1].value, f[1].value_len, ":scheme", "http");
+	check_field("field 2 :authority (Huffman)", 0, f[2].name, f[2].name_len,
+	            f[2].value, f[2].value_len, ":authority", "127.0.0.1:8100");
+	check_field("field 3 :path /", 0, f[3].name, f[3].name_len,
+	            f[3].value, f[3].value_len, ":path", "/");
+	check_field("field 4 user-agent (Huffman)", 0, f[4].name, f[4].name_len,
+	            f[4].value, f[4].value_len, "user-agent", "curl/8.7.1");
+	check_field("field 5 accept", 0, f[5].name, f[5].name_len,
+	            f[5].value, f[5].value_len, "accept", "*/*");
 }
 
 // ── Stage 8 — HEADERS → HPACK → the common request ──────────────────
@@ -2453,6 +2740,491 @@ static void test_h2_request_equivalence(void) {
 	            memcmp(path1, REQ->path, (unsigned long)plen1) == 0);
 }
 
+// ── Stage 9 — the first working HTTP/2 GET ──────────────────────────
+
+// 9 — protocol detection: the first bytes decide HTTP/2 vs HTTP/1.
+static void test_h2_probe(void) {
+	TEST_SUITE("h2_probe — HTTP/2 preface detection (Phase 16 Option B)");
+
+	ASSERT_EQ("full preface", 1, h2_probe_wrapper(H2_PREFACE, H2_PREFACE_LEN));
+	ASSERT_EQ("partial preface (10 bytes)", 1, h2_probe_wrapper(H2_PREFACE, 10));
+	ASSERT_EQ("preface + extra bytes", 1,
+	          h2_probe_wrapper(H2_PREFACE, H2_PREFACE_LEN + 1));
+	static const char get[] = "GET / HTTP/1.1\r\n";
+	ASSERT_EQ("HTTP/1 GET rejected", 0,
+	          h2_probe_wrapper((const uint8_t *)get, LITLEN(get)));
+	ASSERT_EQ("empty buffer rejected", 0, h2_probe_wrapper(H2_PREFACE, 0));
+}
+
+// ── 9.2 — the HEADERS response encoder, raw wire bytes ──────────────
+static void test_h2_write_headers(void) {
+	TEST_SUITE("9.2 h2_write_headers — HEADERS frame (200, content-type, content-length)");
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	resource_type = 0;        // RES_NONE — no content-encoding
+	embedded_gzip = 0;
+	embedded_etag = 0;
+	embedded_etag_len = 0;
+
+	static const char ct[] = "text/html; charset=utf-8";
+	static const char body[] = "<h1>hello</h1>";
+	response_t resp = {
+		.status = 200,
+		.content_type = ct,
+		.content_type_len = LITLEN(ct),
+		.content_length = LITLEN(body),
+		.body = body,
+		.body_length = LITLEN(body),
+		.range_start = -1,
+		.range_end = -1,
+	};
+
+	int64_t carry = h2_write_headers_wrapper(fds[1], &resp, 1, 0);
+	ASSERT_EQ("carry clear", 0, carry);
+
+	close(fds[1]);
+	uint8_t got[512];
+	long n = 0;
+	while (n < (long)sizeof(got)) {
+		long r = read(fds[0], got + n, (unsigned long)(sizeof(got) - n));
+		if (r <= 0) break;
+		n += r;
+	}
+	close(fds[0]);
+
+	// block: 0x88 | 0x0f 0x10 0x18 ct | 0x0f 0x0d 0x02 "14" → 33 bytes
+	// (content-type = static 31, content-length = static 28 — both need
+	// the two-octet 4-bit-prefix name index)
+	// frame: 9-byte header (len 33, HEADERS, END_HEADERS, stream 1) + block
+	uint8_t expect[] = {
+		0x00, 0x00, 0x21, 0x01, 0x04, 0x00, 0x00, 0x00, 0x01,
+		0x88,
+		0x0f, 0x10, 0x18,
+		't', 'e', 'x', 't', '/', 'h', 't', 'm', 'l', ';', ' ',
+		'c', 'h', 'a', 'r', 's', 'e', 't', '=', 'u', 't', 'f', '-', '8',
+		0x0f, 0x0d, 0x02, '1', '4',
+	};
+	ASSERT_EQ("42 wire bytes", (long)sizeof(expect), n);
+	ASSERT_TRUE("bytes match the expected HEADERS frame",
+	            memcmp(got, expect, sizeof(expect)) == 0);
+}
+
+// 9.2 — the same 200 response, but with a gzipped embedded asset: the
+// encoder must add content-encoding: gzip (static index 26 → 0x0f 0x0b).
+// This exercises the resource_type/embedded_gzip globals path the real
+// server uses for gzipped assets like index.html.
+static void test_h2_write_headers_gzip(void) {
+	TEST_SUITE("9.2 h2_write_headers — content-encoding: gzip for gzipped assets");
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	resource_type = 1;        // RES_EMBEDDED
+	embedded_gzip = 1;
+	embedded_etag = 0;
+	embedded_etag_len = 0;
+
+	static const char ct[] = "text/html; charset=utf-8";
+	static const char body[] = "<h1>hello</h1>";
+	response_t resp = {
+		.status = 200,
+		.content_type = ct,
+		.content_type_len = LITLEN(ct),
+		.content_length = LITLEN(body),
+		.body = body,
+		.body_length = LITLEN(body),
+		.range_start = -1,
+		.range_end = -1,
+	};
+
+	int64_t carry = h2_write_headers_wrapper(fds[1], &resp, 1, 0);
+	ASSERT_EQ("carry clear", 0, carry);
+
+	close(fds[1]);
+	uint8_t got[512];
+	long n = 0;
+	while (n < (long)sizeof(got)) {
+		long r = read(fds[0], got + n, (unsigned long)(sizeof(got) - n));
+		if (r <= 0) break;
+		n += r;
+	}
+	close(fds[0]);
+
+	// block: 0x88 | ct | content-length | 0x0f 0x0b 0x04 "gzip" → 40 bytes
+	uint8_t expect[] = {
+		0x00, 0x00, 0x28, 0x01, 0x04, 0x00, 0x00, 0x00, 0x01,
+		0x88,
+		0x0f, 0x10, 0x18,
+		't', 'e', 'x', 't', '/', 'h', 't', 'm', 'l', ';', ' ',
+		'c', 'h', 'a', 'r', 's', 'e', 't', '=', 'u', 't', 'f', '-', '8',
+		0x0f, 0x0d, 0x02, '1', '4',
+		0x0f, 0x0b, 0x04, 'g', 'z', 'i', 'p',
+	};
+	ASSERT_EQ("49 wire bytes", (long)sizeof(expect), n);
+	ASSERT_TRUE("bytes match the gzip HEADERS frame",
+	            memcmp(got, expect, sizeof(expect)) == 0);
+}
+
+// bodyless status response — literal :status, END_STREAM on HEADERS.
+static void test_h2_write_headers_404(void) {
+	TEST_SUITE("9.2 h2_write_headers — 404 (literal :status, END_STREAM)");
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	resource_type = 0;
+	embedded_gzip = 0;
+	embedded_etag = 0;
+	embedded_etag_len = 0;
+
+	response_t resp = {
+		.status = 404,
+		.content_type = 0,
+		.content_type_len = 0,
+		.content_length = 0,
+		.body = 0,
+		.body_length = 0,
+		.range_start = -1,
+		.range_end = -1,
+	};
+
+	int64_t carry = h2_write_headers_wrapper(fds[1], &resp, 3, H2_FLAG_END_STREAM);
+	ASSERT_EQ("carry clear", 0, carry);
+
+	close(fds[1]);
+	uint8_t got[128];
+	long n = 0;
+	while (n < (long)sizeof(got)) {
+		long r = read(fds[0], got + n, (unsigned long)(sizeof(got) - n));
+		if (r <= 0) break;
+		n += r;
+	}
+	close(fds[0]);
+
+	// block: 0x08 0x03 "404" | 0x0f 0x0d 0x01 "0" → 9 bytes
+	// (content-length = static 28, the two-octet 4-bit-prefix name index)
+	uint8_t expect[] = {
+		0x00, 0x00, 0x09, 0x01, 0x05, 0x00, 0x00, 0x00, 0x03,
+		0x08, 0x03, '4', '0', '4',
+		0x0f, 0x0d, 0x01, '0',
+	};
+	ASSERT_EQ("18 wire bytes", (long)sizeof(expect), n);
+	ASSERT_TRUE("bytes match the expected 404 HEADERS frame",
+	            memcmp(got, expect, sizeof(expect)) == 0);
+}
+
+// ── 9.3 — the DATA encoder, raw wire bytes ──────────────────────────
+static void test_h2_write_body(void) {
+	TEST_SUITE("9.3 h2_write_body — single DATA frame + END_STREAM");
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	static const char body[] = "hello world";
+	response_t resp = {
+		.status = 200,
+		.content_type = 0,
+		.content_type_len = 0,
+		.content_length = LITLEN(body),
+		.body = body,
+		.body_length = LITLEN(body),
+		.range_start = -1,
+		.range_end = -1,
+	};
+
+	int64_t carry = h2_write_body_wrapper(fds[1], &resp, 1);
+	ASSERT_EQ("carry clear", 0, carry);
+
+	close(fds[1]);
+	uint8_t got[128];
+	long n = 0;
+	while (n < (long)sizeof(got)) {
+		long r = read(fds[0], got + n, (unsigned long)(sizeof(got) - n));
+		if (r <= 0) break;
+		n += r;
+	}
+	close(fds[0]);
+
+	uint8_t expect[] = {
+		0x00, 0x00, 0x0b, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // DATA len=11 END_STREAM
+		'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd',
+	};
+	ASSERT_EQ("20 wire bytes", (long)sizeof(expect), n);
+	ASSERT_TRUE("bytes match the expected DATA frame",
+	            memcmp(got, expect, sizeof(expect)) == 0);
+}
+
+// bodies larger than the max frame size split into multiple DATA frames;
+// only the final one carries END_STREAM. The response (16502 bytes) is
+// bigger than any default socket buffer on macOS, so a forked child
+// drains — and verifies — the socket while the parent writes.
+static void test_h2_write_body_chunked(void) {
+	TEST_SUITE("9.3 h2_write_body — multi-frame DATA (max frame size)");
+
+	static uint8_t big[H2_DEFAULT_MAX_FRAME_SIZE + 100];
+	memset(big, 'a', sizeof(big));
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+	response_t resp = {
+		.status = 200,
+		.content_type = 0,
+		.content_type_len = 0,
+		.content_length = (int64_t)sizeof(big),
+		.body = (const char *)big,
+		.body_length = (int64_t)sizeof(big),
+		.range_start = -1,
+		.range_end = -1,
+	};
+
+	int pid = fork();
+	if (pid == 0) {
+		// ── reader/verifier side ──
+		close(sv[1]);
+		uint8_t got[H2_DEFAULT_MAX_FRAME_SIZE + 128];
+		long n = 0;
+		while (n < (long)sizeof(got)) {
+			long r = read(sv[0], got + n, (unsigned long)(sizeof(got) - n));
+			if (r <= 0) break;
+			n += r;
+		}
+		close(sv[0]);
+
+		long total = (long)(2 * H2_WIRE_HEADER_LEN + sizeof(big));
+		if (n != total) _exit(1);
+
+		// frame 1 — the full max frame (16384 = 0x4000), no END_STREAM
+		if ((((uint32_t)got[0] << 16) | ((uint32_t)got[1] << 8) | got[2]) != 0x4000)
+			_exit(2);
+		if (got[3] != H2_FRAME_DATA || got[4] != 0) _exit(3);
+		if ((((uint32_t)got[5] << 24) | ((uint32_t)got[6] << 16) |
+		     ((uint32_t)got[7] << 8) | got[8]) != 1) _exit(4);
+		if (got[9] != 'a' || got[9 + H2_DEFAULT_MAX_FRAME_SIZE - 1] != 'a') _exit(5);
+
+		// frame 2 — the 100-byte remainder, END_STREAM
+		long off = H2_WIRE_HEADER_LEN + H2_DEFAULT_MAX_FRAME_SIZE;
+		if ((((uint32_t)got[off + 0] << 16) | ((uint32_t)got[off + 1] << 8) |
+		     got[off + 2]) != 100) _exit(6);
+		if (got[off + 3] != H2_FRAME_DATA ||
+		    got[off + 4] != H2_FLAG_END_STREAM) _exit(7);
+		if ((((uint32_t)got[off + 5] << 24) | ((uint32_t)got[off + 6] << 16) |
+		     ((uint32_t)got[off + 7] << 8) | got[off + 8]) != 1) _exit(8);
+		if (got[off + 9] != 'a') _exit(9);
+		_exit(0);
+	}
+
+	// ── writer side ──
+	close(sv[0]);
+	int64_t carry = h2_write_body_wrapper(sv[1], &resp, 1);
+	ASSERT_EQ("carry clear", 0, carry);
+	close(sv[1]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+
+	ASSERT_EQ("reader verified two DATA frames + END_STREAM", 0,
+	          (status >> 8) & 0xff);
+}
+
+// ── 9.1 — a built request is served through the existing machinery ──
+static void test_h2_process_request(void) {
+	TEST_SUITE("9.1 h2_process_request — common request → existing resource handler");
+
+	reset_streams();
+	reset_fields();
+	reset_conn(h2_conn_addr());
+
+	// a request stream: IDLE → OPEN → HALF_CLOSED_REMOTE (HEADERS + END_STREAM)
+	int64_t carry;
+	h2_stream_t *s = h2_stream_create_wrapper(1, h2_conn_addr(), &carry);
+	ASSERT_NOT_NULL("stream created", s);
+	h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry);
+	ASSERT_EQ("headers event ok", 0, carry);
+	h2_stream_event_wrapper(s, H2_EVENT_RECV_END_STREAM, &carry);
+	ASSERT_EQ("end_stream event ok", 0, carry);
+	ASSERT_EQ("stream is HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
+	          s->state);
+
+	// build the request: GET /index.html
+	h2_hpack_field_t f[2];
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "/index.html");
+	set_fields(f, 2);
+	ASSERT_EQ("request built", 0, h2_build_request_wrapper(1, 2, &carry));
+
+	// serve it through a pipe and capture the response frames
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	resource_type = 0;
+	embedded_gzip = 0;
+	embedded_etag = 0;
+	embedded_etag_len = 0;
+
+	ASSERT_EQ("process succeeds", 0, h2_process_request_wrapper(1, fds[1], &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	ASSERT_EQ("stream moved to CLOSED", H2_STREAM_CLOSED, s->state);
+
+	close(fds[1]);
+	uint8_t got[512];
+	long n = 0;
+	while (n < (long)sizeof(got)) {
+		long r = read(fds[0], got + n, (unsigned long)(sizeof(got) - n));
+		if (r <= 0) break;
+		n += r;
+	}
+	close(fds[0]);
+
+	// HEADERS (9) + block (33) = 42, DATA (9 + 17) = 26 → 68 total
+	ASSERT_EQ("68 response bytes", 68, n);
+
+	// HEADERS frame: len=0x21 (33), END_HEADERS, stream 1
+	ASSERT_EQ("headers length", 0x21,
+	          ((uint32_t)got[0] << 16) | ((uint32_t)got[1] << 8) | got[2]);
+	ASSERT_EQ("headers type", H2_FRAME_HEADERS, got[3]);
+	ASSERT_EQ("headers flags", H2_FLAG_END_HEADERS, got[4]);
+	ASSERT_EQ("headers stream", 1,
+	          ((uint32_t)got[5] << 24) | ((uint32_t)got[6] << 16) |
+	          ((uint32_t)got[7] << 8) | got[8]);
+	// HPACK block: :status 200 indexed, content-type (static 31),
+	// content-length (static 28) — both two-octet 4-bit-prefix indices
+	ASSERT_EQ(":status 200 indexed", 0x88, got[9]);
+	ASSERT_EQ("content-type name idx", 0x0f, got[10]);
+	ASSERT_EQ("content-type name idx cont", 0x10, got[11]);
+	ASSERT_EQ("content-type len", 24, got[12]);
+	ASSERT_STR_EQ("content-type value", "text/html; charset=utf-8",
+	              got + 13, 24);
+	ASSERT_EQ("content-length name idx", 0x0f, got[37]);
+	ASSERT_EQ("content-length name idx cont", 0x0d, got[38]);
+	ASSERT_EQ("content-length len", 2, got[39]);
+	ASSERT_STR_EQ("content-length value", "17", got + 40, 2);
+
+	// DATA frame: len=17, END_STREAM, stream 1, the stub's body
+	ASSERT_EQ("data length", 17,
+	          ((uint32_t)got[42] << 16) | ((uint32_t)got[43] << 8) | got[44]);
+	ASSERT_EQ("data type", H2_FRAME_DATA, got[45]);
+	ASSERT_EQ("data flags", H2_FLAG_END_STREAM, got[46]);
+	ASSERT_EQ("data stream", 1,
+	          ((uint32_t)got[47] << 24) | ((uint32_t)got[48] << 16) |
+	          ((uint32_t)got[49] << 8) | got[50]);
+	ASSERT_STR_EQ("body", "<h1>hello h2</h1>", got + 51, 17);
+}
+
+// ── 9.4 — the full connection loop over a real socketpair ───────────
+// Client sends preface + SETTINGS + HEADERS (GET /index.html, END_STREAM);
+// the server loop verifies the preface, sends its SETTINGS, serves the
+// request and closes when the client closes. The client side verifies
+// the exact response bytes and exits 0; the parent asserts that status.
+static void test_h2_connection_loop(void) {
+	TEST_SUITE("9.4 h2_connection_loop — preface + SETTINGS + HEADERS + DATA");
+
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+		printf("  ✗ socketpair() failed\n");
+		exit(2);
+	}
+
+	int pid = fork();
+	if (pid == 0) {
+		// ── client side ──
+		close(sv[0]);
+		uint8_t out[128], in[256];
+		long out_len = 0;
+
+		// the 24-byte connection preface
+		memcpy(out + out_len, H2_PREFACE, H2_PREFACE_LEN);
+		out_len += H2_PREFACE_LEN;
+		// client SETTINGS — empty payload, stream 0
+		put_wire_header(out + out_len, 0, H2_FRAME_SETTINGS, 0, 0);
+		out_len += H2_WIRE_HEADER_LEN;
+		// HEADERS — the exact block curl 8.7.1 sent for GET / (captured
+		// on the wire): indexed :method GET / :scheme http, a Huffman-
+		// coded :authority, indexed :path /, an incremental-indexed
+		// Huffman user-agent, and a plain accept — the full set of
+		// representations a real client uses
+		static const uint8_t block[] = {
+			0x82, 0x86, 0x41, 0x8a, 0x08, 0x9d, 0x5c, 0x0b, 0x81, 0x70,
+			0xdc, 0x78, 0x20, 0x07, 0x84, 0x7a, 0x88, 0x25, 0xb6, 0x50,
+			0xc3, 0xcb, 0xba, 0xb8, 0x7f, 0x53, 0x03, 0x2a, 0x2f, 0x2a,
+		};
+		put_wire_header(out + out_len, (uint32_t)sizeof(block), H2_FRAME_HEADERS,
+		                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS, 1);
+		out_len += H2_WIRE_HEADER_LEN;
+		memcpy(out + out_len, block, sizeof(block));
+		out_len += (long)sizeof(block);
+
+		long w = 0;
+		while (w < out_len) {
+			long r = write(sv[1], out + w, (unsigned long)(out_len - w));
+			if (r <= 0) _exit(1);
+			w += r;
+		}
+		// read the full response: SETTINGS (15) + HEADERS (42) + DATA (26)
+		long n = 0;
+		while (n < 83) {
+			long r = read(sv[1], in + n, (unsigned long)(83 - n));
+			if (r <= 0) break;
+			n += r;
+		}
+		if (n != 83) _exit(2);
+		// server SETTINGS: len=6, type=4, stream=0, entry id=1 value=0
+		if (in[0] != 0 || in[1] != 0 || in[2] != 6 ||
+		    in[3] != H2_FRAME_SETTINGS || in[4] != 0 ||
+		    in[5] != 0 || in[6] != 0 || in[7] != 0 || in[8] != 0)
+			_exit(3);
+		if (in[9] != 0 || in[10] != H2_SETTINGS_HEADER_TABLE_SIZE ||
+		    in[11] != 0 || in[12] != 0 || in[13] != 0 || in[14] != 0)
+			_exit(4);
+		// HEADERS: len=0x21 (33), type=1, flags=END_HEADERS, stream=1
+		if (in[15] != 0 || in[16] != 0 || in[17] != 0x21 ||
+		    in[18] != H2_FRAME_HEADERS || in[19] != H2_FLAG_END_HEADERS ||
+		    in[20] != 0 || in[21] != 0 || in[22] != 0 || in[23] != 1)
+			_exit(5);
+		// HPACK block: 0x88 | 0x0f 0x10 0x18 ct | 0x0f 0x0d 0x02 "17"
+		if (in[24] != 0x88 || in[25] != 0x0f || in[26] != 0x10 ||
+		    in[27] != 0x18 ||
+		    memcmp(in + 28, "text/html; charset=utf-8", 24) != 0 ||
+		    in[52] != 0x0f || in[53] != 0x0d || in[54] != 0x02 ||
+		    in[55] != '1' || in[56] != '7')
+			_exit(6);
+		// DATA: len=17, type=0, flags=END_STREAM, stream=1, body
+		if (in[57] != 0 || in[58] != 0 || in[59] != 17 ||
+		    in[60] != H2_FRAME_DATA || in[61] != H2_FLAG_END_STREAM ||
+		    in[62] != 0 || in[63] != 0 || in[64] != 0 || in[65] != 1)
+			_exit(7);
+		if (memcmp(in + 66, "<h1>hello h2</h1>", 17) != 0)
+			_exit(8);
+		close(sv[1]);
+		_exit(0);
+	}
+
+	// ── server side: run the loop with no pre-buffered bytes ──
+	close(sv[1]);
+	uint8_t in[512];
+	h2_connection_loop_wrapper(sv[0], in, 0);
+	close(sv[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+
+	// the child's exit code doubles as the verification result
+	int exit_code = (status >> 8) & 0xff;
+	ASSERT_EQ("client verified preface + SETTINGS + HEADERS + DATA", 0, exit_code);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -2481,15 +3253,26 @@ int main(void) {
 	test_h2_hpack_static_table();
 	test_h2_hpack_int();
 	test_h2_hpack_string();
+	test_h2_huffman();
 	test_h2_hpack_indexed();
 	test_h2_hpack_literal();
 	test_h2_hpack_dynamic_disabled();
 	test_h2_hpack_block();
+	test_h2_hpack_block_curl();
 	// Stage 8 — HEADERS → HPACK → the common request
 	test_h2_headers_hpack();
 	test_h2_pseudo_request();
 	test_h2_pseudo_validate();
 	test_h2_request_equivalence();
+	// Stage 9 — the first working HTTP/2 GET
+	test_h2_probe();
+	test_h2_write_headers();
+	test_h2_write_headers_gzip();
+	test_h2_write_headers_404();
+	test_h2_write_body();
+	test_h2_write_body_chunked();
+	test_h2_process_request();
+	test_h2_connection_loop();
 	test_summary();
 	return 0;
 }

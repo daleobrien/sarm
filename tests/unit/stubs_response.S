@@ -16,14 +16,35 @@
 .data
 .align 3
 
-// One empty entry (80 bytes) so lookup_embedded always returns not-found.
-// This means reply_status's error-page lookup never finds a page, which
-// matches the current build (no www/err/ files are embedded).
+// One tiny embedded entry so the HTTP/2 tests can resolve a real file
+// ("www/index.html"). The 80-byte entry layout mirrors embedded.S; the
+// linear scan in lookup_embedded compares path strings, so the hash is
+// ignored. Error-page lookups ("www/err/<code>.html") still miss, which
+// matches the current build and keeps the reply_status tests unchanged.
+stub_index_path:
+    .asciz "www/index.html"
+stub_index_path_end:
+stub_index_content:
+    .ascii "<h1>hello h2</h1>"
+stub_index_content_end:
+stub_index_ct:
+    .asciz "text/html; charset=utf-8"
+stub_index_ct_end:
+stub_index_etag:
+    .asciz "\"stub-etag\""
+stub_index_etag_end:
+
+.align 3
 embedded_files:
-    .skip 80
+    .8byte 0                                      // hash (linear scan ignores it)
+    .8byte stub_index_path, (stub_index_path_end - stub_index_path - 1)
+    .8byte stub_index_content, (stub_index_content_end - stub_index_content)
+    .8byte stub_index_ct, (stub_index_ct_end - stub_index_ct - 1)
+    .8byte 0                                      // gzip flag — raw content
+    .8byte stub_index_etag, (stub_index_etag_end - stub_index_etag - 1)
 
 embedded_count:
-    .quad 0
+    .quad 1
 
 .global embedded_files
 .global embedded_count
