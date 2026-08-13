@@ -43,9 +43,22 @@ TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
 TEST_RESPONSE := $(OBJ_DIR)/test_response
-TEST_HTTP2 := $(OBJ_DIR)/test_http2
+# HTTP/2 suites — one per stage group; all share test_h2_common.h.
+TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
+TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
+TEST_H2_STREAMS   := $(OBJ_DIR)/test_h2_streams
+TEST_H2_HPACK     := $(OBJ_DIR)/test_h2_hpack
+TEST_H2_REQUEST   := $(OBJ_DIR)/test_h2_request
+TEST_H2_RESPONSE  := $(OBJ_DIR)/test_h2_response
+TEST_H2_STATIC    := $(OBJ_DIR)/test_h2_static
+TEST_H2_FLOW      := $(OBJ_DIR)/test_h2_flow
+TEST_H2_MUX       := $(OBJ_DIR)/test_h2_mux
+TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 
-TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) $(TEST_HTTP2)
+TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
+	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
+	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
+	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT)
 
 all: test
 
@@ -162,22 +175,15 @@ $(TEST_REQUEST): test_request.c $(HARNESS) $(util_o) $(parse_o) $(data_o) $(file
 $(TEST_RESPONSE): test_response.c $(HARNESS) $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_o) $(data_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
 
-# test_http2: Stages 4-9 — frame engine + connection preface + stream
-# management (http2.S), minimal HPACK (h2_hpack.S), the HEADERS →
-# HPACK → common request pipeline, and the first working HTTP/2 GET.
-# h2_verify_preface reads the client preface and stores connection_mode
-# (data.S), h2_send_settings tail-calls write_all (util.S) to emit the
-# opening SETTINGS frame, the stream functions operate on the global
-# h2_streams table, and the HPACK decoder operates on the static table
-# and h2_hpack_fields in h2_hpack.S. Stage 8/9 connect the request to
-# the existing handlers, so parse_h2_path (parse.S), decode_url /
-# check_path_* (file.S) and lookup_embedded join the link — and since
-# Stage 9, h2_process_request → create_response (get.S) → h2_write_headers
-# / h2_write_body exercises the real response machinery, so header.o
-# (http1_write_response, reply_status) and stubs_response.o (child_end,
-# the embedded table) join like test_response.
-$(TEST_HTTP2): test_http2.c $(HARNESS) $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o) $(LDFLAGS) -o $@
+# HTTP/2 suites: one .c file per stage group, all linking the same
+# object set — the full Stage 4-14 stack (http2.o + h2_hpack.o + the
+# shared request/file/response helpers) plus stubs_response.o (the
+# embedded table, child_end). Every test_h2_*.c includes
+# test_h2_common.h, which must trigger a rebuild when it changes.
+H2_LIBS := $(http2_o) $(hpack_o) $(data_o) $(util_o) $(parse_o) $(file_o) $(header_o) $(get_o) $(stubs_resp_o)
+
+$(OBJ_DIR)/test_h2_%: test_h2_%.c $(HARNESS) test_h2_common.h $(H2_LIBS) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(H2_LIBS) $(LDFLAGS) -o $@
 
 # ── clean ───────────────────────────────────────────────────────────
 
