@@ -1,6 +1,7 @@
 // Unit tests for src/util.S assembly functions
-// Tests: atoi, atoi_n, itoa, memcpy, streqn, fnv1a_64
-// strlen is tested separately in test_strlen.c; streqn_i in test_streqn_i.c
+// Tests: atoi, atoi_n, itoa, memcpy, fnv1a_64
+// strlen is tested separately in test_strlen.c; streqn in test_streqn.c;
+// streqn_i in test_streqn_i.c
 //
 // NOTE: This file links against util.o which defines its own "strlen" with
 // a non-standard calling convention (arg in x1, not x0). Do NOT call libc
@@ -13,7 +14,6 @@
 
 extern int64_t atoi(const char *s)        __asm__("atoi");
 extern int64_t atoi_n(const char *s, int64_t len) __asm__("atoi_n");
-extern int64_t streqn(const char *a, const char *b, int64_t maxlen) __asm__("streqn");
 extern uint64_t fnv1a_64(const void *buf, int64_t len) __asm__("fnv1a_64");
 
 // ── inline asm wrappers ────────────────────────────────────────────
@@ -132,22 +132,6 @@ static void test_memcpy(void) {
 	ASSERT_TRUE("memcpy(32) match", memcmp(dst, src32, 32) == 0);
 }
 
-// ── tests: streqn ──────────────────────────────────────────────────
-
-static void test_streqn(void) {
-	TEST_SUITE("streqn (case-sensitive)");
-	ASSERT_EQ("streqn exact match",         1, streqn("hello", "hello", 10));
-	ASSERT_EQ("streqn mismatch",            0, streqn("hello", "world", 10));
-	ASSERT_EQ("streqn prefix match (len)",  1, streqn("hello", "hel", 3));
-	ASSERT_EQ("streqn limited no match",    0, streqn("hello", "help", 4));
-	ASSERT_EQ("streqn case mismatch",       0, streqn("Hello", "hello", 10));
-	ASSERT_EQ("streqn empty strings",       1, streqn("", "", 10));
-	ASSERT_EQ("streqn long match",          1, streqn("HTTP/1.1", "HTTP/1.1", 10));
-	ASSERT_EQ("streqn long mismatch",       0, streqn("HTTP/1.1", "HTTP/1.0", 10));
-	ASSERT_EQ("streqn null terminates",     1, streqn("ab", "ab", 100));
-	ASSERT_EQ("streqn different len",       0, streqn("abc", "ab", 100));
-}
-
 // ── tests: fnv1a_64 ────────────────────────────────────────────────
 
 static void test_fnv1a_64(void) {
@@ -173,7 +157,6 @@ int main(void) {
 	test_atoi_n();
 	test_itoa();
 	test_memcpy();
-	test_streqn();
 	test_fnv1a_64();
 	test_summary();
 	return 0;
