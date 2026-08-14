@@ -1,11 +1,16 @@
 // Unit tests for src/crypto/sha256.S
 //
-// The asm file exports two symbols:
+// The asm file exports two layers:
 //   sha256_h256 — the FIPS 180-4 initial hash state (8 x u32)
 //   sha256      — the SHA-256 compression function
 //     (state=x0, data=x1, nblocks=x2), which is *only* the compression
 //     step: data must be a whole number of 64-byte blocks, and the
 //     state at [x0] is updated in place.
+//   sha256_init / sha256_update / sha256_final — the streaming API
+//     (PLAN.MD §3.2): init seeds a SHA256_CTX_SIZE context, update
+//     absorbs arbitrary bytes, final pads (0x80 + zero + 64-bit
+//     big-endian bit length), compresses the last block(s), and writes
+//     the 32-byte big-endian digest.
 //
 // The asm symbols are bare (no leading underscore, matching the rest of
 // the codebase), so the C declarations below pin them with __asm__
@@ -17,12 +22,58 @@
 //   2. an independent plain-C SHA-256 implementation in this file,
 //      cross-checked over a length sweep, multi-block calls, streaming
 //      updates, and data alignment.
+// The streaming API is exercised end-to-end (no C-side padding):
+//   - context layout/init against the SHA256_CTX_* offsets in defs.S,
+//   - chunked updates must equal one-shot digests (PLAN.MD §3.2
+//     acceptance: SHA256("abc") == SHA256("a" + "bc") == SHA256("ab" + "c")),
+//   - every length 0..300 in several chunking patterns vs. the C
+//     reference, covering all padding boundaries (55/56/57/63/64/65/...),
+//   - the NIST 1,000,000 x 'a' vector streamed in chunks,
+//   - interleaved independent contexts.
 
 #include "test_harness.h"
 
 extern void sha256(uint32_t state[8], const void *data,
                    uint64_t nblocks) __asm__("sha256");
 extern const uint32_t sha256_h256[8] __asm__("sha256_h256");
+
+// ── streaming API (PLAN.MD §3.2) ────────────────────────────────────
+
+extern void sha256_init(void *ctx) __asm__("sha256_init");
+extern void sha256_update(void *ctx, const void *data,
+                          uint64_t len) __asm__("sha256_update");
+extern void sha256_final(void *ctx, void *digest) __asm__("sha256_final");
+
+// The context layout contract, mirrored from src/defs.S (SHA256_CTX_*).
+// test_sha256_ctx_layout() verifies these against the real labels in
+// src/crypto/data.S, so a drift in either place fails loudly.
+#define SHA256_CTX_STATE   0
+#define SHA256_CTX_BITLEN  32
+#define SHA256_CTX_BUF     40
+#define SHA256_CTX_BUFLEN  104
+#define SHA256_CTX_SIZE    112
+
+// Take the address of a pure-assembly symbol by name (mirrors
+// test_tls.c): C names get an underscore prefix on Mach-O, so a plain
+// extern declaration could not name these.
+#define ASM_SYM_ADDR(sym) ({ \
+	uintptr_t _addr; \
+	asm volatile( \
+		"adrp x0, " #sym "@PAGE\n\t" \
+		"add  x0, x0, " #sym "@PAGEOFF\n\t" \
+		"mov  %0, x0\n\t" \
+		: "=r"(_addr) \
+		: \
+		: "x0"); \
+	_addr; \
+})
+
+// offset of an asm field label from sha256_ctx
+#define SHA256_OFFSET(sym) \
+	((int64_t)ASM_SYM_ADDR(sym) - (int64_t)ASM_SYM_ADDR(sha256_ctx))
+
+#define ASSERT_SHA256_OFFSET(label, sym, expected) \
+	ASSERT_EQ(label, (int64_t)(expected), SHA256_OFFSET(sym))
 
 // ── independent C reference (FIPS 180-4) ─────────────────────────────
 
@@ -371,6 +422,279 @@ static void test_sha256_alignment(void) {
     ASSERT_EQ("all 16 alignments match reference", 1, ok);
 }
 
+// ── streaming API tests (PLAN.MD §3.2) ──────────────────────────────
+
+// Stream msg[0..len) through the asm streaming API, feeding it in
+// chunks that cycle through the given pattern. A zero-length message
+// still runs final (→ the empty-string digest).
+static void stream_digest(const uint8_t *msg, size_t len,
+                          const size_t *chunks, int nchunks,
+                          uint8_t digest[32]) {
+    static uint8_t ctx[SHA256_CTX_SIZE];
+    sha256_init(ctx);
+    size_t off = 0;
+    for (int i = 0; off < len; i++) {
+        size_t n = chunks[i % nchunks];
+        if (n > len - off)
+            n = len - off;
+        sha256_update(ctx, msg + off, n);
+        off += n;
+    }
+    sha256_final(ctx, digest);
+}
+
+static void test_sha256_ctx_layout(void) {
+    TEST_SUITE("sha256_ctx layout");
+    ASSERT_SHA256_OFFSET("sha256_ctx_state", sha256_ctx_state,
+                          SHA256_CTX_STATE);
+    ASSERT_SHA256_OFFSET("sha256_ctx_bitlen", sha256_ctx_bitlen,
+                          SHA256_CTX_BITLEN);
+    ASSERT_SHA256_OFFSET("sha256_ctx_buf", sha256_ctx_buf,
+                          SHA256_CTX_BUF);
+    ASSERT_SHA256_OFFSET("sha256_ctx_buflen", sha256_ctx_buflen,
+                          SHA256_CTX_BUFLEN);
+    // storage extent: last field + its size == SHA256_CTX_SIZE. If
+    // data.S's layout drifts from defs.S's size this catches it.
+    ASSERT_EQ("storage extent == SHA256_CTX_SIZE", SHA256_CTX_SIZE,
+              SHA256_OFFSET(sha256_ctx_buflen) + 8);
+    // the context is 16-byte aligned so the state ld1/st1 stay aligned
+    ASSERT_EQ("sha256_ctx 16-byte aligned", 0,
+              (int64_t)ASM_SYM_ADDR(sha256_ctx) % 16);
+}
+
+// init must fully reset a context — even one pre-filled with garbage
+// (so zeroing buf/bitlen/buflen is real, not luck of a zeroed global).
+static void test_sha256_init(void) {
+    TEST_SUITE("sha256_init");
+    // one extra byte past the context as a canary against overruns
+    static uint8_t ctx[SHA256_CTX_SIZE + 1];
+    memset(ctx, 0xFF, sizeof(ctx));
+
+    sha256_init(ctx);
+
+    static const uint32_t fips[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    };
+    int iv_ok = 1;
+    for (int i = 0; i < 8; i++)
+        if (((const uint32_t *)(void *)ctx)[i] != fips[i])
+            iv_ok = 0;
+    ASSERT_EQ("state == FIPS 180-4 IV", 1, iv_ok);
+    ASSERT_EQ("bitlen == 0", 0,
+              *(uint64_t *)(void *)(ctx + SHA256_CTX_BITLEN));
+    ASSERT_EQ("buflen == 0", 0,
+              *(uint64_t *)(void *)(ctx + SHA256_CTX_BUFLEN));
+    {
+        static const uint8_t zeros[64] = {0};
+        ASSERT_EQ("buf zeroed", 0,
+                  memcmp(zeros, ctx + SHA256_CTX_BUF, 64));
+    }
+    // nothing outside the context may be written
+    ASSERT_EQ("guards untouched", 0xFF, ctx[SHA256_CTX_SIZE]);
+}
+
+// PLAN.MD §3.2 acceptance: SHA256("abc") == SHA256("a" + "bc") ==
+// SHA256("ab" + "c") — and all must equal the NIST vector.
+static void test_sha256_streaming_equivalence(void) {
+    TEST_SUITE("streaming equivalence (abc split)");
+    uint8_t d[32];
+    static const size_t one[] = { 3 };
+    static const size_t a_bc[] = { 1, 2 };
+    static const size_t ab_c[] = { 2, 1 };
+    static const size_t a_b_c[] = { 1, 1, 1 };
+
+    stream_digest((const uint8_t *)"abc", 3, one, 1, d);
+    ASSERT_TRUE("\"abc\" == NIST KAT", digest_eq(KAT_ABC, d));
+    stream_digest((const uint8_t *)"abc", 3, a_bc, 2, d);
+    ASSERT_TRUE("\"a\"+\"bc\" == NIST KAT", digest_eq(KAT_ABC, d));
+    stream_digest((const uint8_t *)"abc", 3, ab_c, 2, d);
+    ASSERT_TRUE("\"ab\"+\"c\" == NIST KAT", digest_eq(KAT_ABC, d));
+    stream_digest((const uint8_t *)"abc", 3, a_b_c, 3, d);
+    ASSERT_TRUE("\"a\"+\"b\"+\"c\" == NIST KAT", digest_eq(KAT_ABC, d));
+}
+
+// Every length 0..300, several chunking patterns each — all must match
+// the C reference. Hits every block/padding boundary (55/56/57/63/64/65,
+// 119/120/121, 127/128/129) in the update and final paths.
+static void test_sha256_streaming_sweep(void) {
+    TEST_SUITE("streaming chunking vs reference (0-300)");
+    static uint8_t buf[400];
+    uint8_t ref_d[32], got[32];
+    static const size_t pats[][4] = {
+        { 1, 1, 1, 1 },      // one byte at a time
+        { 3, 3, 3, 3 },      // small odd chunks
+        { 7, 7, 7, 7 },      // crosses every block boundary
+        { 55, 1, 8, 200 },   // ends exactly at the padding edge
+        { 56, 8, 8, 200 },   // padding lands at a fresh block start
+        { 63, 1, 1, 200 },   // forces the extra-block padding path
+        { 64, 64, 64, 64 },  // whole blocks only
+        { 100, 100, 100, 100 }, // irregular block splits
+    };
+    const char *names[] = {
+        "1-byte", "3-byte", "7-byte", "55,1,8",
+        "56,8", "63,1", "64-byte", "100-byte",
+    };
+
+    for (int i = 0; i < 400; i++)
+        buf[i] = (uint8_t)(i * 7 + 3);
+
+    for (size_t pi = 0; pi < sizeof(pats) / sizeof(pats[0]); pi++) {
+        int ok = 1;
+        for (size_t len = 0; len <= 300 && ok; len++) {
+            ref_digest(buf, len, ref_d);
+            stream_digest(buf, len, pats[pi], 4, got);
+            if (!digest_eq(ref_d, got)) {
+                _FAIL("%s chunks, len %zu — digest mismatch",
+                      names[pi], len);
+                ok = 0;
+            }
+        }
+        if (ok)
+            _PASS(names[pi]);
+    }
+
+    // a different byte pattern through a couple of the chunk sets
+    for (int i = 0; i < 400; i++)
+        buf[i] = (uint8_t)(i ^ 0xA5);
+    {
+        int ok = 1;
+        for (size_t len = 0; len <= 300 && ok; len++) {
+            ref_digest(buf, len, ref_d);
+            stream_digest(buf, len, pats[1], 4, got);
+            if (!digest_eq(ref_d, got)) {
+                _FAIL("0xA5 pattern, 3-byte chunks, len %zu", len);
+                ok = 0;
+            }
+        }
+        if (ok)
+            _PASS("0xA5 pattern, 3-byte chunks");
+    }
+}
+
+// The NIST 1,000,000 x 'a' vector, streamed in odd-sized chunks —
+// exercises the multi-block update loop over 15,625 blocks.
+static void test_sha256_streaming_million(void) {
+    TEST_SUITE("streaming 1,000,000 x 'a'");
+    static uint8_t million_a[1000000];
+    for (int i = 0; i < 1000000; i++)
+        million_a[i] = 'a';
+    uint8_t got[32];
+    static const size_t pats[][2] = {
+        { 333, 333 },        // 333-byte chunks (1M = 333*3003 + 1)
+        { 4096, 7 },         // big chunks with a small tail pattern
+        { 64, 1 },           // exact blocks plus singles
+    };
+    for (size_t pi = 0; pi < sizeof(pats) / sizeof(pats[0]); pi++) {
+        stream_digest(million_a, sizeof(million_a), pats[pi], 2, got);
+        char label[48];
+        snprintf(label, sizeof(label), "chunk pattern %zu", pi);
+        ASSERT_TRUE(label, digest_eq(KAT_MILLION_A, got));
+    }
+}
+
+// Two independent contexts fed alternately must not interfere — guards
+// against any hidden shared state inside the streaming API.
+static void test_sha256_streaming_interleaved(void) {
+    TEST_SUITE("interleaved contexts");
+    static uint8_t ctxA[SHA256_CTX_SIZE], ctxB[SHA256_CTX_SIZE];
+    static uint8_t msgA[300], msgB[300];
+    for (int i = 0; i < 300; i++) {
+        msgA[i] = (uint8_t)(i * 11 + 1);
+        msgB[i] = (uint8_t)(i * 19 + 7);
+    }
+    uint8_t wantA[32], wantB[32], gotA[32], gotB[32];
+    ref_digest(msgA, sizeof(msgA), wantA);
+    ref_digest(msgB, sizeof(msgB), wantB);
+
+    sha256_init(ctxA);
+    sha256_init(ctxB);
+    for (size_t off = 0; off < sizeof(msgA);) {
+        size_t n = sizeof(msgA) - off;
+        if (n > 7) n = 7;
+        sha256_update(ctxA, msgA + off, n);
+        sha256_update(ctxB, msgB + off, n);
+        off += n;
+    }
+    sha256_final(ctxA, gotA);
+    sha256_final(ctxB, gotB);
+
+    ASSERT_TRUE("context A matches reference", digest_eq(wantA, gotA));
+    ASSERT_TRUE("context B matches reference", digest_eq(wantB, gotB));
+}
+
+// update(ctx, NULL, 0) must be a no-op: init + final still yields the
+// empty-string digest, and a zero-length update between real updates
+// must not change anything.
+static void test_sha256_streaming_empty_updates(void) {
+    TEST_SUITE("zero-length updates");
+    static uint8_t ctx[SHA256_CTX_SIZE];
+    uint8_t d[32], want[32];
+    ref_digest((const uint8_t *)"", 0, want);
+
+    sha256_init(ctx);
+    sha256_update(ctx, NULL, 0);
+    sha256_final(ctx, d);
+    ASSERT_TRUE("empty message, empty update == empty digest",
+                digest_eq(want, d));
+
+    ref_digest((const uint8_t *)"abc", 3, want);
+    sha256_init(ctx);
+    sha256_update(ctx, "a", 1);
+    sha256_update(ctx, NULL, 0);
+    sha256_update(ctx, "bc", 2);
+    sha256_final(ctx, d);
+    ASSERT_TRUE("empty update between real updates is a no-op",
+                digest_eq(want, d));
+}
+
+// A context must be reusable: final, then init again, then hash the
+// same message again — identical digests.
+static void test_sha256_streaming_reuse(void) {
+    TEST_SUITE("context reuse after final");
+    static uint8_t ctx[SHA256_CTX_SIZE];
+    static uint8_t msg[200];
+    for (int i = 0; i < 200; i++)
+        msg[i] = (uint8_t)(i * 3 + 2);
+    uint8_t d1[32], d2[32], want[32];
+    ref_digest(msg, sizeof(msg), want);
+
+    sha256_init(ctx);
+    sha256_update(ctx, msg, sizeof(msg));
+    sha256_final(ctx, d1);
+    ASSERT_TRUE("first use matches reference", digest_eq(want, d1));
+
+    sha256_init(ctx);
+    sha256_update(ctx, msg, sizeof(msg));
+    sha256_final(ctx, d2);
+    ASSERT_TRUE("second use after re-init matches reference",
+                digest_eq(want, d2));
+}
+
+// The streaming update path reads through byte loads (alignment-agnostic),
+// but sweep the input offset to guard the whole pipeline.
+static void test_sha256_streaming_alignment(void) {
+    TEST_SUITE("streaming data alignment (offsets 0-15)");
+    static uint8_t backing[512 + 16];
+    static uint8_t msg[300];
+    for (int i = 0; i < 300; i++)
+        msg[i] = (uint8_t)(i * 5 + 9);
+    uint8_t want[32], got[32];
+    ref_digest(msg, sizeof(msg), want);
+    static const size_t pat[] = { 63, 1, 200, 64 };  // mixed sizes
+
+    int ok = 1;
+    for (int off = 0; off <= 15 && ok; off++) {
+        memcpy(backing + off, msg, sizeof(msg));
+        stream_digest(backing + off, sizeof(msg), pat, 4, got);
+        if (!digest_eq(want, got)) {
+            ok = 0;
+            _FAIL("offset %d — digest mismatch", off);
+        }
+    }
+    ASSERT_EQ("all 16 alignments match reference", 1, ok);
+}
+
 int main(void) {
     test_sha256_iv();
     test_sha256_known_vectors();
@@ -378,6 +702,15 @@ int main(void) {
     test_sha256_block_count();
     test_sha256_streaming();
     test_sha256_alignment();
+    test_sha256_ctx_layout();
+    test_sha256_init();
+    test_sha256_streaming_equivalence();
+    test_sha256_streaming_sweep();
+    test_sha256_streaming_million();
+    test_sha256_streaming_interleaved();
+    test_sha256_streaming_empty_updates();
+    test_sha256_streaming_reuse();
+    test_sha256_streaming_alignment();
     test_summary();
     return 0;
 }

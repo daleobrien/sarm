@@ -893,3 +893,18 @@
 .equ TLS_ALPN_LEN,          416 // u64 — negotiated ALPN name length (0 = none)
 .equ TLS_ALPN,              424 // 16 B — negotiated ALPN name ("h2")
 .equ TLS_STATE_SIZE,        440
+
+// ── SHA-256 streaming context (sha256_ctx) ──────────────────────────
+// Streaming SHA-256 (PLAN.MD §3.2): sha256_init / sha256_update /
+// sha256_final operate on this fixed layout. Storage lives in
+// src/crypto/data.S as `sha256_ctx`, with one sha256_ctx_* label per
+// field so the unit test (test_sha256.c) can verify each offset against
+// real storage. State words are plain native u32s holding big-endian
+// values — the exact format sha256_h256 / sha256 use — so the
+// compression function can work on the context in place.
+.equ SHA256_CTX_STATE,   0   // 32 B — H0..H7 (native u32, big-endian value)
+.equ SHA256_CTX_BITLEN,  32  // u64 — total message bits so far (FIPS 180-4
+                             //   length field, mod 2^64)
+.equ SHA256_CTX_BUF,     40  // 64 B — partial block (0..63 valid bytes)
+.equ SHA256_CTX_BUFLEN,  104 // u64 — valid bytes in BUF
+.equ SHA256_CTX_SIZE,    112
