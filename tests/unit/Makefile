@@ -48,6 +48,7 @@ TEST_RESPONSE := $(OBJ_DIR)/test_response
 TEST_STR_LEN := $(OBJ_DIR)/test_strlen
 TEST_STREQN := $(OBJ_DIR)/test_streqn
 TEST_STREQN_I := $(OBJ_DIR)/test_streqn_i
+TEST_MEMCPY := $(OBJ_DIR)/test_memcpy
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -62,7 +63,7 @@ TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
-	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) \
+	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -166,6 +167,12 @@ $(TEST_STREQN): test_streqn.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 # test_streqn_i: only needs util (pure functions).
 # streqn_i uses the standard ABI, so the C test code calls it directly.
 $(TEST_STREQN_I): test_streqn_i.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
+
+# test_memcpy: only needs util (pure functions).
+# memcpy uses the standard ABI, so the C test code calls it via an
+# inline asm wrapper (mirrors test_strlen.c).
+$(TEST_MEMCPY): test_memcpy.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.

@@ -1,7 +1,7 @@
 // Unit tests for src/util.S assembly functions
-// Tests: atoi, atoi_n, itoa, memcpy, fnv1a_64
+// Tests: atoi, atoi_n, itoa, fnv1a_64
 // strlen is tested separately in test_strlen.c; streqn in test_streqn.c;
-// streqn_i in test_streqn_i.c
+// streqn_i in test_streqn_i.c; memcpy in test_memcpy.c
 //
 // NOTE: This file links against util.o which defines its own "strlen" with
 // a non-standard calling convention (arg in x1, not x0). Do NOT call libc
@@ -32,19 +32,6 @@ static inline void itoa_wrapper(int64_t n, const char **out_ptr, int64_t *out_le
 	);
 	*out_ptr = ptr;
 	*out_len = len;
-}
-
-// memcpy(dst=x0, src=x1, len=x2) — standard ABI, matches C.
-static inline void memcpy_asm_wrapper(void *dst, const void *src, int64_t len) {
-	asm volatile(
-		"mov x0, %0\n"
-		"mov x1, %1\n"
-		"mov x2, %2\n"
-		"bl memcpy\n"
-		:
-		: "r"(dst), "r"(src), "r"(len)
-		: "x0", "x1", "x2", "x3", "x4", "memory"
-	);
 }
 
 // ── tests: atoi ────────────────────────────────────────────────────
@@ -109,29 +96,6 @@ static void test_itoa(void) {
 	ASSERT_STR_EQ("itoa(big)", "1234567890", ptr, len);
 }
 
-// ── tests: memcpy (asm version) ────────────────────────────────────
-
-static void test_memcpy(void) {
-	TEST_SUITE("memcpy (asm)");
-	char dst[64];
-
-	memset(dst, 0xFF, sizeof(dst));
-	memcpy_asm_wrapper(dst, "hello", 0);
-	ASSERT_EQ("memcpy(0 bytes) dst unchanged",
-		(int64_t)(unsigned char)dst[0], (int64_t)0xFF);
-
-	memcpy_asm_wrapper(dst, "hello", 5);
-	ASSERT_TRUE("memcpy(5) match", memcmp(dst, "hello", 5) == 0);
-
-	const char *src16 = "0123456789ABCDEF";
-	memcpy_asm_wrapper(dst, src16, 16);
-	ASSERT_TRUE("memcpy(16) match", memcmp(dst, src16, 16) == 0);
-
-	const char *src32 = "abcdefghijklmnopqrstuvwxyz012345";
-	memcpy_asm_wrapper(dst, src32, 32);
-	ASSERT_TRUE("memcpy(32) match", memcmp(dst, src32, 32) == 0);
-}
-
 // ── tests: fnv1a_64 ────────────────────────────────────────────────
 
 static void test_fnv1a_64(void) {
@@ -156,7 +120,6 @@ int main(void) {
 	test_atoi();
 	test_atoi_n();
 	test_itoa();
-	test_memcpy();
 	test_fnv1a_64();
 	test_summary();
 	return 0;
