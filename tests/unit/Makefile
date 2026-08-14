@@ -45,6 +45,7 @@ TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
 TEST_RESPONSE := $(OBJ_DIR)/test_response
+TEST_STR_LEN := $(OBJ_DIR)/test_strlen
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -59,6 +60,7 @@ TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
+	$(TEST_STR_LEN) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -147,6 +149,11 @@ HARNESS := test_harness.h
 # test_util: only needs util (pure functions).
 # The C test code uses inline asm wrappers to call asm functions.
 $(TEST_UTIL): test_util.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
+
+# test_strlen: only needs util (pure functions).
+# The C test code calls asm strlen via an inline asm wrapper.
+$(TEST_STR_LEN): test_strlen.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.

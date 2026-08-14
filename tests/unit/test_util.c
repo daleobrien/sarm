@@ -1,5 +1,6 @@
 // Unit tests for src/util.S assembly functions
-// Tests: atoi, atoi_n, itoa, strlen, memcpy, streqn, streqn_i, fnv1a_64
+// Tests: atoi, atoi_n, itoa, memcpy, streqn, streqn_i, fnv1a_64
+// strlen is tested separately in test_strlen.c
 //
 // NOTE: This file links against util.o which defines its own "strlen" with
 // a non-standard calling convention (arg in x1, not x0). Do NOT call libc
@@ -45,20 +46,6 @@ static inline void memcpy_asm_wrapper(void *dst, const void *src, int64_t len) {
 		: "r"(dst), "r"(src), "r"(len)
 		: "x0", "x1", "x2", "x3", "x4", "memory"
 	);
-}
-
-// strlen(s=x1) → x0. Non-standard ABI: arg in x1.
-static inline int64_t strlen_asm_call(const char *s) {
-	int64_t result;
-	asm volatile(
-		"mov x1, %1\n"
-		"bl strlen\n"
-		"mov %0, x0\n"
-		: "=r"(result)
-		: "r"(s)
-		: "x0", "x1", "x3", "memory"
-	);
-	return result;
 }
 
 // ── tests: atoi ────────────────────────────────────────────────────
@@ -121,16 +108,6 @@ static void test_itoa(void) {
 	itoa_wrapper(1234567890, &ptr, &len);
 	ASSERT_EQ("itoa(big) len",  10, len);
 	ASSERT_STR_EQ("itoa(big)", "1234567890", ptr, len);
-}
-
-// ── tests: strlen (asm version, x1 ABI) ────────────────────────────
-
-static void test_strlen(void) {
-	TEST_SUITE("strlen (asm, x1 ABI)");
-	ASSERT_EQ("strlen(\"\")",        0,  strlen_asm_call(""));
-	ASSERT_EQ("strlen(\"a\")",       1,  strlen_asm_call("a"));
-	ASSERT_EQ("strlen(\"hello\")",   5,  strlen_asm_call("hello"));
-	ASSERT_EQ("strlen(\"hello world\")", 11, strlen_asm_call("hello world"));
 }
 
 // ── tests: memcpy (asm version) ────────────────────────────────────
@@ -231,7 +208,6 @@ int main(void) {
 	test_atoi();
 	test_atoi_n();
 	test_itoa();
-	test_strlen();
 	test_memcpy();
 	test_streqn();
 	test_streqn_i();

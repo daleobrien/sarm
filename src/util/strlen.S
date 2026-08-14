@@ -21,39 +21,55 @@
 //   none
 // ─────────────────────────────────────────────────────────────────────
 
+
 .text
 .align 4
 .global strlen
 strlen:
-    mov x0, x1                  // Copy start address to track progress
+    mov     x0, x1                  // x0 tracks our current position
 
-Lneon_loop:
-    ldr q0, [x0]                // Load 16 bytes from current string position
-    cmeq v1.16b, v0.16b, #0     // Set lane bytes to 0xFF where a null byte is found
-    umaxv b2, v1.16b            // Collapse vector: get max byte value across all 16 lanes
-    umov w3, v2.b[0]            // CORRECTED: Extract lane 0 from vector to GPR
-    cbnz w3, Lfound             // If non-zero, at least one null terminator was found
-    add x0, x0, #16             // Advance pointer by 16 bytes
-    b Lneon_loop                // Continue loop
+    // ─── 1. PAGE-SAFE ALIGNMENT ───
+    // Align pointer to 16 bytes to prevent illegal page crossings
+    ands    x2, x0, #15             // Check alignment offset
+    b.eq    Lloop_start             // If already aligned, jump to loop
 
-Lfound:
-    // Pinpoint the exact null byte position within the 16-byte block
-    umov x2, v1.d[0]            // CORRECTED: Extract lower 8 bytes (lanes 0-7)
-    cbnz x2, Llower_half        // If non-zero, null byte is within first 8 bytes
+    bic     x0, x0, #15             // Align pointer down to 16-byte boundary
+    ldr     q0, [x0]                // Safe load (stays within the same page)
+    cmeq    v1.16b, v0.16b, #0      // Mask NUL bytes
+    shrn    v2.8b, v1.8h, #4        // Pack mask
+    mov     x3, v2.d[0]             // Move to GPR
 
-    umov x2, v1.d[1]            // CORRECTED: Extract upper 8 bytes (lanes 8-15)
-    rbit x2, x2                 // Reverse bits to find trailing zeros
-    clz x2, x2                  // Count leading zeros
-    lsr x2, x2, #3              // Convert bit count to byte index (divide by 8)
-    add x0, x0, #8              // Offset by 8 bytes for upper half
-    add x0, x0, x2              // Add exact byte index within upper half
-    sub x0, x0, x1              // Compute total length
+    // Shift out the junk bytes from before the string start
+    lsl     x2, x2, #2              // 4 bits per byte due to shrn
+    lsr     x3, x3, x2              // Clear out bytes before string start
+    cbz     x3, Ladvance_alignment  // If no NUL found in unaligned part, proceed
+
+    // NUL found in the initial unaligned fragment
+    rbit    x3, x3
+    clz     x3, x3
+    lsr     x3, x3, #2              // Convert back to byte count
+    mov     x0, x3                  // Return directly
     ret
 
-Llower_half:
-    rbit x2, x2                 // Reverse bits to find trailing zeros
-    clz x2, x2                  // Count leading zeros
-    lsr x2, x2, #3              // Convert bit count to byte index
-    add x0, x0, x2              // Add exact byte index within lower half
-    sub x0, x0, x1              // Compute total length
+Ladvance_alignment:
+    add     x0, x0, #16             // Advance to the now-aligned loop pointer
+
+Lloop_start:
+    // ─── 2. MAIN OPTIMISED LOOP ───
+Lneon_loop:
+    ldr     q0, [x0]
+    cmeq    v1.16b, v0.16b, #0
+    shrn    v2.8b, v1.8h, #4
+    mov     x2, v2.d[0]
+    cbnz    x2, Lfound              // Exit loop if NUL found
+    add     x0, x0, #16
+    b       Lneon_loop
+
+    // ─── 3. TAIL ELEMENT PINPOINTING ───
+Lfound:
+    rbit    x2, x2                  // Bit-reverse the packed mask
+    clz     x2, x2                  // Count leading zeros
+    lsr     x2, x2, #2              // Divide by 4 (since shrn used 4 bits per lane)
+    add     x0, x0, x2              // Exact address of NUL
+    sub     x0, x0, x1              // Compute length (End - Start)
     ret
