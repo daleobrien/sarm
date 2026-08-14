@@ -1,23 +1,33 @@
-// sha256_armv8.s
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: sha256
 //
-// SHA-256 compression function using the ARMv8 SHA2 Crypto Extensions
-// (SHA256H, SHA256H2, SHA256SU0, SHA256SU1). Apple Silicon (and any
-// modern ARMv8.0+ core with the Cryptographic Extension) has these
-// natively -- no libc, no external crypto library needed.
+// Description: SHA-256 compression function using the ARMv8 SHA2 Crypto
+//   Extensions (SHA256H, SHA256H2, SHA256SU0, SHA256SU1). Processes one
+//   or more 64-byte message blocks and folds them into the 32-byte digest
+//   state at [x0]. No libc or external crypto library required.
 //
-// AAPCS64 calling convention:
-//   x0 = pointer to 32-byte state {H0..H7}, stored as two 16-byte
+//   This is *only* the compression function: padding the message to a
+//   multiple of 64 bytes (0x80 byte, zero pad, 64-bit big-endian bit
+//   length) is a separate, non-crypto-extension step.
+//
+// Input/Arguments:
+//   x0 — pointer to 32-byte state {H0..H7}, stored as two 16-byte
 //        vectors: ABCD (bytes 0-15) and EFGH (bytes 16-31), each word
-//        big-endian-value-in-native-u32 (i.e. plain host u32s).
-//   x1 = pointer to input message, a multiple of 64-byte blocks
-//   x2 = number of 64-byte blocks to process
+//        big-endian-value-in-native-u32 (i.e. plain host u32s)
+//   x1 — pointer to input message; length must be a multiple of 64 bytes
+//   x2 — number of 64-byte blocks to process (0 = no-op, returns early)
 //
-// On return, the state at [x0] has been updated in place.
+// Output/Returns:
+//   none (void) - the updated 32-byte state is written back to [x0]
+//                 in place
 //
-// NOTE: this is *only* the compression function. Padding the message
-// to a multiple of 64 bytes (0x80 byte, zero pad, 64-bit bit-length
-// in big-endian) is a separate, non-crypto-extension step -- ask if
-// you want that written too.
+// Clobbered Registers:
+//   x1, x2, x3, x4, v0-v7, v16, v18, v19, NZCV
+//
+// Stack Usage:
+//   none - leaf function, no stack frame allocated
+//
+// ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 4
