@@ -36,7 +36,12 @@ http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(wildcard .
 h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../src/h2/*.S))
 hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
 crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(wildcard ../../src/crypto/*.S))
+transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
 data_objs    := $(OBJ_DIR)/data.o
+
+# util/write_all.S now tail-calls transport_write, so any test binary that
+# links the util objects must also link the transport module.
+util_objs += $(transport_objs)
 stubs_objs   := $(OBJ_DIR)/stubs.o
 stubs_resp_objs := $(OBJ_DIR)/stubs_response.o
 
@@ -116,7 +121,7 @@ build: $(TESTS)
 # The per-module objects are only ever prerequisites of the test binaries,
 # so GNU make treats them as intermediates and deletes them after each
 # link — forcing a full recompile on every `make test`. Keep them.
-.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs)
+.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs)
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -142,6 +147,9 @@ $(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
