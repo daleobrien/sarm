@@ -51,6 +51,7 @@ TEST_STREQN_I := $(OBJ_DIR)/test_streqn_i
 TEST_MEMCPY := $(OBJ_DIR)/test_memcpy
 TEST_ITOA := $(OBJ_DIR)/test_itoa
 TEST_FNV1A_64 := $(OBJ_DIR)/test_fnv1a_64
+TEST_ATOI := $(OBJ_DIR)/test_atoi
 TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
@@ -67,7 +68,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI_N) \
+	$(TEST_ATOI) $(TEST_ATOI_N) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -153,9 +154,14 @@ $(stubs_resp_objs): stubs_response.S | $(OBJ_DIR)
 # each link rule to force a rebuild when the harness changes.
 HARNESS := test_harness.h
 
-# test_util: only needs util (pure functions).
-# The C test code uses inline asm wrappers to call asm functions.
+# test_util: only needs util (pure functions). All suites have moved out
+# to dedicated files; this binary just runs the (empty) summary.
 $(TEST_UTIL): test_util.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
+
+# test_atoi: only needs util (pure functions).
+# atoi uses the standard ABI, so the C test code calls it directly.
+$(TEST_ATOI): test_atoi.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_strlen: only needs util (pure functions).
