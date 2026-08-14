@@ -1,7 +1,7 @@
 // Unit tests for src/util.S assembly functions
-// Tests: atoi, atoi_n, itoa, fnv1a_64
+// Tests: atoi, atoi_n, fnv1a_64
 // strlen is tested separately in test_strlen.c; streqn in test_streqn.c;
-// streqn_i in test_streqn_i.c; memcpy in test_memcpy.c
+// streqn_i in test_streqn_i.c; memcpy in test_memcpy.c; itoa in test_itoa.c
 //
 // NOTE: This file links against util.o which defines its own "strlen" with
 // a non-standard calling convention (arg in x1, not x0). Do NOT call libc
@@ -15,24 +15,6 @@
 extern int64_t atoi(const char *s)        __asm__("atoi");
 extern int64_t atoi_n(const char *s, int64_t len) __asm__("atoi_n");
 extern uint64_t fnv1a_64(const void *buf, int64_t len) __asm__("fnv1a_64");
-
-// ── inline asm wrappers ────────────────────────────────────────────
-
-// itoa(n=x0) → (ptr=x0, len=x1)
-static inline void itoa_wrapper(int64_t n, const char **out_ptr, int64_t *out_len) {
-	const char *ptr; int64_t len;
-	asm volatile(
-		"mov x0, %2\n"
-		"bl itoa\n"
-		"mov %0, x0\n"
-		"mov %1, x1\n"
-		: "=r"(ptr), "=r"(len)
-		: "r"(n)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "memory"
-	);
-	*out_ptr = ptr;
-	*out_len = len;
-}
 
 // ── tests: atoi ────────────────────────────────────────────────────
 
@@ -65,37 +47,6 @@ static void test_atoi_n(void) {
 	ASSERT_EQ("atoi_n(\"12x\", 3)",    0, atoi_n("12x", 3));
 }
 
-// ── tests: itoa ────────────────────────────────────────────────────
-
-static void test_itoa(void) {
-	TEST_SUITE("itoa");
-	const char *ptr;
-	int64_t len;
-
-	itoa_wrapper(0, &ptr, &len);
-	ASSERT_EQ("itoa(0) len",    1, len);
-	ASSERT_EQ("itoa(0) char",   '0', ptr[0]);
-
-	itoa_wrapper(42, &ptr, &len);
-	ASSERT_EQ("itoa(42) len",   2, len);
-	ASSERT_EQ("itoa(42) [0]",   '4', ptr[0]);
-	ASSERT_EQ("itoa(42) [1]",   '2', ptr[1]);
-
-	itoa_wrapper(100, &ptr, &len);
-	ASSERT_EQ("itoa(100) len",  3, len);
-
-	itoa_wrapper(65535, &ptr, &len);
-	ASSERT_EQ("itoa(65535) len", 5, len);
-	ASSERT_STR_EQ("itoa(65535)", "65535", ptr, 5);
-
-	itoa_wrapper(8080, &ptr, &len);
-	ASSERT_STR_EQ("itoa(8080)", "8080", ptr, len);
-
-	itoa_wrapper(1234567890, &ptr, &len);
-	ASSERT_EQ("itoa(big) len",  10, len);
-	ASSERT_STR_EQ("itoa(big)", "1234567890", ptr, len);
-}
-
 // ── tests: fnv1a_64 ────────────────────────────────────────────────
 
 static void test_fnv1a_64(void) {
@@ -119,7 +70,6 @@ static void test_fnv1a_64(void) {
 int main(void) {
 	test_atoi();
 	test_atoi_n();
-	test_itoa();
 	test_fnv1a_64();
 	test_summary();
 	return 0;
