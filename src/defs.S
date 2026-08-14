@@ -721,3 +721,175 @@
 
 // the fixed decode output area holds at most this many fields per block
 .equ H2_HPACK_MAX_FIELDS, 32
+
+// ── TLS 1.3 (RFC 8446) ─────────────────────────────────────────────
+// Wire-format constants for the planned TLS 1.3 server (PLAN.MD
+// Phase 2+). All values are platform-independent; the TLS connection
+// state struct (tls_state) is defined further down.
+
+// protocol versions (§4.1.2, §5.1). The ClientHello legacy_version and
+// the record-layer legacy_record_version are both 0x0303 even for TLS
+// 1.3 — the real version is negotiated through the supported_versions
+// extension (0x0304).
+.equ TLS_VERSION_1_2, 0x0303
+.equ TLS_VERSION_1_3, 0x0304
+
+// cipher suites (§B.4). The only suite this server implements.
+.equ TLS_CIPHER_AES_128_GCM_SHA256, 0x1301
+
+// named groups (§4.2.7 / RFC 7919 §A): X25519 for the ECDHE key
+// exchange, secp256r1 (P-256) for the ECDSA certificate chain.
+.equ NAMED_GROUP_SECP256R1, 0x0017
+.equ NAMED_GROUP_X25519,    0x001D
+
+// signature schemes (§4.2.3): ecdsa_secp256r1_sha256 — the scheme the
+// server's CertificateVerify uses and the client must advertise.
+.equ SIG_ECDSA_SECP256R1_SHA256, 0x0403
+
+// ALPN (§3.3 / RFC 7301): the protocol this server negotiates is "h2"
+// (2 bytes). The string itself lives in src/tls/data.S (tls_alpn_h2).
+.equ TLS_ALPN_H2_LEN, 2
+
+// record layer (§5): content types
+.equ TLS_RECORD_CHANGE_CIPHER_SPEC, 20  // 0x14
+.equ TLS_RECORD_ALERT,              21  // 0x15
+.equ TLS_RECORD_HANDSHAKE,          22  // 0x16
+.equ TLS_RECORD_APPLICATION_DATA,   23  // 0x17
+.equ TLS_RECORD_HEADER_LEN, 5  // type(1) + legacy_record_version(2) + length(2)
+.equ TLS_MAX_PLAINTEXT, 16384  // 2^14 — plaintext record payload limit (§5.2)
+
+// handshake message types (§4)
+.equ TLS_HS_CLIENT_HELLO,         1
+.equ TLS_HS_SERVER_HELLO,         2
+.equ TLS_HS_NEW_SESSION_TICKET,   4
+.equ TLS_HS_END_OF_EARLY_DATA,    5
+.equ TLS_HS_ENCRYPTED_EXTENSIONS, 8
+.equ TLS_HS_CERTIFICATE,          11
+.equ TLS_HS_CERTIFICATE_REQUEST,  13
+.equ TLS_HS_CERTIFICATE_VERIFY,   15
+.equ TLS_HS_FINISHED,             20
+.equ TLS_HS_KEY_UPDATE,           24
+.equ TLS_HS_MESSAGE_HASH,         254
+.equ TLS_HS_HEADER_LEN, 4  // type(1) + length(3)
+
+// alert levels (§6.2)
+.equ TLS_ALERT_WARNING, 1
+.equ TLS_ALERT_FATAL,   2
+
+// alert descriptions (§6.2) — the full RFC 8446 registry
+.equ TLS_ALERT_CLOSE_NOTIFY,              0
+.equ TLS_ALERT_UNEXPECTED_MESSAGE,        10
+.equ TLS_ALERT_BAD_RECORD_MAC,            20
+.equ TLS_ALERT_RECORD_OVERFLOW,           22
+.equ TLS_ALERT_HANDSHAKE_FAILURE,         40
+.equ TLS_ALERT_BAD_CERTIFICATE,           42
+.equ TLS_ALERT_UNSUPPORTED_CERTIFICATE,   43
+.equ TLS_ALERT_CERTIFICATE_REVOKED,       44
+.equ TLS_ALERT_CERTIFICATE_EXPIRED,       45
+.equ TLS_ALERT_CERTIFICATE_UNKNOWN,       46
+.equ TLS_ALERT_ILLEGAL_PARAMETER,         47
+.equ TLS_ALERT_UNKNOWN_CA,                48
+.equ TLS_ALERT_ACCESS_DENIED,             49
+.equ TLS_ALERT_DECODE_ERROR,              50
+.equ TLS_ALERT_DECRYPT_ERROR,             51
+.equ TLS_ALERT_PROTOCOL_VERSION,          70
+.equ TLS_ALERT_INSUFFICIENT_SECURITY,     71
+.equ TLS_ALERT_INTERNAL_ERROR,            80
+.equ TLS_ALERT_INAPPROPRIATE_FALLBACK,    86
+.equ TLS_ALERT_USER_CANCELED,             90
+.equ TLS_ALERT_MISSING_EXTENSION,         109
+.equ TLS_ALERT_UNSUPPORTED_EXTENSION,     110
+.equ TLS_ALERT_UNRECOGNIZED_NAME,         112
+.equ TLS_ALERT_BAD_CERT_STATUS_RESPONSE,  113
+.equ TLS_ALERT_UNKNOWN_PSK_IDENTITY,      115
+.equ TLS_ALERT_CERTIFICATE_REQUIRED,      116
+.equ TLS_ALERT_NO_APPLICATION_PROTOCOL,   120
+
+// extensions (§4.2) — the full RFC 8446 registry. The ClientHello
+// parser (Phase 12) acts on a few of these and skips the rest by
+// length.
+.equ TLS_EXT_SERVER_NAME,                0
+.equ TLS_EXT_MAX_FRAGMENT_LENGTH,        1
+.equ TLS_EXT_STATUS_REQUEST,             5
+.equ TLS_EXT_SUPPORTED_GROUPS,           10
+.equ TLS_EXT_SIGNATURE_ALGORITHMS,       13
+.equ TLS_EXT_USE_SRTP,                   14
+.equ TLS_EXT_HEARTBEAT,                  15
+.equ TLS_EXT_ALPN,                       16
+.equ TLS_EXT_SIGNED_CERT_TIMESTAMP,      18
+.equ TLS_EXT_CLIENT_CERT_TYPE,           19
+.equ TLS_EXT_SERVER_CERT_TYPE,           20
+.equ TLS_EXT_PADDING,                    21
+.equ TLS_EXT_PRE_SHARED_KEY,             41
+.equ TLS_EXT_EARLY_DATA,                 42
+.equ TLS_EXT_SUPPORTED_VERSIONS,         43
+.equ TLS_EXT_COOKIE,                     44
+.equ TLS_EXT_PSK_KEY_EXCHANGE_MODES,     45
+.equ TLS_EXT_CERTIFICATE_AUTHORITIES,    47
+.equ TLS_EXT_OID_FILTERS,                48
+.equ TLS_EXT_POST_HANDSHAKE_AUTH,        49
+.equ TLS_EXT_SIGNATURE_ALGORITHMS_CERT,  50
+.equ TLS_EXT_KEY_SHARE,                  51
+
+// handshake state machine — the value of tls_state's handshake_state
+// field. The server advances this in lockstep with the messages it
+// sends and receives; phases 12-19 drive it. Names track the last
+// message sent (TLS_HS_* handshake types above).
+.equ TLS_HS_START,       0  // awaiting ClientHello
+.equ TLS_HS_CH_RECEIVED, 1  // ClientHello received & validated
+.equ TLS_HS_SH_SENT,     2  // ServerHello sent — handshake traffic keys live
+.equ TLS_HS_EE_SENT,     3  // EncryptedExtensions sent
+.equ TLS_HS_CERT_SENT,   4  // Certificate sent
+.equ TLS_HS_CV_SENT,     5  // CertificateVerify sent
+.equ TLS_HS_FIN_SENT,    6  // our Finished sent — awaiting the client's
+.equ TLS_HS_CONNECTED,   7  // client Finished verified — application data
+.equ TLS_HS_FAILED,      8  // handshake aborted — connection must close
+
+// ── TLS connection state (tls_state) ───────────────────────────────
+// Per-connection TLS 1.3 state (PLAN.MD §2.2). Fixed layout; storage
+// lives in src/tls/data.S as `tls_state`, with one tls_* label per
+// field so the unit test (test_tls.c) can verify each offset against
+// real storage. Offsets are platform-independent. Only the state the
+// server actually needs lives here — everything else stays stack-local
+// in the phase that uses it.
+
+// field sizes (bytes)
+.equ TLS_RANDOM_LEN,    32  // client_random / server_random (§4.1.2)
+.equ TLS_KEY_SHARE_LEN, 32  // X25519 public key (§4.2.8)
+.equ TLS_SECRET_LEN,    32  // handshake/master secret — SHA-256-sized HKDF
+                            //   output (RFC 8446 §7.1, with SHA-256)
+.equ TLS_DIGEST_LEN,    32  // transcript hash — SHA-256 (§4.4.1)
+.equ TLS_KEY_LEN,       16  // AES-128 key
+.equ TLS_IV_LEN,        12  // AES-GCM nonce (§5.3)
+.equ TLS_IV_STRIDE,     16  // storage stride per IV: 12 bytes + 4 pad so
+                            //   the following 16-byte key stays 16-aligned
+.equ TLS_SEQ_LEN,       8   // u64 record sequence number (§5.3)
+.equ TLS_ALPN_BUF,      16  // negotiated ALPN name buffer ("h2" + NUL + pad)
+
+// field offsets. Scalars are u64s; byte arrays are sized by the
+// constants above. Every field starts 8-aligned, keys/seqs 16-aligned.
+.equ TLS_FD,                0   // u64 client socket fd; -1 while unset
+.equ TLS_HS_STATE,          8   // u64 one of TLS_HS_START..TLS_HS_FAILED
+.equ TLS_CLIENT_RANDOM,     16  // 32 B — the client's random (§4.1.2)
+.equ TLS_SERVER_RANDOM,     48  // 32 B — our random
+.equ TLS_CLIENT_KEY_SHARE,  80  // 32 B — X25519 public key from the
+                                //   client's key_share extension
+.equ TLS_SERVER_KEY_SHARE,  112 // 32 B — our X25519 public key
+.equ TLS_SHARED_SECRET,     144 // 32 B — ECDHE shared secret (X25519)
+.equ TLS_TRANSCRIPT_HASH,   176 // 32 B — running SHA-256 of the handshake
+                                //   (Phase 9)
+.equ TLS_HANDSHAKE_SECRET,  208 // 32 B — HKDF-derived (Phase 10)
+.equ TLS_MASTER_SECRET,     240 // 32 B — HKDF-derived (Phase 10)
+.equ TLS_CLIENT_HS_KEY,     272 // 16 B — AES-128 handshake traffic key
+.equ TLS_CLIENT_HS_IV,      288 // 12 B — handshake traffic IV
+.equ TLS_SERVER_HS_KEY,     304 // 16 B — AES-128 handshake traffic key
+.equ TLS_SERVER_HS_IV,      320 // 12 B — handshake traffic IV
+.equ TLS_CLIENT_APP_KEY,    336 // 16 B — AES-128 application traffic key
+.equ TLS_CLIENT_APP_IV,     352 // 12 B — application traffic IV
+.equ TLS_SERVER_APP_KEY,    368 // 16 B — AES-128 application traffic key
+.equ TLS_SERVER_APP_IV,     384 // 12 B — application traffic IV
+.equ TLS_CLIENT_SEQ,        400 // u64 — client→server record sequence (§5.3)
+.equ TLS_SERVER_SEQ,        408 // u64 — server→client record sequence
+.equ TLS_ALPN_LEN,          416 // u64 — negotiated ALPN name length (0 = none)
+.equ TLS_ALPN,              424 // 16 B — negotiated ALPN name ("h2")
+.equ TLS_STATE_SIZE,        440

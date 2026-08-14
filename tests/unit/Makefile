@@ -37,6 +37,7 @@ h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../s
 hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
 crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(wildcard ../../src/crypto/*.S))
 transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
+tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(wildcard ../../src/tls/*.S))
 data_objs    := $(OBJ_DIR)/data.o
 
 # util/write_all.S now tail-calls transport_write, so any test binary that
@@ -61,6 +62,7 @@ TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
 TEST_SHA256 := $(OBJ_DIR)/test_sha256
 TEST_AES128 := $(OBJ_DIR)/test_aes128
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
+TEST_TLS := $(OBJ_DIR)/test_tls
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -76,7 +78,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_AES128) $(TEST_TRANSPORT) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_AES128) $(TEST_TRANSPORT) $(TEST_TLS) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -122,7 +124,7 @@ build: $(TESTS)
 # The per-module objects are only ever prerequisites of the test binaries,
 # so GNU make treats them as intermediates and deletes them after each
 # link — forcing a full recompile on every `make test`. Keep them.
-.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs)
+.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs) $(tls_objs)
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -151,6 +153,9 @@ $(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_%.o: ../../src/tls/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
@@ -226,6 +231,13 @@ $(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # of the transport_objs wildcard), so no data.o or stubs are needed.
 $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(transport_objs) $(LDFLAGS) -o $@
+
+# test_tls: only needs the tls module (PLAN.MD §2) — the wire
+# constants in defs.S are compile-time, so this links src/tls/data.S
+# only: the tls_state block and the tls_* field labels the offset
+# tests check against the TLS_* offsets.
+$(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
 # parse_header_end uses parse data. get_header_field calls streqn_i.

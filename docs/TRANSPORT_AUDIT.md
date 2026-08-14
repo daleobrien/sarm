@@ -193,3 +193,14 @@ Both follow-ups are now in place:
     mode to TLS yet.
   - Covered by `tests/unit/test_transport.c` (default-mode, PLAIN
     roundtrip, and TLS fail-closed suites).
+
+## Addendum — PLAN.MD §2 (TLS constants and data structures)
+
+Finding #2 of this audit anticipated per-connection TLS state; §2.2
+answers it with a dedicated `tls_state` block (`src/tls/data.S`,
+offsets in `src/defs.S`) rather than extending `H2C_*` — the TLS
+module owns its state, and the transport seam keeps dispatching on
+`transport_mode` alone. The state carries the fd (started at -1) so a
+future TLS transport can look it up; covered by
+`tests/unit/test_tls.c` (field offsets, alignment, storage extent,
+initial values).

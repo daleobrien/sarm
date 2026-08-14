@@ -31,6 +31,7 @@ The assembly is split one function per file, grouped into module folders under `
 | `src/h2/*.S` | HTTP/2 frame engine (RFC 9113): frame parse/validate/dispatch, all frame handlers, stream engine, `h2_build_request`, `h2_connection_loop`, `h2_process_request`, response encoders (`h2_write_headers`, `h2_write_body`), senders (`h2_send_settings`/`goaway`/`rst_stream`) |
 | `src/hpack/*.S` | HPACK (RFC 7541): `h2_hpack_decode_int`/`_string`/`_static_lookup`/`_field`/`_block`, `h2_huffman_decode` (+ static table, decode buffers) |
 | `src/transport/*.S` | The transport seam (PLAN.MD §1.2-§1.3): `transport_read`/`transport_write` — the single read/write choke points of the HTTP/2 engine — plus `transport_mode` (PLAIN default; TLS stub fails closed) |
+| `src/tls/*.S` | TLS 1.3 (PLAN.MD §2+): today only `data.S` — the `tls_state` per-connection struct (wire constants + field offsets in `defs.S`) and the `tls_alpn_h2` ALPN identifier. Handshake/record/key-schedule functions land in later phases |
 | `src/crypto/*.S` | Cryptographic primitives for the planned TLS work (PLAN.MD): `sha256` (ARMv8 SHA-256 extension), `aes128` (Neon) |
 | `src/ymawky/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `log_timing`, `verify_http_version` |
 
@@ -93,6 +94,30 @@ dispatch on the runtime global `transport_mode` (`src/transport/data.S`):
 
 The mode is a runtime global initialised from the compile-time default,
 so a future startup switch can select TLS without recompiling.
+
+---
+
+## TLS 1.3 (`src/tls/`, constants in `src/defs.S`)
+
+The TLS work (PLAN.MD Phase 2+) is data-only so far. `defs.S` carries
+the wire-format constants — protocol versions, cipher suites, named
+groups, signature schemes, record/handshake/alert/extension types, the
+handshake state machine — and the `tls_state` field offsets. `src/tls/data.S`
+holds the per-connection state block:
+
+- `tls_state` — one block per connection (a connection handler is one
+  process, so the global is per-connection, like `request`/`response`):
+  fd, handshake state, client/server randoms and key shares, shared
+  secret, transcript hash, handshake/master secrets, the four
+  AES-128-GCM traffic keys + IVs, record sequence numbers, and the
+  negotiated ALPN name. Every field is exported under a `tls_*` label
+  so `tests/unit/test_tls.c` can verify each sits at exactly the
+  `TLS_*` offset in `defs.S`.
+- `tls_alpn_h2` — the `"h2"` ALPN identifier (RFC 7301) this server
+  will negotiate.
+
+Covered by `tests/unit/test_tls.c` (constant values, field offsets,
+16-byte alignment, storage extent, initial values).
 
 ---
 
