@@ -40,7 +40,6 @@ stubs_objs   := $(OBJ_DIR)/stubs.o
 stubs_resp_objs := $(OBJ_DIR)/stubs_response.o
 
 # ── test executables ────────────────────────────────────────────────
-TEST_UTIL  := $(OBJ_DIR)/test_util
 TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
@@ -66,7 +65,7 @@ TEST_H2_MUX       := $(OBJ_DIR)/test_h2_mux
 TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
-TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
+TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
 	$(TEST_ATOI) $(TEST_ATOI_N) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -153,11 +152,6 @@ $(stubs_resp_objs): stubs_response.S | $(OBJ_DIR)
 # Every suite includes test_harness.h, so it must be a prerequisite of
 # each link rule to force a rebuild when the harness changes.
 HARNESS := test_harness.h
-
-# test_util: only needs util (pure functions). All suites have moved out
-# to dedicated files; this binary just runs the (empty) summary.
-$(TEST_UTIL): test_util.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_atoi: only needs util (pure functions).
 # atoi uses the standard ABI, so the C test code calls it directly.
