@@ -1,6 +1,7 @@
 # HTTP/2 Transport Boundary Audit
 
-Status: **done** (PLAN.MD §1.1 — audit only, no behaviour changed)
+Status: **done** (PLAN.MD §1.1 audit; §1.2 transport seam + §1.3 transport
+mode implemented — see the addendum at the bottom)
 Date: 2026-08-15
 `make test`: **passes** (all suites green)
 
@@ -168,3 +169,27 @@ the HTTP/2 engine.**
    EOF-carry-set conventions must survive the abstraction — the frame
    loop and credit-wait loop branch on the carry flag after every
    call.
+
+---
+
+## Addendum — PLAN.MD §1.2-§1.3 (transport seam + mode)
+
+Both follow-ups are now in place:
+
+- **§1.2 (transport abstraction)** — `src/transport/transport_read.S`
+  and `src/transport/transport_write.S` hold the two choke points; the
+  HTTP/2 engine reaches them via `h2_read_exact` (tail-call) and
+  `write_all` (tail-call). Finding #1 of this audit is implemented as
+  intended — no frame logic changed.
+- **§1.3 (TLS-disabled transport mode)** — the seam now dispatches on
+  the runtime global `transport_mode` (`src/transport/data.S`),
+  initialised from the `TRANSPORT_MODE` compile-time default in
+  `config.S` (`TRANSPORT_PLAIN`):
+  - `TRANSPORT_PLAIN` — the raw socket path, byte-for-byte the
+    behaviour this audit documents.
+  - `TRANSPORT_TLS` — a fail-closed stub returning `ENOTSUP` (carry
+    set) from both primitives, so a TLS-mode connection can never
+    exchange plaintext until the TLS phases land. Nothing sets the
+    mode to TLS yet.
+  - Covered by `tests/unit/test_transport.c` (default-mode, PLAIN
+    roundtrip, and TLS fail-closed suites).

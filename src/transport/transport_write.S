@@ -6,8 +6,10 @@
 // Description: The transport write primitive. Writes content to a file
 //   descriptor, retrying in case of partial writes until all nbytes are
 //   written. EINTR is retried; EPIPE is treated as a clean exit (client
-//   disconnected). This is the seam that will eventually route through
-//   TLS; for now it issues the raw socket write directly.
+//   disconnected). Dispatches on the runtime `transport_mode` (PLAN.MD
+//   §1.3): TRANSPORT_PLAIN issues the raw socket write directly;
+//   TRANSPORT_TLS is not implemented yet and fails closed with ENOTSUP
+//   (carry set).
 //
 // Input/Arguments:
 //   x0 -> file descriptor (same as write() syscall)
@@ -19,7 +21,7 @@
 //   carry clear = success, carry set = error (x0 = errno)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x25, x26 (x25/x26 saved and restored)
+//   x0, x1, x2, x9, x25, x26 (x25/x26 saved and restored)
 //
 // Stack Usage:
 //   16 bytes: stp x25, x26, [sp, #-16]!
@@ -29,6 +31,8 @@
 .align 2
 .global transport_write
 transport_write:
+    ldr_l x9, transport_mode
+    cbnz x9, .Ltransport_write_tls
     stp x25, x26, [sp, #-16]!
     mov x25, x0             // fd
     mov x26, #0             // total bytes written
@@ -65,3 +69,11 @@ transport_write:
     cmp xzr, xzr            // set C=1 so we can b.cs
     // x0 is already errno
     b 3b
+
+.Ltransport_write_tls:
+    // TLS transport is not implemented yet (PLAN.MD §1.3 — later phases
+    // build it): fail closed rather than send plaintext on a TLS-mode
+    // connection. Nothing was written; x0 = ENOTSUP with carry set.
+    mov x0, #ENOTSUP
+    cmp xzr, xzr            // failure — carry set
+    ret

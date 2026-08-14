@@ -37,3 +37,14 @@
 // 1 (or anything non-zero): Yes, allow directory contents to be listed
 // Default: 1
 .equ ALLOW_DIR_LISTING, 1
+
+// ── Transport mode (PLAN.MD §1.3) ──────────────────────────────────
+// The transport seam (src/transport/) can deliver bytes over raw TCP
+// (TRANSPORT_PLAIN) or, once implemented in later phases, TLS
+// (TRANSPORT_TLS). PLAIN is the default and the only mode with an
+// implementation today. TRANSPORT_MODE is the compile-time default the
+// runtime `transport_mode` global (src/transport/data.S) is initialised
+// from, so a future runtime switch can override it without recompiling.
+.equ TRANSPORT_PLAIN, 0
+.equ TRANSPORT_TLS,   1
+.equ TRANSPORT_MODE,  TRANSPORT_PLAIN

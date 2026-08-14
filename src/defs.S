@@ -230,6 +230,7 @@
 .equ EPROTONOSUPPORT, 93
 .equ ESOCKTNOSUPPORT,  94
 .equ EOPNOTSUPP,     95
+.equ ENOTSUP,        95  // EOPNOTSUPP alias on Linux
 .equ EPFNOSUPPORT,   96
 .equ EAFNOSUPPORT,   97
 .equ EADDRINUSE,     98
@@ -438,6 +439,7 @@
 .equ ENOSPC,         28
 .equ ENOTEMPTY,      66
 .equ EINVAL,         22
+.equ ENOTSUP,        45  // distinct from EOPNOTSUPP (102) on macOS
 
 // signals
 .equ SIGALRM,        14

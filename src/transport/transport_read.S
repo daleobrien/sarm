@@ -5,9 +5,10 @@
 //
 // Description: The transport read primitive. Reads exactly len bytes
 //   from the fd into buf, looping over short reads. EINTR is retried;
-//   EOF or any other error returns with carry set. This is the seam
-//   that will eventually route through TLS; for now it issues the raw
-//   socket read directly.
+//   EOF or any other error returns with carry set. Dispatches on the
+//   runtime `transport_mode` (PLAN.MD §1.3): TRANSPORT_PLAIN issues the
+//   raw socket read directly; TRANSPORT_TLS is not implemented yet and
+//   fails closed with ENOTSUP (carry set).
 //
 // Input/Arguments:
 //   x0 — fd, x1 — buffer, x2 — length
@@ -17,7 +18,7 @@
 //   x0 — errno on failure (carry set); 0 on EOF
 //
 // Clobbered Registers:
-//   x0-x4, x19-x21, x30 (x19-x21 saved/restored)
+//   x0-x4, x9, x19-x21, x30 (x19-x21 saved/restored)
 //
 // Stack Usage:
 //   32 bytes: stp x19, x20, [sp, #-32]!; stp x21, x30, [sp, #16]
@@ -27,6 +28,8 @@
 .align 2
 .global transport_read
 transport_read:
+    ldr_l x9, transport_mode
+    cbnz x9, .Ltransport_read_tls
     stp x19, x20, [sp, #-32]!
     stp x21, x30, [sp, #16]
     mov x19, x0             // fd
@@ -63,4 +66,11 @@ transport_read:
     mov x0, #0
     ldp x21, x30, [sp, #16]
     ldp x19, x20, [sp], #32
+    ret
+.Ltransport_read_tls:
+    // TLS transport is not implemented yet (PLAN.MD §1.3 — later phases
+    // build it): fail closed rather than serve plaintext on a TLS-mode
+    // connection. Nothing was read; x0 = ENOTSUP with carry set.
+    mov x0, #ENOTSUP
+    cmp xzr, xzr            // failure — carry set
     ret
