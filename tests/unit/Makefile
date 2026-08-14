@@ -51,6 +51,7 @@ TEST_STREQN_I := $(OBJ_DIR)/test_streqn_i
 TEST_MEMCPY := $(OBJ_DIR)/test_memcpy
 TEST_ITOA := $(OBJ_DIR)/test_itoa
 TEST_FNV1A_64 := $(OBJ_DIR)/test_fnv1a_64
+TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -66,6 +67,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_UTIL) $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
+	$(TEST_ATOI_N) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -186,6 +188,12 @@ $(TEST_ITOA): test_itoa.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 # test_fnv1a_64: only needs util (pure functions).
 # fnv1a_64 uses the standard ABI, so the C test code calls it directly.
 $(TEST_FNV1A_64): test_fnv1a_64.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
+
+# test_atoi_n: only needs util (pure functions).
+# atoi_n returns its value in x0 but signals errors through the carry
+# flag, so the C test code calls it via an inline asm wrapper.
+$(TEST_ATOI_N): test_atoi_n.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
