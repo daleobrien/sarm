@@ -70,6 +70,9 @@ TEST_AES128 := $(OBJ_DIR)/test_aes128
 TEST_GCM   := $(OBJ_DIR)/test_gcm
 TEST_X25519 := $(OBJ_DIR)/test_x25519
 TEST_P256 := $(OBJ_DIR)/test_p256
+TEST_P256_SCALAR := $(OBJ_DIR)/test_p256_scalar
+TEST_P256_POINT := $(OBJ_DIR)/test_p256_point
+TEST_P256_ECDSA := $(OBJ_DIR)/test_p256_ecdsa
 TEST_CRYPTO_RANDOM := $(OBJ_DIR)/test_crypto_random
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
@@ -106,7 +109,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_P256) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_P256) $(TEST_P256_SCALAR) $(TEST_P256_POINT) $(TEST_P256_ECDSA) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -304,6 +307,24 @@ $(TEST_X25519): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # test_p256.c drives p256_fe_* (PLAN.MD Phase 16.1) against Python-computed
 # reference vectors for the real NIST P-256 prime.
 $(TEST_P256): test_p256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_scalar.c drives p256_scalar_* (arithmetic mod n) against
+# Python-computed reference vectors for the real P-256 group order.
+$(TEST_P256_SCALAR): test_p256_scalar.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_point.c drives p256_point_* (PLAN.MD Phase 16.2/16.3/16.4)
+# against a Python transliteration of the exact same Jacobian formulas
+# (dbl/add) and against cryptography-library-derived public keys
+# (point_mul).
+$(TEST_P256_POINT): test_p256_point.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_ecdsa.c drives p256_ecdsa_sign_with_k/verify (PLAN.MD
+# Phase 16.5/16.6) against vectors cross-checked with (and, for verify,
+# produced directly by) the `cryptography` library.
+$(TEST_P256_ECDSA): test_p256_ecdsa.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_crypto_random: only needs crypto (crypto_random_bytes is a

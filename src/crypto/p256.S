@@ -88,17 +88,26 @@ p256_mu:
     .quad 0x00000000ffffffff
     .quad 0x0000000000000001
 
+// p - 2, the (public) Fermat inversion exponent: a^(p-2) = a^-1 mod p.
+p256_p_minus_2:
+    .quad 0xfffffffffffffffd
+    .quad 0x00000000ffffffff
+    .quad 0x0000000000000000
+    .quad 0xffffffff00000001
+
 .text
 
 // ─────────────────────────────────────────────────────────────────────
-// Function Name: p256_bn_mul (file-local)
+// Function Name: p256_bn_mul
 //
 // Description: Generic multi-precision multiply: out[0..na+nb-1] =
 //   a[0..na-1] * b[0..nb-1], schoolbook long multiplication with a
 //   64x64->128 bit multiply-accumulate per (i,j) pair. out must not
 //   alias a or b. Used for the field a*b product (na=nb=4) and both
 //   products inside Barrett reduction (5x5 and 5x4) — see the file
-//   header for why one routine covers all three shapes.
+//   header for why one routine covers all three shapes. Exported
+//   (.global) so p256_scalar.S can reuse it for arithmetic mod the
+//   group order n, with its own Barrett constants.
 //
 // Input/Arguments:
 //   x0 — out pointer (na+nb limbs, zeroed by this function)
@@ -118,6 +127,7 @@ p256_mu:
 //   none — leaf function, no calls out
 // ─────────────────────────────────────────────────────────────────────
 .align 2
+.global p256_bn_mul
 p256_bn_mul:
     add     x5, x2, x4              // total = na + nb
     mov     x6, #0
@@ -266,6 +276,13 @@ p256_reduce:
     sbcs    x9, x9, x13
     subs    x10, xzr, x14           // synthetic T limb (0) - q3p[8]
     cset    x16, cc                 // x16 = 1 if the subtract borrowed
+    // x2..x6 now hold r's low 5 limbs (320 bits). r itself is only
+    // guaranteed to fit in ~257 bits (p is close enough to 2^256 that
+    // a single +/-p correction can cross the 256-bit boundary), so the
+    // correction rounds below carry that 5th limb (x6) through instead
+    // of truncating to 4 limbs before correcting — truncating first
+    // and correcting after silently drops the 257th bit and produces a
+    // wrong result on exactly the inputs that need a real correction.
 
     // Defensive: if it borrowed (r "went negative"), add p back once.
     adr_l   x11, p256_p
@@ -277,14 +294,16 @@ p256_reduce:
     adcs    x13, x3, x13
     adcs    x14, x4, x14
     adcs    x15, x5, x15
+    adcs    x17, x6, xzr
     cmp     x16, #1
     csel    x2, x12, x2, eq
     csel    x3, x13, x3, eq
     csel    x4, x14, x4, eq
     csel    x5, x15, x5, eq
+    csel    x6, x17, x6, eq
 
-    // Two branchless conditional-subtract-p rounds to guarantee a
-    // canonical (< p) result.
+    // Two branchless conditional-subtract-p rounds (against p
+    // zero-extended to 5 limbs) to guarantee a canonical (< p) result.
     .irp round, 1, 2
     adr_l   x11, p256_p
     ldr     x12, [x11, #0]
@@ -295,13 +314,16 @@ p256_reduce:
     sbcs    x13, x3, x13
     sbcs    x14, x4, x14
     sbcs    x15, x5, x15
+    sbcs    x17, x6, xzr
     cset    x16, cs                 // 1 if r >= p (no borrow)
     cmp     x16, #1
     csel    x2, x12, x2, eq
     csel    x3, x13, x3, eq
     csel    x4, x14, x4, eq
     csel    x5, x15, x5, eq
+    csel    x6, x17, x6, eq
     .endr
+    // x6 is guaranteed 0 here (r is now canonical, < p < 2^256).
 
     str     x2, [x19, #0]
     str     x3, [x19, #8]
@@ -548,4 +570,156 @@ p256_fe_mul:
     ldp     x19, x20, [sp, #16]
     ldp     x29, x30, [sp]
     add     sp, sp, #96
+    ret
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: p256_fe_cmov
+//
+// Description: Constant-time conditional move: if cond != 0, dst = src;
+//   otherwise dst is unchanged. Implemented with CSEL, not a branch, so
+//   it is safe to use on secret-dependent conditions (e.g. selecting
+//   between point-arithmetic results based on a scalar bit).
+//
+// Input/Arguments:
+//   x0 — dst fe pointer, x1 — src fe pointer, x2 — cond
+//
+// Clobbered Registers:
+//   x3-x6
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global p256_fe_cmov
+p256_fe_cmov:
+    cmp     x2, #0
+    ldr     x3, [x0, #0]
+    ldr     x4, [x1, #0]
+    csel    x3, x4, x3, ne
+    str     x3, [x0, #0]
+    ldr     x3, [x0, #8]
+    ldr     x4, [x1, #8]
+    csel    x3, x4, x3, ne
+    str     x3, [x0, #8]
+    ldr     x3, [x0, #16]
+    ldr     x4, [x1, #16]
+    csel    x3, x4, x3, ne
+    str     x3, [x0, #16]
+    ldr     x3, [x0, #24]
+    ldr     x4, [x1, #24]
+    csel    x3, x4, x3, ne
+    str     x3, [x0, #24]
+    ret
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: p256_fe_eq
+//
+// Description: Constant-time equality test of two canonical (< p)
+//   field elements: exact limb comparison (safe since fe_add/sub/mul
+//   always produce canonical output, so two field elements are equal
+//   iff their limbs are identical).
+//
+// Input/Arguments:
+//   x0 — a fe pointer, x1 — b fe pointer
+//
+// Output/Returns:
+//   x0 — 1 if equal, 0 otherwise
+//
+// Clobbered Registers:
+//   x2-x5
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global p256_fe_eq
+p256_fe_eq:
+    ldr     x2, [x0, #0]
+    ldr     x3, [x1, #0]
+    eor     x2, x2, x3
+    ldr     x3, [x0, #8]
+    ldr     x4, [x1, #8]
+    eor     x3, x3, x4
+    orr     x2, x2, x3
+    ldr     x3, [x0, #16]
+    ldr     x4, [x1, #16]
+    eor     x3, x3, x4
+    orr     x2, x2, x3
+    ldr     x3, [x0, #24]
+    ldr     x4, [x1, #24]
+    eor     x3, x3, x4
+    orr     x2, x2, x3
+    cmp     x2, #0
+    cset    x0, eq
+    ret
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: p256_fe_inv
+//
+// Description: out = a^-1 mod p, via Fermat's little theorem
+//   (a^(p-2) mod p) and square-and-multiply against p256_p_minus_2.
+//   The exponent is a public curve parameter, not secret data, so
+//   branching on its bits (unlike branching on a or the result) is
+//   not a timing side channel — this is the same reasoning x25519.S
+//   uses for its own recip.
+//
+// Input/Arguments:
+//   x0 — out fe pointer, x1 — a fe pointer
+//
+// Clobbered Registers:
+//   x0-x17, x19-x22 (saved/restored)
+//
+// Stack Usage:
+//   80 bytes: saved x29/x30, saved x19/x20, saved x21/x22, a 4-limb
+//   accumulator
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global p256_fe_inv
+p256_fe_inv:
+    sub     sp, sp, #80
+    stp     x29, x30, [sp]
+    mov     x29, sp
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
+    // sp+48 .. sp+79: result[4]
+
+    mov     x19, x0                 // out
+    mov     x20, x1                 // a
+
+    mov     x9, #1
+    str     x9, [sp, #48]
+    str     xzr, [sp, #56]
+    str     xzr, [sp, #64]
+    str     xzr, [sp, #72]
+
+    mov     x22, #255               // i = 255 .. 0
+.Lfe_inv_loop:
+    lsr     x9, x22, #6              // limb = i / 64
+    and     x10, x22, #63            // shift = i % 64
+    adr_l   x11, p256_p_minus_2
+    ldr     x12, [x11, x9, lsl #3]
+    lsr     x12, x12, x10
+    and     x21, x12, #1             // x21 = bit i of (p-2)
+
+    add     x0, sp, #48
+    add     x1, sp, #48
+    bl      p256_fe_sqr
+
+    cmp     x21, #0
+    b.eq    .Lfe_inv_skip_mul
+    add     x0, sp, #48
+    add     x1, sp, #48
+    mov     x2, x20
+    bl      p256_fe_mul
+.Lfe_inv_skip_mul:
+    subs    x22, x22, #1
+    b.ge    .Lfe_inv_loop
+
+    ldr     x9, [sp, #48]
+    str     x9, [x19, #0]
+    ldr     x9, [sp, #56]
+    str     x9, [x19, #8]
+    ldr     x9, [sp, #64]
+    str     x9, [x19, #16]
+    ldr     x9, [sp, #72]
+    str     x9, [x19, #24]
+
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp]
+    add     sp, sp, #80
     ret
