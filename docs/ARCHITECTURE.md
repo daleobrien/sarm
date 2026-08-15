@@ -32,7 +32,7 @@ The assembly is split one function per file, grouped into module folders under `
 | `src/hpack/*.S` | HPACK (RFC 7541): `h2_hpack_decode_int`/`_string`/`_static_lookup`/`_field`/`_block`, `h2_huffman_decode` (+ static table, decode buffers) |
 | `src/transport/*.S` | The transport seam (PLAN.MD §1.2-§1.3): `transport_read`/`transport_write` — the single read/write choke points of the HTTP/2 engine — plus `transport_mode` (PLAIN default; TLS stub fails closed) |
 | `src/tls/*.S` | TLS 1.3 (PLAN.MD §2+): today only `data.S` — the `tls_state` per-connection struct (wire constants + field offsets in `defs.S`) and the `tls_alpn_h2` ALPN identifier. Handshake/record/key-schedule functions land in later phases |
-| `src/crypto/*.S` | Cryptographic primitives for the planned TLS work (PLAN.MD): `sha256` (ARMv8 SHA-256 extension, streaming `sha256_init`/`update`/`final`), `hmac_sha256` (RFC 4231, built on the streaming SHA-256), `aes128` (Neon) |
+| `src/crypto/*.S` | Cryptographic primitives for the planned TLS work (PLAN.MD): `sha256` (ARMv8 SHA-256 extension, streaming `sha256_init`/`update`/`final`), `hmac_sha256` (RFC 4231, built on the streaming SHA-256), `hkdf_extract`/`hkdf_expand` (RFC 5869) + `hkdf_expand_label` (RFC 8446 §7.1, built on HMAC-SHA256), `aes128` (Neon) |
 | `src/ymawky/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `log_timing`, `verify_http_version` |
 
 ---

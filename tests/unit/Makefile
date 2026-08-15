@@ -61,6 +61,7 @@ TEST_ATOI := $(OBJ_DIR)/test_atoi
 TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
 TEST_SHA256 := $(OBJ_DIR)/test_sha256
 TEST_HMAC   := $(OBJ_DIR)/test_hmac
+TEST_HKDF   := $(OBJ_DIR)/test_hkdf
 TEST_AES128 := $(OBJ_DIR)/test_aes128
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
@@ -79,7 +80,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_AES128) $(TEST_TRANSPORT) $(TEST_TLS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_TRANSPORT) $(TEST_TLS) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -226,6 +227,15 @@ $(TEST_SHA256): test_sha256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # hmac_sha256(key=x0, keylen=x1, data=x2, datalen=x3, digest=x4) is
 # called directly; it links sha256.o for the streaming sha256_* calls.
 $(TEST_HMAC): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_hkdf: only needs crypto (pure functions, standard ABI).
+# hkdf_extract(salt=x0, saltlen=x1, ikm=x2, ikmlen=x3, prk=x4),
+# hkdf_expand(prk=x0, prklen=x1, info=x2, infolen=x3, okm=x4, okmlen=x5)
+# and hkdf_expand_label(secret=x0, label=x1, label_len=x2, context=x3,
+# context_len=x4, out=x5, outlen=x6) are called directly; the module
+# links sha256.o + hmac.o for the HMAC calls.
+$(TEST_HKDF): test_hkdf.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_aes128: only needs crypto (pure function, standard ABI).
