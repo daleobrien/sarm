@@ -63,6 +63,7 @@ TEST_SHA256 := $(OBJ_DIR)/test_sha256
 TEST_HMAC   := $(OBJ_DIR)/test_hmac
 TEST_HKDF   := $(OBJ_DIR)/test_hkdf
 TEST_AES128 := $(OBJ_DIR)/test_aes128
+TEST_GCM   := $(OBJ_DIR)/test_gcm
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
@@ -80,7 +81,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_TRANSPORT) $(TEST_TLS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_TRANSPORT) $(TEST_TLS) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -242,6 +243,16 @@ $(TEST_HKDF): test_hkdf.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # aes128_encrypt(pt=x0, rk=x1, ct=x2) and aes128_key_expand(key=x0,
 # rk=x1) are called directly.
 $(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_gcm: only needs crypto (pure functions, standard ABI); gcm.o
+# references aes128_key_expand/aes128_encrypt from aes128.o.
+# gf_mult_128(x=x0, y=x1, z=x2), ghash(h=x0, aad=x1, aad_len=x2, ct=x3,
+# ct_len=x4, out=x5), aes_gcm_encrypt(key=x0, iv=x1, aad=x2, aad_len=x3,
+# pt=x4, pt_len=x5, ct=x6, tag=x7) and aes_gcm_decrypt(key=x0, iv=x1,
+# aad=x2, aad_len=x3, ct=x4, ct_len=x5, tag=x6, pt=x7, returns x0=1/0)
+# are called directly.
+$(TEST_GCM): test_gcm.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_transport: only needs transport — transport_read/transport_write
