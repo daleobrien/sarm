@@ -1,4 +1,4 @@
-# TLS Handshake Message Module (PLAN.MD Phases 10, 12-14)
+# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15)
 
 ## Overview
 
@@ -13,7 +13,10 @@ anything else, so this is also where the Phase 10 key schedule (skipped
 until now — nothing needed it) actually gets implemented: it turns the
 ServerHello's ECDHE shared secret into the keys that encrypt
 EncryptedExtensions (RFC 8446 §4.3.1), the first message either side
-sends under handshake traffic protection.
+sends under handshake traffic protection. Phase 15 sends the server's
+authentication material — the Certificate message (RFC 8446 §4.4.2) —
+built from an ECDSA P-256 certificate and private key embedded at build
+time (see `certs/`), not parsed from X.509 at runtime.
 
 ## Module Structure
 
@@ -105,6 +108,33 @@ caller does the actual "send encrypted" part of Phase 14 by running
 `tls_derive_handshake_secrets` first and then sealing this message with
 `tls_record_encrypt` under the server's handshake traffic key.
 
+### `certificate.S` — `tls_certificate_write`
+
+Serializes the Certificate handshake message (RFC 8446 §4.4.2): the
+4-byte handshake header, an empty `certificate_request_context` (this
+server never replies to a CertificateRequest), and a
+`certificate_list` of exactly one `CertificateEntry` — the DER
+certificate embedded at build time, with no per-entry extensions.
+PLAN.MD Phase 15 is explicit that this should **not** be a general
+X.509 parser: the certificate and its ECDSA P-256 private key are
+generated once (`certs/generate.sh`) and embedded into
+`src/tls/cert_data.S` as literal `.byte` data by `certs/embed_cert.sh`
+— `tls_certificate_write` just copies `tls_cert_der` onto the wire
+byte-for-byte, and `tls_priv_key` (the raw 32-byte private scalar) sits
+alongside it, unused until Phase 16/17 sign CertificateVerify with it.
+A pure serializer like `tls_encrypted_extensions_write` — no key
+material or randomness involved in producing *this* message — so the
+caller sends it the same way: `tls_derive_handshake_secrets` then
+`tls_record_encrypt` under the server's handshake traffic key.
+
+`.byte` data instead of `.incbin` is a deliberate choice: `cert_data.S`
+is assembled from two different working directories (the top-level
+Makefile from the repo root, `tests/unit/Makefile` from `tests/unit/`),
+and `.incbin`'s path is resolved relative to the assembler's cwd, so no
+single relative path could satisfy both. Literal bytes have no such
+problem — see `src/h2_huffman_table.S` for the same pattern used
+elsewhere in this codebase.
+
 ## API Reference
 
 ### `tls_parse_client_hello`
@@ -170,6 +200,18 @@ Output:
        whatever tls_state currently holds)
 ```
 
+### `tls_certificate_write`
+```
+Input:
+  x0 = pointer to the output buffer (>= 13 + the embedded certificate
+       length)
+
+Output:
+  x0 = total message length (no failure mode — pure serialization of
+       the certificate embedded at build time, tls_cert_der in
+       src/tls/cert_data.S)
+```
+
 ## Build Integration
 
 Follows the same convention as `src/tls/record/` and
@@ -217,16 +259,26 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
     `tls_record_decrypt` under the RFC 8448 server handshake traffic
     key/IV: the message and its ALPN survive the wire, and a tampered
     key is rejected
+- `tests/unit/test_tls_certificate.c` — 11 tests covering:
+  - `tls_certificate_write` byte-for-byte against `certs/cert.der` read
+    straight off disk (not a hardcoded vector — the cert can be
+    regenerated any time via `certs/generate.sh` + `certs/embed_cert.sh`
+    without breaking this test)
+  - Determinism (the same build-time-embedded certificate reproduces
+    identical output across calls)
 
 ## References
 
 - RFC 8446 — TLS 1.3 (§4.1.2: ClientHello, §4.1.3: ServerHello, §4.3.1:
-  EncryptedExtensions, §4.2: Extensions, §4.2.8: key_share, §6.2: Alert
-  descriptions, §7.1: key schedule)
+  EncryptedExtensions, §4.4.2: Certificate, §4.2: Extensions, §4.2.8:
+  key_share, §6.2: Alert descriptions, §7.1: key schedule)
 - RFC 7748 — Elliptic Curves for Security (§5: the X25519 base point)
 - RFC 6066 — TLS Extensions: server_name (§3)
 - RFC 7301 — ALPN (§3.1: the ProtocolNameList wire format)
 - RFC 8448 — Example Handshake and Traffic Keys for TLS 1.3 (§3: the
   ClientHello wire trace and the key-schedule values)
+- RFC 5280 — X.509 (informational only: this server does not parse
+  it — see `certs/README.md` for the certificate generated for Phase 15)
 - PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
-  Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions
+  Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
+  Phase 15: Certificate handling

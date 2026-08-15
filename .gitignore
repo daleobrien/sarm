@@ -10,6 +10,7 @@ www/cgi-bin/*
 !www/cgi-bin/logbook
 !www/cgi-bin/envtest
 src/embedded.S
+src/tls/cert_data.S
 www_gz/
 *.o
 tests/unit/_obj/
@@ -22,3 +23,4 @@ __pycache__
 
 certs/*.der
 certs/*.pem
+certs/*.raw

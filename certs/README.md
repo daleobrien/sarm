@@ -11,6 +11,28 @@ ymawky TLS 1.3 server implementation against the cipher suite it supports,
 | `key.pem`  | EC P-256 (secp256r1 / prime256v1) **private key** (chmod 600)   |
 | `cert.pem` | Self-signed certificate (public), signed with ecdsa-with-SHA256 |
 | `cert.der` | DER form of `cert.pem` (what the TLS 1.3 `Certificate` message carries) |
+| `embed_cert.sh` | Generates `src/tls/cert_data.S` from `cert.der` and `key.pem` |
+
+## Embedding into the server (PLAN.MD Phase 15)
+
+PLAN.MD Phase 15 is explicit: **no general X.509 parser**. Instead
+`cert.der` and the raw 32-byte private scalar from `key.pem` are
+embedded as literal bytes into `src/tls/cert_data.S` (`tls_cert_der` /
+`tls_priv_key`) by `./embed_cert.sh`, and `tls_certificate_write`
+(`src/tls/handshake/certificate.S`) just copies `tls_cert_der` onto the
+wire, unparsed. Run it after `./generate.sh` any time the certificate
+or key changes:
+
+```sh
+./generate.sh -f     # regenerate key.pem / cert.pem / cert.der
+./embed_cert.sh       # regenerate ../src/tls/cert_data.S
+```
+
+`src/tls/cert_data.S` is gitignored — like `key.pem`, it embeds private
+key material (as literal `.byte` data instead of PEM), so it must be
+regenerated locally rather than committed. `make` does not regenerate
+it automatically; both scripts above are a required manual step before
+the first build on a fresh checkout.
 
 ## Why ECDSA P-256?
 
