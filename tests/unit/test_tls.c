@@ -324,7 +324,7 @@ static void test_state_offsets(void) {
 	                  TLS_SERVER_KEY_SHARE);
 	ASSERT_TLS_OFFSET("tls_shared_secret", tls_shared_secret,
 	                  TLS_SHARED_SECRET);
-	ASSERT_TLS_OFFSET("tls_transcript_hash", tls_transcript_hash,
+	ASSERT_TLS_OFFSET("tls_transcript_hash_field", tls_transcript_hash_field,
 	                  TLS_TRANSCRIPT_HASH);
 	ASSERT_TLS_OFFSET("tls_handshake_secret", tls_handshake_secret,
 	                  TLS_HANDSHAKE_SECRET);

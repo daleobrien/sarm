@@ -14,8 +14,14 @@
 // Exported Symbols:
 //   tls_state          — the TLS connection state block
 //   tls_fd .. tls_alpn — one label per field (offset checks + direct
-//                        access)
+//                        access); the transcript-hash field is
+//                        tls_transcript_hash_field because
+//                        tls_transcript_hash is the snapshot function
+//                        (PLAN.MD §9.2)
 //   tls_alpn_h2        — the "h2" ALPN identifier (RFC 7301), 16-aligned
+//   tls_transcript_ctx — the running handshake-transcript SHA-256
+//                        context (PLAN.MD Phase 9), SHA256_CTX layout
+//                        plus one tls_transcript_ctx_* label per field
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -28,7 +34,7 @@
 .global tls_client_key_share
 .global tls_server_key_share
 .global tls_shared_secret
-.global tls_transcript_hash
+.global tls_transcript_hash_field
 .global tls_handshake_secret
 .global tls_master_secret
 .global tls_client_hs_key
@@ -56,7 +62,7 @@ tls_server_random:     .skip TLS_RANDOM_LEN
 tls_client_key_share:  .skip TLS_KEY_SHARE_LEN
 tls_server_key_share:  .skip TLS_KEY_SHARE_LEN
 tls_shared_secret:     .skip TLS_KEY_SHARE_LEN  // 32 B X25519 shared secret
-tls_transcript_hash:   .skip TLS_DIGEST_LEN
+tls_transcript_hash_field:   .skip TLS_DIGEST_LEN
 tls_handshake_secret:  .skip TLS_SECRET_LEN
 tls_master_secret:     .skip TLS_SECRET_LEN
 tls_client_hs_key:     .skip TLS_KEY_LEN
@@ -78,3 +84,24 @@ tls_alpn:              .skip TLS_ALPN_BUF  // TLS_ALPN
 .global tls_alpn_h2
 tls_alpn_h2:
     .ascii "h2"
+
+// tls_transcript_ctx — the running SHA-256 context of the handshake
+// transcript (PLAN.MD §9). SHA256_CTX_SIZE bytes laid out by the
+// SHA256_CTX_* offsets in defs.S (the same contract as sha256_ctx in
+// src/crypto/data.S); each field is also exported under a
+// tls_transcript_ctx_* label so the unit test (test_tls_transcript.c)
+// can verify every offset against real storage. Not a valid context
+// until tls_transcript_init seeds it — the zero bytes below are just
+// initial storage, exactly like sha256_ctx.
+.align 4
+.global tls_transcript_ctx
+.global tls_transcript_ctx_state
+.global tls_transcript_ctx_bitlen
+.global tls_transcript_ctx_buf
+.global tls_transcript_ctx_buflen
+
+tls_transcript_ctx:
+tls_transcript_ctx_state:   .skip 32        // SHA256_CTX_STATE — set by tls_transcript_init
+tls_transcript_ctx_bitlen:  .quad 0         // SHA256_CTX_BITLEN
+tls_transcript_ctx_buf:     .skip 64        // SHA256_CTX_BUF
+tls_transcript_ctx_buflen:  .quad 0         // SHA256_CTX_BUFLEN

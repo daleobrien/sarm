@@ -67,6 +67,7 @@ TEST_GCM   := $(OBJ_DIR)/test_gcm
 TEST_X25519 := $(OBJ_DIR)/test_x25519
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
+TEST_TLS_TRANSCRIPT := $(OBJ_DIR)/test_tls_transcript
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -82,7 +83,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_TRANSCRIPT) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -272,12 +273,22 @@ $(TEST_X25519): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(transport_objs) $(LDFLAGS) -o $@
 
-# test_tls: only needs the tls module (PLAN.MD §2) — the wire
-# constants in defs.S are compile-time, so this links src/tls/data.S
-# only: the tls_state block and the tls_* field labels the offset
-# tests check against the TLS_* offsets.
-$(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(LDFLAGS) -o $@
+# test_tls: the tls module (PLAN.MD §2) — the wire constants in
+# defs.S are compile-time, so this links src/tls/data.S: the tls_state
+# block and the tls_* field labels the offset tests check against the
+# TLS_* offsets. crypto is linked too: the tls_objs wildcard now also
+# picks up transcript.S, which calls the sha256_* streaming API.
+$(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_tls_transcript: tls + crypto (PLAN.MD Phase 9).
+# transcript.S wraps the sha256_* streaming API from src/crypto, so the
+# suite links both modules. tls_transcript_init()/add()/hash() are
+# called directly; the C reference SHA-256 in the test cross-checks the
+# transcript (header synthesis, ordering, streaming boundaries) against
+# the wire bytes.
+$(TEST_TLS_TRANSCRIPT): test_tls_transcript.c $(HARNESS) $(tls_objs) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
 # parse_header_end uses parse data. get_header_field calls streqn_i.
