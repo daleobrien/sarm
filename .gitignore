@@ -19,3 +19,6 @@ PLAN.MD
 OPTIMISATION.MD
 __pycache__
 *.dSYM/
+
+certs/*.der
+certs/*.pem
