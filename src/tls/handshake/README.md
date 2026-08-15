@@ -1,4 +1,4 @@
-# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15)
+# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17)
 
 ## Overview
 
@@ -16,7 +16,13 @@ EncryptedExtensions (RFC 8446 §4.3.1), the first message either side
 sends under handshake traffic protection. Phase 15 sends the server's
 authentication material — the Certificate message (RFC 8446 §4.4.2) —
 built from an ECDSA P-256 certificate and private key embedded at build
-time (see `certs/`), not parsed from X.509 at runtime.
+time (see `certs/`), not parsed from X.509 at runtime. Phase 17 proves
+the server actually holds that certificate's private key: the
+CertificateVerify message (RFC 8446 §4.4.3) signs the running
+handshake transcript with the embedded ECDSA P-256 private key
+(Phase 16's `p256_ecdsa_sign_with_k`), so any client that later
+validates the certificate chain can trust the rest of the handshake
+came from its owner.
 
 ## Module Structure
 
@@ -135,6 +141,44 @@ single relative path could satisfy both. Literal bytes have no such
 problem — see `src/h2_huffman_table.S` for the same pattern used
 elsewhere in this codebase.
 
+### `certificate_verify/` — `tls_certificate_verify_write`
+
+Generates the CertificateVerify handshake message (RFC 8446 §4.4.3),
+split into three files (one function each, matching `server_hello/`):
+
+- **`content_hash.S`** — `tls_certificate_verify_content_hash`: builds
+  the exact "Content" RFC 8446 §4.4.3 specifies —
+  `64*0x20 || "TLS 1.3, server CertificateVerify" || 0x00 ||
+  transcript_hash` (130 bytes total) — and SHA-256s it. The 98-byte
+  fixed prefix is never actually concatenated into one buffer; it's
+  fed to the streaming SHA-256 API as a separate `sha256_update` from
+  the transcript hash. Pure and deterministic — no key material or
+  randomness — so it's tested directly against a from-scratch Python
+  transliteration of the RFC's Content construction.
+- **`sign_with_k.S`** — `tls_certificate_verify_sign_with_k`: signs
+  that digest with the server's embedded private key (`tls_priv_key`,
+  `src/tls/cert_data.S`) via `p256_ecdsa_sign_with_k` (Phase 16.5).
+  Like `p256_ecdsa_sign_with_k` itself, the nonce `k` is a caller-
+  supplied argument rather than drawn here, keeping this function
+  deterministic and testable against fixed vectors — the RNG-dependent
+  half lives one layer up, in `write.S`.
+- **`write.S`** — `tls_certificate_verify_write`: draws a fresh random
+  nonce (`crypto_random_bytes`, retrying up to 4 times on the
+  ~2^-256-probability `r == 0`/`s == 0` failure per FIPS 186-4), calls
+  `sign_with_k`, DER-encodes the resulting `(r,s)` with
+  `p256_ecdsa_der_sig_encode` (`src/crypto/p256_ecdsa/der_encode.S` —
+  a new leaf function alongside Phase 16's `sign`/`verify`, since
+  DER — unlike the raw fixed-width `(r,s)` those functions use — is
+  what actually goes on the wire), and serializes the 4-byte handshake
+  header, the fixed `signature_algorithm` (`ecdsa_secp256r1_sha256`,
+  `0x0403` — the only scheme this server supports, `SIG_ECDSA_SECP256R1_SHA256`
+  in `defs.S`) and the length-prefixed signature. The nonce and the raw
+  `(r,s)` are wiped from the stack before returning, the same
+  discipline as the ephemeral X25519 scalar in `tls_build_server_hello`.
+  Like `tls_build_server_hello`, the caller sends the result the usual
+  way: `tls_record_encrypt` under the server's handshake traffic key,
+  after feeding it to `tls_transcript_add` for Phase 18's Finished.
+
 ## API Reference
 
 ### `tls_parse_client_hello`
@@ -212,6 +256,42 @@ Output:
        src/tls/cert_data.S)
 ```
 
+### `tls_certificate_verify_content_hash`
+```
+Input:
+  x0 = pointer to a 32-byte digest output buffer
+  x1 = pointer to the 32-byte transcript hash (tls_transcript_hash)
+
+Output:
+  none (void) — 32 digest bytes written to [x0]
+```
+
+### `tls_certificate_verify_sign_with_k`
+```
+Input:
+  x0 = sig_r out (32 bytes), x1 = sig_s out (32 bytes)
+  x2 = pointer to the 32-byte transcript hash
+  x3 = k, the nonce (32 bytes)
+
+Output:
+  x0 = 0 on success, 1 on failure (r == 0 or s == 0 — see
+       p256_ecdsa_sign_with_k)
+```
+
+### `tls_certificate_verify_write`
+```
+Input:
+  x0 = pointer to the output buffer (>= 80 bytes)
+  x1 = pointer to the 32-byte transcript hash
+
+Output (carry clear — success):
+  x0 = total message length
+
+Output (carry set — failure):
+  x0 = TLS_ALERT_INTERNAL_ERROR (crypto_random_bytes failed, or every
+       retry produced r == 0 / s == 0)
+```
+
 ## Build Integration
 
 Follows the same convention as `src/tls/record/` and
@@ -266,12 +346,35 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
     without breaking this test)
   - Determinism (the same build-time-embedded certificate reproduces
     identical output across calls)
+- `tests/unit/test_p256_ecdsa/der_encode.c` — 36 tests: `p256_ecdsa_der_sig_encode`
+  against DER encodings from Python's `cryptography` library
+  (`encode_dss_signature`), covering small values, values needing a
+  0x00 pad byte, values with several leading zero bytes to strip, and
+  random P-256 scalars
+- `tests/unit/test_tls_certificate_verify/` — one suite per
+  `certificate_verify/*.S` module (PLAN.MD Phase 17):
+  - `content_hash.c` — 9 tests: `tls_certificate_verify_content_hash`
+    against a from-scratch Python transliteration of RFC 8446 §4.4.3's
+    Content construction, plus determinism
+  - `sign_with_k.c` — 40 tests: `tls_certificate_verify_sign_with_k`
+    against Python-computed `(r,s)` vectors over the server's real
+    embedded private key, each independently cross-checked by
+    DER-encoding and verifying with `cryptography` against the
+    server's real public key
+  - `write.c` — 6 tests: `tls_certificate_verify_write`'s output
+    parsed structurally (handshake header, `signature_algorithm`,
+    length-prefixed DER signature) and checked with `p256_ecdsa_verify`
+    against the server's real public key; two calls over the same
+    transcript produce different signatures (the RNG is actually
+    used); a signature is rejected against a transcript hash other
+    than the one it was signed over
 
 ## References
 
 - RFC 8446 — TLS 1.3 (§4.1.2: ClientHello, §4.1.3: ServerHello, §4.3.1:
-  EncryptedExtensions, §4.4.2: Certificate, §4.2: Extensions, §4.2.8:
-  key_share, §6.2: Alert descriptions, §7.1: key schedule)
+  EncryptedExtensions, §4.4.2: Certificate, §4.4.3: CertificateVerify,
+  §4.2: Extensions, §4.2.8: key_share, §4.2.3: signature_algorithms,
+  §6.2: Alert descriptions, §7.1: key schedule)
 - RFC 7748 — Elliptic Curves for Security (§5: the X25519 base point)
 - RFC 6066 — TLS Extensions: server_name (§3)
 - RFC 7301 — ALPN (§3.1: the ProtocolNameList wire format)
@@ -281,4 +384,5 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
   it — see `certs/README.md` for the certificate generated for Phase 15)
 - PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
   Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
-  Phase 15: Certificate handling
+  Phase 15: Certificate handling, Phase 16: ECDSA P-256, Phase 17:
+  CertificateVerify
