@@ -113,8 +113,8 @@ class Optimizer:
         """The text of ``self.function`` (from its .global to the next one)."""
         pattern = re.compile(
             rf"(?ms)"
-            rf"^[ \t]*\.global[ \t]+{re.escape(self.function)}.*?"
-            rf"(?=^[ \t]*\.global[ \t]+|\Z)"
+            rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b.*?"
+            rf"(?=^[ \t]*\.globa?l[ \t]+|\Z)"
         )
         match = pattern.search(source_text)
         if not match:
@@ -130,7 +130,7 @@ class Optimizer:
         repl = replacement.strip()
         # Tolerate models that drop the directives: re-add the .global line.
         if not re.search(
-            rf"^[ \t]*\.global[ \t]+{re.escape(self.function)}\b", repl, re.M
+            rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b", repl, re.M
         ):
             repl = f".global {self.function}\n" + repl
         if not re.search(rf"^{re.escape(self.function)}:", repl, re.M):
@@ -148,7 +148,7 @@ class Optimizer:
         lines = source_text.splitlines()
         global_idx = None
         for i, line in enumerate(lines):
-            if re.match(rf"^[ \t]*\.global[ \t]+{re.escape(self.function)}\b", line):
+            if re.match(rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b", line):
                 global_idx = i
                 break
         if global_idx is None:
