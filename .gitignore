@@ -16,3 +16,6 @@ tests/unit/_obj/
 IMPROVEMENTS-3.md
 IMPROVEMENT-PLAN.MD
 PLAN.MD
+OPTIMISATION.MD
+__pycache__
+*.dSYM/
