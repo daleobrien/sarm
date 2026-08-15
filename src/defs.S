@@ -730,7 +730,9 @@
 // protocol versions (§4.1.2, §5.1). The ClientHello legacy_version and
 // the record-layer legacy_record_version are both 0x0303 even for TLS
 // 1.3 — the real version is negotiated through the supported_versions
-// extension (0x0304).
+// extension (0x0304). The record layer also accepts 0x0301 (TLS 1.0)
+// because an initial ClientHello is carried in a 0x0301 record (§5.1).
+.equ TLS_VERSION_1_0, 0x0301
 .equ TLS_VERSION_1_2, 0x0303
 .equ TLS_VERSION_1_3, 0x0304
 
@@ -757,6 +759,30 @@
 .equ TLS_RECORD_APPLICATION_DATA,   23  // 0x17
 .equ TLS_RECORD_HEADER_LEN, 5  // type(1) + legacy_record_version(2) + length(2)
 .equ TLS_MAX_PLAINTEXT, 16384  // 2^14 — plaintext record payload limit (§5.2)
+
+// record-layer limits (§5.2). A TLSPlaintext fragment is at most 2^14;
+// a TLSCiphertext may reach 2^14 + 256 on the wire, but with AES-128-GCM
+// (16-byte tag) and a single TLSInnerPlaintext.type byte the largest
+// record this server can produce or open is 2^14 + 1 + 16.
+.equ TLS_TAG_LEN,          16     // AES-128-GCM authentication tag (§5.3)
+.equ TLS_INNER_TYPE_LEN,   1      // TLSInnerPlaintext.type (§5.2)
+.equ TLS_MAX_CIPHERTEXT,   16640  // 2^14 + 256 — the wire limit (§5.2)
+.equ TLS_MAX_AEAD,         16401  // 2^14 + 1 + 16 — AES-128-GCM record max
+
+// record-layer error codes — the x0 return value of tls_record_parse /
+// tls_record_write / tls_record_encrypt / tls_record_decrypt when the
+// carry flag is set. Distinct from errno and from the alert
+// descriptions above; later phases map them to RFC 8446 alerts
+// (TLS_RECORD_ERR_LENGTH → record_overflow, TLS_RECORD_ERR_MAC →
+// bad_record_mac, TLS_RECORD_ERR_* → decode_error/unexpected_message).
+.equ TLS_RECORD_ERR_SHORT,   1  // fewer than TLS_RECORD_HEADER_LEN bytes
+.equ TLS_RECORD_ERR_TYPE,    2  // content type not 20/21/22/23
+.equ TLS_RECORD_ERR_VERSION, 3  // legacy_record_version not 0x0301/0x0303
+.equ TLS_RECORD_ERR_LENGTH,  4  // fragment length exceeds the limit
+.equ TLS_RECORD_ERR_BOUNDS,  5  // fragment runs past the buffer end
+.equ TLS_RECORD_ERR_MAC,     6  // AEAD tag mismatch
+.equ TLS_RECORD_ERR_INNER,   7  // no non-zero octet / bad inner type
+.equ TLS_RECORD_ERR_EMPTY,   8  // zero-length handshake/alert content
 
 // handshake message types (§4)
 .equ TLS_HS_CLIENT_HELLO,         1
