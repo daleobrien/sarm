@@ -26,16 +26,32 @@ LDFLAGS := -arch arm64
 # ── build directory ─────────────────────────────────────────────────
 OBJ_DIR := _obj
 
+# ── recursive wildcard ───────────────────────────────────────────
+# Same as the main Makefile: find .S files in subdirectories
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
 # ── assembly object files ──────────────────────────────────────────
 # One object per source file; each module's objects are gathered with a
 # wildcard so adding a new function file needs no Makefile edit.
 util_objs    := $(patsubst ../../src/util/%.S,$(OBJ_DIR)/util_%.o,$(wildcard ../../src/util/*.S))
 parse_objs   := $(patsubst ../../src/parse/%.S,$(OBJ_DIR)/parse_%.o,$(wildcard ../../src/parse/*.S))
 file_objs    := $(patsubst ../../src/file/%.S,$(OBJ_DIR)/file_%.o,$(wildcard ../../src/file/*.S))
-http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(wildcard ../../src/http1/*.S))
-h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../src/h2/*.S))
+http1_srcs   := $(call rwildcard,../../src/http1,*.S)
+http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(http1_srcs))
+h2_srcs      := $(call rwildcard,../../src/h2,*.S)
+h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(h2_srcs))
 hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
+crypto_srcs  := $(call rwildcard,../../src/crypto,*.S)
+crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_srcs))
+transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
+# TLS module objects, including submodules in record/, transcript/, etc.
+tls_srcs     := $(call rwildcard,../../src/tls,*.S)
+tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(tls_srcs))
 data_objs    := $(OBJ_DIR)/data.o
+
+# util/write_all.S now tail-calls transport_write, so any test binary that
+# links the util objects must also link the transport module.
+util_objs += $(transport_objs)
 stubs_objs   := $(OBJ_DIR)/stubs.o
 stubs_resp_objs := $(OBJ_DIR)/stubs_response.o
 
@@ -52,6 +68,37 @@ TEST_ITOA := $(OBJ_DIR)/test_itoa
 TEST_FNV1A_64 := $(OBJ_DIR)/test_fnv1a_64
 TEST_ATOI := $(OBJ_DIR)/test_atoi
 TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
+TEST_SHA256 := $(OBJ_DIR)/test_sha256
+TEST_HMAC   := $(OBJ_DIR)/test_hmac
+TEST_HKDF   := $(OBJ_DIR)/test_hkdf
+TEST_AES128 := $(OBJ_DIR)/test_aes128
+TEST_GCM   := $(OBJ_DIR)/test_gcm
+TEST_X25519 := $(OBJ_DIR)/test_x25519
+TEST_P256 := $(OBJ_DIR)/test_p256
+TEST_P256_SCALAR := $(OBJ_DIR)/test_p256_scalar
+TEST_P256_POINT := $(OBJ_DIR)/test_p256_point
+TEST_P256_ECDSA := $(OBJ_DIR)/test_p256_ecdsa
+TEST_CRYPTO_RANDOM := $(OBJ_DIR)/test_crypto_random
+TEST_TRANSPORT := $(OBJ_DIR)/test_transport
+TEST_TLS := $(OBJ_DIR)/test_tls
+TEST_TLS_CLIENT_HELLO := $(OBJ_DIR)/test_tls_client_hello
+TEST_TLS_SERVER_HELLO := $(OBJ_DIR)/test_tls_server_hello
+TEST_TLS_KEY_SCHEDULE := $(OBJ_DIR)/test_tls_key_schedule
+TEST_TLS_ENCRYPTED_EXTENSIONS := $(OBJ_DIR)/test_tls_encrypted_extensions
+TEST_TLS_CERTIFICATE := $(OBJ_DIR)/test_tls_certificate
+# transcript suites — one per src/tls/transcript/*.S module; all share
+# test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
+TEST_TLS_TRANSCRIPT_INIT := $(OBJ_DIR)/test_tls_transcript_init
+TEST_TLS_TRANSCRIPT_ADD  := $(OBJ_DIR)/test_tls_transcript_add
+TEST_TLS_TRANSCRIPT_HASH := $(OBJ_DIR)/test_tls_transcript_hash
+# record layer suites — one per src/tls/record/*.S module; all share
+# test_tls_record/common.h (constants, RFC 8448 vectors, asm wrappers).
+TEST_TLS_RECORD_PARSE   := $(OBJ_DIR)/test_tls_record_parse
+TEST_TLS_RECORD_WRITE   := $(OBJ_DIR)/test_tls_record_write
+TEST_TLS_RECORD_NONCE   := $(OBJ_DIR)/test_tls_record_nonce
+TEST_TLS_RECORD_ENCRYPT := $(OBJ_DIR)/test_tls_record_encrypt
+TEST_TLS_RECORD_DECRYPT := $(OBJ_DIR)/test_tls_record_decrypt
+TEST_TLS_RECORD_SEQ     := $(OBJ_DIR)/test_tls_record_seq
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -67,7 +114,9 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_P256) $(TEST_P256_SCALAR) $(TEST_P256_POINT) $(TEST_P256_ECDSA) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) \
+	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
+	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -113,7 +162,7 @@ build: $(TESTS)
 # The per-module objects are only ever prerequisites of the test binaries,
 # so GNU make treats them as intermediates and deletes them after each
 # link — forcing a full recompile on every `make test`. Keep them.
-.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs)
+.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs) $(tls_objs)
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -130,12 +179,40 @@ $(OBJ_DIR)/file_%.o: ../../src/file/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/http1_%.o: ../../src/http1/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/h2_%.o: ../../src/h2/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_%.o: ../../src/tls/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_record_%.o: ../../src/tls/record/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_transcript_%.o: ../../src/tls/transcript/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_handshake_%.o: ../../src/tls/handshake/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
@@ -195,6 +272,149 @@ $(TEST_FNV1A_64): test_fnv1a_64.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 # flag, so the C test code calls it via an inline asm wrapper.
 $(TEST_ATOI_N): test_atoi_n.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
+
+# test_sha256: only needs crypto (pure function, standard ABI).
+# sha256(state=x0, data=x1, nblocks=x2) is called directly.
+$(TEST_SHA256): test_sha256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_hmac: only needs crypto (pure function, standard ABI).
+# hmac_sha256(key=x0, keylen=x1, data=x2, datalen=x3, digest=x4) is
+# called directly; it links sha256.o for the streaming sha256_* calls.
+$(TEST_HMAC): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_hkdf: only needs crypto (pure functions, standard ABI).
+# hkdf_extract(salt=x0, saltlen=x1, ikm=x2, ikmlen=x3, prk=x4),
+# hkdf_expand(prk=x0, prklen=x1, info=x2, infolen=x3, okm=x4, okmlen=x5)
+# and hkdf_expand_label(secret=x0, label=x1, label_len=x2, context=x3,
+# context_len=x4, out=x5, outlen=x6) are called directly; the module
+# links sha256.o + hmac.o for the HMAC calls.
+$(TEST_HKDF): test_hkdf.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_aes128: only needs crypto (pure functions, standard ABI).
+# aes128_encrypt(pt=x0, rk=x1, ct=x2) and aes128_key_expand(key=x0,
+# rk=x1) are called directly.
+$(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_gcm: only needs crypto (pure functions, standard ABI); gcm.o
+# references aes128_key_expand/aes128_encrypt from aes128.o.
+# gf_mult_128(x=x0, y=x1, z=x2), ghash(h=x0, aad=x1, aad_len=x2, ct=x3,
+# ct_len=x4, out=x5), aes_gcm_encrypt(key=x0, iv=x1, aad=x2, aad_len=x3,
+# pt=x4, pt_len=x5, ct=x6, tag=x7) and aes_gcm_decrypt(key=x0, iv=x1,
+# aad=x2, aad_len=x3, ct=x4, ct_len=x5, tag=x6, pt=x7, returns x0=1/0)
+# are called directly.
+$(TEST_GCM): test_gcm.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_x25519: only needs crypto (pure functions, standard ABI).
+# x25519_fe_frombytes(out=x0,s=x1), x25519_fe_tobytes(out=x0,in=x1),
+# x25519_fe_add(out=x0,a=x1,b=x2), x25519_fe_sub, x25519_fe_mul,
+# x25519_fe_sqr(out=x0,a=x1), x25519_fe_sqr_times(out=x0,a=x1,count=x2),
+# x25519_fe_scalar_product(out=x0,a=x1,scalar=x2), x25519_fe_recip(out=x0,a=x1),
+# x25519_swap_conditional(x=x0,qpx=x1,iswap=x2) and
+# x25519(out=x0,scalar=x1,point=x2) are called directly.
+$(TEST_X25519): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256.c drives p256_fe_* (PLAN.MD Phase 16.1) against Python-computed
+# reference vectors for the real NIST P-256 prime.
+$(TEST_P256): test_p256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_scalar.c drives p256_scalar_* (arithmetic mod n) against
+# Python-computed reference vectors for the real P-256 group order.
+$(TEST_P256_SCALAR): test_p256_scalar.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_point.c drives p256_point_* (PLAN.MD Phase 16.2/16.3/16.4)
+# against a Python transliteration of the exact same Jacobian formulas
+# (dbl/add) and against cryptography-library-derived public keys
+# (point_mul).
+$(TEST_P256_POINT): test_p256_point.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_p256_ecdsa.c drives p256_ecdsa_sign_with_k/verify (PLAN.MD
+# Phase 16.5/16.6) against vectors cross-checked with (and, for verify,
+# produced directly by) the `cryptography` library.
+$(TEST_P256_ECDSA): test_p256_ecdsa.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_crypto_random: only needs crypto (crypto_random_bytes is a
+# pure syscall wrapper, standard ABI).
+$(TEST_CRYPTO_RANDOM): test_crypto_random.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_transport: only needs transport — transport_read/transport_write
+# dispatch on `transport_mode`, which lives in src/transport/data.S (part
+# of the transport_objs wildcard), so no data.o or stubs are needed.
+$(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(transport_objs) $(LDFLAGS) -o $@
+
+# test_tls: the tls module (PLAN.MD §2) — the wire constants in
+# defs.S are compile-time, so this links src/tls/data.S: the tls_state
+# block and the tls_* field labels the offset tests check against the
+# TLS_* offsets. crypto is linked too: the tls_objs wildcard now also
+# picks up transcript/*.S (sha256_* streaming API) and record/*.S
+# (aes_gcm from crypto + memcpy from util), so util_objs is linked as
+# well (util_objs drags in the transport module per the comment at the top).
+$(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_client_hello: the ClientHello parser (PLAN.MD Phase 12).
+# Links the same object set as test_tls — tls_parse_client_hello writes
+# into tls_state (tls_objs/data.S) and the tls_objs wildcard also pulls
+# in record/*.S and transcript/*.S, hence crypto_objs + util_objs.
+$(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_server_hello: the ServerHello generator (PLAN.MD Phase 13).
+# Same object set as test_tls_client_hello — tls_build_server_hello
+# calls crypto_random_bytes and x25519 from crypto_objs.
+$(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_key_schedule.c drives tls_derive_handshake_secrets (PLAN.MD
+# Phase 10) directly against tls_state, and cross-checks it with
+# hkdf_expand_label from crypto_objs.
+$(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_encrypted_extensions.c drives tls_encrypted_extensions_write
+# (PLAN.MD Phase 14) plus a seal/open round trip through
+# tls_record_encrypt/tls_record_decrypt (tls_objs' record/*.S), which
+# calls aes_gcm_encrypt/decrypt from crypto_objs.
+$(TEST_TLS_ENCRYPTED_EXTENSIONS): test_tls_encrypted_extensions.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_certificate.c drives tls_certificate_write (PLAN.MD Phase
+# 15) against the embedded certs/cert.der (tls_objs' cert_data.S).
+$(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_transcript_*: tls + crypto + util (PLAN.MD Phase 9).
+# One suite per src/tls/transcript/*.S module (init, add, hash) — each a
+# self-contained binary with its own main(), like the test_tls_record_*
+# suites above. All share test_tls_transcript/common.h (KAT vectors +
+# the independent C reference SHA-256 + asm wrappers). util_objs is
+# linked because the tls_objs wildcard also picks up record/*.S, which
+# calls memcpy from util.
+TLS_TRANSCRIPT_COMMON := test_tls_transcript/common.h
+
+$(OBJ_DIR)/test_tls_transcript_%: test_tls_transcript/%.c $(TLS_TRANSCRIPT_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_record_*: tls + crypto + util (PLAN.MD Phase 11).
+# One suite per src/tls/record/*.S module (parse, write, nonce, encrypt,
+# decrypt, seq) — each a self-contained binary with its own main(), like
+# the test_h2_* suites below. All share test_tls_record/common.h (RFC 8448
+# vectors + asm wrappers) and call memcpy (util) / aes_gcm_* (crypto).
+TLS_RECORD_COMMON := test_tls_record/common.h
+
+$(OBJ_DIR)/test_tls_record_%: test_tls_record/%.c $(TLS_RECORD_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
 # parse_header_end uses parse data. get_header_field calls streqn_i.

@@ -1,0 +1,56 @@
+You are an expert AArch64/ARMv8 assembly optimizer working on ymawky,
+a web server written entirely by hand in ARM64 assembly (no libc, no heap,
+no external runtime dependencies).
+
+FUNCTION: {function}
+
+SIGNATURE (from the source header comment):
+{signature}
+
+CALL SITES (how the function is used in the codebase):
+{call_sites}
+
+CURRENT IMPLEMENTATION (source assembly):
+```asm
+{source}
+```
+
+DISASSEMBLY OF THE CURRENT BUILD (actual generated machine code):
+```asm
+{disassembly}
+```
+
+CURRENT BENCHMARK (median of several rounds):
+{benchmark}
+
+PERF COUNTERS (evidence, not just runtime):
+{perf}
+
+LLVM-MCA (static instruction scheduling model of the current code):
+{mca}
+
+Your task: produce ONE optimization candidate for this function.
+
+Constraints:
+1. Preserve exact observable behaviour (inputs, outputs, side effects).
+2. Preserve the AArch64 AAPCS calling convention.
+3. Preserve all callee-saved registers (x19-x28, x29, x30, d8-d15).
+4. Preserve stack alignment and SP restoration at ret.
+5. Do not change the public ABI or the exported symbol name.
+6. Do not introduce external library calls.
+7. Do not change unrelated functions.
+8. Do not sacrifice correctness for speed.
+9. Prefer fewer instructions, better instruction scheduling, reduced
+   dependency chains, and improved NEON usage where appropriate.
+10. Consider branch prediction and memory latency.
+11. Do not optimize based solely on instruction count.
+12. The result will be assembled, tested and benchmarked automatically.
+13. Return the COMPLETE replacement function, including the
+    `.global {function}` directive and the `{function}:` label.
+
+Return ONLY JSON with exactly this shape (no markdown, no prose):
+
+{{
+"explanation": "short explanation",
+"assembly": "complete replacement function"
+}}

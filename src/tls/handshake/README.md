@@ -1,0 +1,284 @@
+# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15)
+
+## Overview
+
+The handshake module parses and generates TLS 1.3 handshake messages.
+Phase 12 covers the first message a server ever sees: the ClientHello
+(RFC 8446 §4.1.2) — this is where interoperability starts, checking a
+real client's offer against everything this server supports. Phase 13
+covers the reply: the ServerHello (RFC 8446 §4.1.3), which fixes the
+negotiated parameters and carries the server's half of the X25519 key
+exchange. Phase 14 needs the handshake traffic keys before it can send
+anything else, so this is also where the Phase 10 key schedule (skipped
+until now — nothing needed it) actually gets implemented: it turns the
+ServerHello's ECDHE shared secret into the keys that encrypt
+EncryptedExtensions (RFC 8446 §4.3.1), the first message either side
+sends under handshake traffic protection. Phase 15 sends the server's
+authentication material — the Certificate message (RFC 8446 §4.4.2) —
+built from an ECDSA P-256 certificate and private key embedded at build
+time (see `certs/`), not parsed from X.509 at runtime.
+
+## Module Structure
+
+### `client_hello.S` — `tls_parse_client_hello`
+
+Parses a ClientHello body (legacy_version through the end of
+extensions — the handshake message *after* its 4-byte type+length
+header) with the same strict, exact-fit bounds checking as
+`src/tls/record/parse.S`: every variable-length field must fit inside
+what came before it, and the extensions block must exactly fill the
+remainder of the buffer.
+
+On success, `client_random`, the `legacy_session_id` (echoed verbatim
+by the ServerHello, §4.1.3) and the client's X25519 public key (from
+`key_share`) are copied into `tls_state`, and the negotiated ALPN
+protocol (`"h2"`) is recorded there — Phase 14 (EncryptedExtensions)
+echoes it back. `legacy_version` and the compression methods are
+validated then discarded: this server does no compression.
+
+Five requirements are enforced, in order, each mapped to the alert a
+real TLS stack expects:
+
+| §    | Requirement                                        | Alert on failure         |
+|------|-----------------------------------------------------|---------------------------|
+| 12.1 | `supported_versions` offers TLS 1.3 (`0x0304`)      | `protocol_version`        |
+| 12.2 | `cipher_suites` offers `TLS_AES_128_GCM_SHA256`      | `handshake_failure`       |
+| 12.3 | `supported_groups` **and** `key_share` offer X25519  | `handshake_failure`       |
+| 12.4 | the ALPN extension offers `"h2"`                     | `no_application_protocol` |
+| 12.5 | `server_name`, if present, matches `tls_sni_hostname`| `unrecognized_name`       |
+
+SNI (§12.5) supports exactly one configured hostname
+(`tls_sni_hostname` in `src/tls/data.S`, currently `"localhost"`) —
+there's no virtual-host infrastructure to pick a hostname from, so a
+ClientHello with no `server_name` extension at all is accepted
+unconditionally. Any structural malformation (a length that doesn't
+fit, a truncated field, an extensions block that under/overruns the
+buffer) is `decode_error`, checked before any requirement above.
+
+Unrecognized extension types are skipped by length (RFC 8446 §4.2) —
+only `supported_versions`, `supported_groups`, `key_share`, `alpn` and
+`server_name` are acted on.
+
+### `server_hello.S` — `tls_build_server_hello` / `tls_server_hello_write`
+
+Generates the ServerHello (RFC 8446 §4.1.3) in reply to an already-
+validated ClientHello. Split into two functions so the RNG-dependent
+half stays out of the way of deterministic wire-format testing:
+
+- `tls_server_hello_write` is a pure serializer: it reads
+  `server_random`, the `legacy_session_id` echo and `server_key_share`
+  straight out of `tls_state` and writes the handshake header + body.
+  Everything else this server ever emits is fixed — `legacy_version =
+  0x0303`, cipher `TLS_AES_128_GCM_SHA256`, `legacy_compression_method
+  = 0`, and exactly two extensions: `supported_versions` (selecting TLS
+  1.3) and `key_share` (one X25519 `KeyShareEntry`).
+- `tls_build_server_hello` does the actual work PLAN.MD Phase 13 calls
+  for: draws `server_random` and a fresh ephemeral X25519 key pair from
+  `crypto_random_bytes` (`src/crypto/random.S`, `/dev/urandom`),
+  computes the ECDHE `shared_secret` against the client's `key_share`,
+  stores both into `tls_state`, and calls `tls_server_hello_write`. The
+  ephemeral private scalar lives only on its own stack frame and is
+  wiped before returning — nothing past this call needs it again, only
+  the shared secret the key schedule (Phase 10) consumes.
+
+### `key_schedule.S` — `tls_derive_handshake_secrets`
+
+Runs the RFC 8446 §7.1 key schedule from the ECDHE shared secret
+(`TLS_SHARED_SECRET`, filled by `tls_build_server_hello`) through the
+handshake traffic keys and the Master Secret: Early Secret and both
+"derived" collapses depend on nothing but fixed constants (an all-zero
+IKM and `SHA-256("")`), so they're recomputed on every call rather than
+cached; the Handshake Secret is extracted from the shared secret; the
+client/server handshake traffic secrets — transient, kept only in a
+reused stack scratch buffer — feed `HKDF-Expand-Label` for `"key"` and
+`"iv"` into `tls_state`; and the Master Secret is stored for Phase 19's
+application traffic secrets. The caller supplies the
+ClientHello..ServerHello transcript hash (`tls_transcript_hash`); every
+other input already lives in `tls_state` or is a compile-time constant.
+
+### `encrypted_extensions.S` — `tls_encrypted_extensions_write`
+
+Serializes EncryptedExtensions (RFC 8446 §4.3.1): the 4-byte handshake
+header followed by exactly one extension, ALPN, echoing back whatever
+`tls_parse_client_hello` negotiated (`TLS_ALPN_LEN`/`TLS_ALPN` — always
+`"h2"` when the ClientHello parser succeeded, since that's the only
+protocol this server offers). A pure serializer like
+`tls_server_hello_write` — no keys or randomness involved — so the
+caller does the actual "send encrypted" part of Phase 14 by running
+`tls_derive_handshake_secrets` first and then sealing this message with
+`tls_record_encrypt` under the server's handshake traffic key.
+
+### `certificate.S` — `tls_certificate_write`
+
+Serializes the Certificate handshake message (RFC 8446 §4.4.2): the
+4-byte handshake header, an empty `certificate_request_context` (this
+server never replies to a CertificateRequest), and a
+`certificate_list` of exactly one `CertificateEntry` — the DER
+certificate embedded at build time, with no per-entry extensions.
+PLAN.MD Phase 15 is explicit that this should **not** be a general
+X.509 parser: the certificate and its ECDSA P-256 private key are
+generated once (`certs/generate.sh`) and embedded into
+`src/tls/cert_data.S` as literal `.byte` data by `certs/embed_cert.sh`
+— `tls_certificate_write` just copies `tls_cert_der` onto the wire
+byte-for-byte, and `tls_priv_key` (the raw 32-byte private scalar) sits
+alongside it, unused until Phase 16/17 sign CertificateVerify with it.
+A pure serializer like `tls_encrypted_extensions_write` — no key
+material or randomness involved in producing *this* message — so the
+caller sends it the same way: `tls_derive_handshake_secrets` then
+`tls_record_encrypt` under the server's handshake traffic key.
+
+`.byte` data instead of `.incbin` is a deliberate choice: `cert_data.S`
+is assembled from two different working directories (the top-level
+Makefile from the repo root, `tests/unit/Makefile` from `tests/unit/`),
+and `.incbin`'s path is resolved relative to the assembler's cwd, so no
+single relative path could satisfy both. Literal bytes have no such
+problem — see `src/h2_huffman_table.S` for the same pattern used
+elsewhere in this codebase.
+
+## API Reference
+
+### `tls_parse_client_hello`
+```
+Input:
+  x0 = pointer to the ClientHello body (starts at legacy_version, i.e.
+       past the 4-byte handshake header)
+  x1 = body length
+
+Output (carry clear — success):
+  x0 = 0
+  tls_client_random, tls_session_id_len, tls_session_id,
+  tls_client_key_share, tls_alpn_len and tls_alpn are filled in
+  (src/tls/data.S)
+
+Output (carry set — failure):
+  x0 = TLS_ALERT_DECODE_ERROR / _PROTOCOL_VERSION / _HANDSHAKE_FAILURE
+       / _NO_APPLICATION_PROTOCOL / _UNRECOGNIZED_NAME
+```
+
+### `tls_build_server_hello`
+```
+Input:
+  x0 = pointer to the output buffer (>= 122 bytes: 4-byte header + up
+       to 86 + 32 body)
+
+Output (carry clear — success):
+  x0 = total message length. tls_server_random, tls_server_key_share
+       and tls_shared_secret are filled in (src/tls/data.S)
+
+Output (carry set — failure):
+  x0 = TLS_ALERT_INTERNAL_ERROR (crypto_random_bytes failed)
+```
+
+### `tls_server_hello_write`
+```
+Input:
+  x0 = pointer to the output buffer
+
+Output:
+  x0 = total message length (no failure mode — pure serialization of
+       whatever tls_state currently holds)
+```
+
+### `tls_derive_handshake_secrets`
+```
+Input:
+  x0 = pointer to the 32-byte ClientHello..ServerHello transcript hash
+
+Output:
+  none (void, no failure mode). tls_handshake_secret, tls_client_hs_key,
+  tls_client_hs_iv, tls_server_hs_key, tls_server_hs_iv and
+  tls_master_secret are filled in (src/tls/data.S)
+```
+
+### `tls_encrypted_extensions_write`
+```
+Input:
+  x0 = pointer to the output buffer (>= 45 bytes)
+
+Output:
+  x0 = total message length (no failure mode — pure serialization of
+       whatever tls_state currently holds)
+```
+
+### `tls_certificate_write`
+```
+Input:
+  x0 = pointer to the output buffer (>= 13 + the embedded certificate
+       length)
+
+Output:
+  x0 = total message length (no failure mode — pure serialization of
+       the certificate embedded at build time, tls_cert_der in
+       src/tls/cert_data.S)
+```
+
+## Build Integration
+
+Follows the same convention as `src/tls/record/` and
+`src/tls/transcript/`: each submodule compiles to its own object file,
+picked up automatically by the top-level Makefile's recursive wildcard
+and by an explicit pattern rule in `tests/unit/Makefile`.
+
+## Testing
+
+- `tests/unit/test_tls_client_hello.c` — 106 tests covering:
+  - The real RFC 8448 §3 ClientHello wire trace (which lacks ALPN, so
+    it doubles as a live `no_application_protocol` test case while
+    pinning `client_random`/`key_share` extraction against known-good
+    bytes)
+  - A synthetic-ClientHello builder exercising each requirement
+    (§12.1-§12.5) in isolation — one extension removed or corrupted at
+    a time
+  - Structural bounds checking: truncated buffers, an oversized
+    session ID, a mismatched extensions length, a missing null
+    compression method
+- `tests/unit/test_tls_server_hello.c` — 57 tests covering:
+  - `tls_server_hello_write` byte-for-byte, with an empty and a full
+    32-byte session ID echo
+  - `tls_build_server_hello` end-to-end: the returned shared secret is
+    checked against an independently computed `X25519(client scalar,
+    server's public key)` — a real ECDHE cross-check rather than a
+    fixed vector
+  - Two consecutive calls draw different `server_random` /
+    `server_key_share` values (the RNG is actually being used)
+- `tests/unit/test_tls_key_schedule.c` — 11 tests covering:
+  - `tls_derive_handshake_secrets` against the full RFC 8448 §3 trace:
+    the ECDHE shared secret and the ClientHello..ServerHello transcript
+    hash go in, `tls_handshake_secret` / `tls_server_hs_key` /
+    `tls_server_hs_iv` / `tls_master_secret` are checked against the
+    RFC's published values, and `tls_client_hs_key`/`tls_client_hs_iv`
+    are cross-checked by expanding the RFC's published
+    client_handshake_traffic_secret independently
+  - Determinism (the same inputs reproduce the same secrets) and
+    transcript-dependence (a different transcript hash changes the
+    traffic keys but not the shared-secret-derived handshake secret)
+- `tests/unit/test_tls_encrypted_extensions.c` — 28 tests covering:
+  - `tls_encrypted_extensions_write` byte-for-byte, for the real `"h2"`
+    ALPN echo and the degenerate empty-name case
+  - A full seal/open round trip through `tls_record_encrypt` /
+    `tls_record_decrypt` under the RFC 8448 server handshake traffic
+    key/IV: the message and its ALPN survive the wire, and a tampered
+    key is rejected
+- `tests/unit/test_tls_certificate.c` — 11 tests covering:
+  - `tls_certificate_write` byte-for-byte against `certs/cert.der` read
+    straight off disk (not a hardcoded vector — the cert can be
+    regenerated any time via `certs/generate.sh` + `certs/embed_cert.sh`
+    without breaking this test)
+  - Determinism (the same build-time-embedded certificate reproduces
+    identical output across calls)
+
+## References
+
+- RFC 8446 — TLS 1.3 (§4.1.2: ClientHello, §4.1.3: ServerHello, §4.3.1:
+  EncryptedExtensions, §4.4.2: Certificate, §4.2: Extensions, §4.2.8:
+  key_share, §6.2: Alert descriptions, §7.1: key schedule)
+- RFC 7748 — Elliptic Curves for Security (§5: the X25519 base point)
+- RFC 6066 — TLS Extensions: server_name (§3)
+- RFC 7301 — ALPN (§3.1: the ProtocolNameList wire format)
+- RFC 8448 — Example Handshake and Traffic Keys for TLS 1.3 (§3: the
+  ClientHello wire trace and the key-schedule values)
+- RFC 5280 — X.509 (informational only: this server does not parse
+  it — see `certs/README.md` for the certificate generated for Phase 15)
+- PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
+  Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
+  Phase 15: Certificate handling

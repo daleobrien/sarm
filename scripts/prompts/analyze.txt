@@ -1,0 +1,26 @@
+You are the ANALYST in an automated AArch64 optimization loop. Study the
+evidence for the function `{function}` and explain what is limiting its
+performance, then propose the single most promising next optimization.
+
+PERF COUNTERS:
+{perf}
+
+DISASSEMBLY:
+{disassembly}
+
+OPTIMIZATION HISTORY (accepted improvements so far):
+{history}
+
+Rules:
+- Use the perf counters to distinguish latency-bound (high cycles per
+  instruction, stalls) from throughput-bound (high instruction count)
+  and branch-miss-bound code.
+- Propose exactly ONE concrete, testable change.
+- Respect the AArch64 ABI (callee-saved registers, stack alignment).
+
+Return ONLY JSON with exactly this shape:
+
+{{
+"hypothesis": "what is limiting performance",
+"next_optimization": "single concrete change to try next"
+}}
