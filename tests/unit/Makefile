@@ -74,6 +74,8 @@ TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
 TEST_TLS_CLIENT_HELLO := $(OBJ_DIR)/test_tls_client_hello
 TEST_TLS_SERVER_HELLO := $(OBJ_DIR)/test_tls_server_hello
+TEST_TLS_KEY_SCHEDULE := $(OBJ_DIR)/test_tls_key_schedule
+TEST_TLS_ENCRYPTED_EXTENSIONS := $(OBJ_DIR)/test_tls_encrypted_extensions
 # transcript suites — one per src/tls/transcript/*.S module; all share
 # test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
 TEST_TLS_TRANSCRIPT_INIT := $(OBJ_DIR)/test_tls_transcript_init
@@ -102,7 +104,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -329,6 +331,19 @@ $(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(tls_objs) $(crypt
 # Same object set as test_tls_client_hello — tls_build_server_hello
 # calls crypto_random_bytes and x25519 from crypto_objs.
 $(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_key_schedule.c drives tls_derive_handshake_secrets (PLAN.MD
+# Phase 10) directly against tls_state, and cross-checks it with
+# hkdf_expand_label from crypto_objs.
+$(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_encrypted_extensions.c drives tls_encrypted_extensions_write
+# (PLAN.MD Phase 14) plus a seal/open round trip through
+# tls_record_encrypt/tls_record_decrypt (tls_objs' record/*.S), which
+# calls aes_gcm_encrypt/decrypt from crypto_objs.
+$(TEST_TLS_ENCRYPTED_EXTENSIONS): test_tls_encrypted_extensions.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_transcript_*: tls + crypto + util (PLAN.MD Phase 9).
