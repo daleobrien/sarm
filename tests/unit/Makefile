@@ -26,22 +26,27 @@ LDFLAGS := -arch arm64
 # ── build directory ─────────────────────────────────────────────────
 OBJ_DIR := _obj
 
+# ── recursive wildcard ───────────────────────────────────────────
+# Same as the main Makefile: find .S files in subdirectories
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
 # ── assembly object files ──────────────────────────────────────────
 # One object per source file; each module's objects are gathered with a
 # wildcard so adding a new function file needs no Makefile edit.
 util_objs    := $(patsubst ../../src/util/%.S,$(OBJ_DIR)/util_%.o,$(wildcard ../../src/util/*.S))
 parse_objs   := $(patsubst ../../src/parse/%.S,$(OBJ_DIR)/parse_%.o,$(wildcard ../../src/parse/*.S))
 file_objs    := $(patsubst ../../src/file/%.S,$(OBJ_DIR)/file_%.o,$(wildcard ../../src/file/*.S))
-http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(wildcard ../../src/http1/*.S))
-h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../src/h2/*.S))
+http1_srcs   := $(call rwildcard,../../src/http1,*.S)
+http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(http1_srcs))
+h2_srcs      := $(call rwildcard,../../src/h2,*.S)
+h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(h2_srcs))
 hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
-crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(wildcard ../../src/crypto/*.S))
+crypto_srcs  := $(call rwildcard,../../src/crypto,*.S)
+crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_srcs))
 transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
 # TLS module objects, including submodules in record/, transcript/, etc.
-tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(wildcard ../../src/tls/*.S)) \
-                $(patsubst ../../src/tls/record/%.S,$(OBJ_DIR)/tls_record_%.o,$(wildcard ../../src/tls/record/*.S)) \
-                $(patsubst ../../src/tls/transcript/%.S,$(OBJ_DIR)/tls_transcript_%.o,$(wildcard ../../src/tls/transcript/*.S)) \
-                $(patsubst ../../src/tls/handshake/%.S,$(OBJ_DIR)/tls_handshake_%.o,$(wildcard ../../src/tls/handshake/*.S))
+tls_srcs     := $(call rwildcard,../../src/tls,*.S)
+tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(tls_srcs))
 data_objs    := $(OBJ_DIR)/data.o
 
 # util/write_all.S now tail-calls transport_write, so any test binary that
@@ -174,9 +179,11 @@ $(OBJ_DIR)/file_%.o: ../../src/file/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/http1_%.o: ../../src/http1/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/h2_%.o: ../../src/h2/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
@@ -189,15 +196,23 @@ $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_%.o: ../../src/tls/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_record_%.o: ../../src/tls/record/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_transcript_%.o: ../../src/tls/transcript/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_handshake_%.o: ../../src/tls/handshake/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
