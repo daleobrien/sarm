@@ -64,6 +64,7 @@ TEST_HMAC   := $(OBJ_DIR)/test_hmac
 TEST_HKDF   := $(OBJ_DIR)/test_hkdf
 TEST_AES128 := $(OBJ_DIR)/test_aes128
 TEST_GCM   := $(OBJ_DIR)/test_gcm
+TEST_X25519 := $(OBJ_DIR)/test_x25519
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
@@ -81,7 +82,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_TRANSPORT) $(TEST_TLS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -253,6 +254,16 @@ $(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # aad=x2, aad_len=x3, ct=x4, ct_len=x5, tag=x6, pt=x7, returns x0=1/0)
 # are called directly.
 $(TEST_GCM): test_gcm.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_x25519: only needs crypto (pure functions, standard ABI).
+# x25519_fe_frombytes(out=x0,s=x1), x25519_fe_tobytes(out=x0,in=x1),
+# x25519_fe_add(out=x0,a=x1,b=x2), x25519_fe_sub, x25519_fe_mul,
+# x25519_fe_sqr(out=x0,a=x1), x25519_fe_sqr_times(out=x0,a=x1,count=x2),
+# x25519_fe_scalar_product(out=x0,a=x1,scalar=x2), x25519_fe_recip(out=x0,a=x1),
+# x25519_swap_conditional(x=x0,qpx=x1,iswap=x2) and
+# x25519(out=x0,scalar=x1,point=x2) are called directly.
+$(TEST_X25519): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_transport: only needs transport — transport_read/transport_write
