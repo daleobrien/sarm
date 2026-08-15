@@ -163,7 +163,9 @@
 #define TLS_SERVER_SEQ       408
 #define TLS_ALPN_LEN         416
 #define TLS_ALPN             424
-#define TLS_STATE_SIZE       440
+#define TLS_SESSION_ID_LEN   440
+#define TLS_SESSION_ID       448
+#define TLS_STATE_SIZE       480
 
 // ── asm symbol addressing ──────────────────────────────────────────
 // Take the address of a pure-assembly symbol by name (see file header).
@@ -350,16 +352,19 @@ static void test_state_offsets(void) {
 	ASSERT_TLS_OFFSET("tls_server_seq", tls_server_seq, TLS_SERVER_SEQ);
 	ASSERT_TLS_OFFSET("tls_alpn_len", tls_alpn_len, TLS_ALPN_LEN);
 	ASSERT_TLS_OFFSET("tls_alpn", tls_alpn, TLS_ALPN);
+	ASSERT_TLS_OFFSET("tls_session_id_len", tls_session_id_len,
+	                  TLS_SESSION_ID_LEN);
+	ASSERT_TLS_OFFSET("tls_session_id", tls_session_id, TLS_SESSION_ID);
 }
 
 static void test_state_alignment_and_size(void) {
 	TEST_SUITE("tls_state alignment & size");
 	ASSERT_EQ("tls_state 16-byte aligned", 0,
 	          (int64_t)ASM_SYM_ADDR(tls_state) % 16);
-	// storage extent: last field (tls_alpn) + its buffer. If data.S's
-	// layout drifts from defs.S's TLS_STATE_SIZE this catches it.
+	// storage extent: last field (tls_session_id) + its buffer. If
+	// data.S's layout drifts from defs.S's TLS_STATE_SIZE this catches it.
 	ASSERT_EQ("storage extent == TLS_STATE_SIZE", TLS_STATE_SIZE,
-	          TLS_OFFSET(tls_alpn) + TLS_ALPN_BUF);
+	          TLS_OFFSET(tls_session_id) + 32);
 	// every scalar/array field boundary stays 8-aligned (defs.S contract)
 	ASSERT_EQ("TLS_ALPN 8-aligned", 0, TLS_ALPN % 8);
 }
@@ -373,6 +378,8 @@ static void test_state_initial_values(void) {
 	ASSERT_EQ("tls_server_seq starts 0", 0, TLS_FIELD(tls_server_seq));
 	ASSERT_EQ("tls_alpn_len starts 0 (nothing negotiated)", 0,
 	          TLS_FIELD(tls_alpn_len));
+	ASSERT_EQ("tls_session_id_len starts 0", 0,
+	          TLS_FIELD(tls_session_id_len));
 	// the alpn name buffer is zeroed until negotiation fills it
 	{
 		static const char zeros[TLS_ALPN_BUF] = {0};

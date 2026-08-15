@@ -28,13 +28,13 @@
 //   the remainder of the buffer, matching the style of
 //   src/tls/record/parse.S.
 //
-//   On success, client_random (§4.1.2) and the client's X25519 public
-//   key (from the key_share extension, §4.2.8) are copied into
-//   tls_state, and the negotiated ALPN protocol ("h2") is recorded
-//   there too (§14 will echo it back in EncryptedExtensions). The
-//   legacy_version, session ID and compression methods are structurally
-//   validated then discarded — this server does not do session
-//   resumption or any compression.
+//   On success, client_random (§4.1.2), the legacy_session_id (§4.1.3
+//   — ServerHello must echo it verbatim even though this server does no
+//   resumption with it), and the client's X25519 public key (from the
+//   key_share extension, §4.2.8) are copied into tls_state, and the
+//   negotiated ALPN protocol ("h2") is recorded there too (§14 will
+//   echo it back in EncryptedExtensions). legacy_version and
+//   compression methods are structurally validated then discarded.
 //
 //   Five requirements are enforced, each mapped to the RFC 8446 §6.2
 //   alert a real TLS stack would expect (PLAN.MD §12.1-§12.5):
@@ -63,8 +63,9 @@
 //
 // Output/Returns:
 //   carry clear (success):
-//     x0 — 0. tls_client_random, tls_client_key_share, tls_alpn_len
-//          and tls_alpn are filled in (src/tls/data.S).
+//     x0 — 0. tls_client_random, tls_session_id_len, tls_session_id,
+//          tls_client_key_share, tls_alpn_len and tls_alpn are filled
+//          in (src/tls/data.S).
 //   carry set (failure):
 //     x0 — TLS_ALERT_DECODE_ERROR / _ILLEGAL_PARAMETER /
 //          _PROTOCOL_VERSION / _HANDSHAKE_FAILURE /
@@ -104,7 +105,9 @@ tls_parse_client_hello:
     stp     x14, x15, [x0, #16]
     add     x9, x9, #TLS_RANDOM_LEN
 
-    // ── legacy_session_id<0..32> — validated, then skipped ─────────
+    // ── legacy_session_id<0..32> — copied into tls_state, then
+    // skipped: §4.1.3 requires the ServerHello to echo it verbatim,
+    // but this server does no session resumption with it.
     ldrb    w14, [x9]
     add     x9, x9, #1
     cmp     w14, #32
@@ -112,6 +115,18 @@ tls_parse_client_hello:
     add     x0, x9, x14
     cmp     x0, x10
     b.hi    .Lch_decode_error
+    str     x14, [x12, #TLS_SESSION_ID_LEN]
+    add     x1, x12, #TLS_SESSION_ID
+    mov     x2, x9                  // src
+    mov     x3, #0                  // copied so far
+.Lch_sid_copy:
+    cmp     x3, x14
+    b.hs    .Lch_sid_done
+    ldrb    w4, [x2, x3]
+    strb    w4, [x1, x3]
+    add     x3, x3, #1
+    b       .Lch_sid_copy
+.Lch_sid_done:
     mov     x9, x0
 
     // ── cipher_suites<2..2^16-2> (§12.2) ────────────────────────────

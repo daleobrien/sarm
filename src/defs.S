@@ -923,7 +923,11 @@
 .equ TLS_SERVER_SEQ,        408 // u64 — server→client record sequence
 .equ TLS_ALPN_LEN,          416 // u64 — negotiated ALPN name length (0 = none)
 .equ TLS_ALPN,              424 // 16 B — negotiated ALPN name ("h2")
-.equ TLS_STATE_SIZE,        440
+.equ TLS_SESSION_ID_LEN,    440 // u64 — length of the client's
+                                //   legacy_session_id, 0..32 (§4.1.2)
+.equ TLS_SESSION_ID,        448 // 32 B — echoed verbatim in ServerHello's
+                                //   legacy_session_id_echo (§4.1.3)
+.equ TLS_STATE_SIZE,        480
 
 // ── SHA-256 streaming context (sha256_ctx) ──────────────────────────
 // Streaming SHA-256 (PLAN.MD §3.2): sha256_init / sha256_update /

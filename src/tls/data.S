@@ -49,6 +49,8 @@
 .global tls_server_seq
 .global tls_alpn_len
 .global tls_alpn
+.global tls_session_id_len
+.global tls_session_id
 
 // tls_state — one block per connection (a connection handler is one
 // process, so the global is per-connection, like request/response).
@@ -77,6 +79,10 @@ tls_client_seq:        .quad 0             // TLS_CLIENT_SEQ — record seqs sta
 tls_server_seq:        .quad 0             // TLS_SERVER_SEQ
 tls_alpn_len:          .quad 0             // TLS_ALPN_LEN — nothing negotiated yet
 tls_alpn:              .skip TLS_ALPN_BUF  // TLS_ALPN
+tls_session_id_len:    .quad 0             // TLS_SESSION_ID_LEN — the
+                                            //   client's legacy_session_id
+                                            //   length, echoed in ServerHello
+tls_session_id:        .skip 32            // TLS_SESSION_ID
 
 // tls_alpn_h2 — the ALPN identifier this server offers: "h2" (2 bytes,
 // 16-aligned like every string in the tree).
