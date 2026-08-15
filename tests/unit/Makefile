@@ -37,7 +37,9 @@ h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(wildcard ../../s
 hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
 crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(wildcard ../../src/crypto/*.S))
 transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
-tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(wildcard ../../src/tls/*.S))
+# TLS module objects, including submodules in record/, transcript/, etc.
+tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(wildcard ../../src/tls/*.S)) \
+                $(patsubst ../../src/tls/record/%.S,$(OBJ_DIR)/tls_record_%.o,$(wildcard ../../src/tls/record/*.S))
 data_objs    := $(OBJ_DIR)/data.o
 
 # util/write_all.S now tail-calls transport_write, so any test binary that
@@ -68,7 +70,14 @@ TEST_X25519 := $(OBJ_DIR)/test_x25519
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
 TEST_TLS_TRANSCRIPT := $(OBJ_DIR)/test_tls_transcript
-TEST_TLS_RECORD := $(OBJ_DIR)/test_tls_record
+# record layer suites — one per src/tls/record/*.S module; all share
+# test_tls_record/common.h (constants, RFC 8448 vectors, asm wrappers).
+TEST_TLS_RECORD_PARSE   := $(OBJ_DIR)/test_tls_record_parse
+TEST_TLS_RECORD_WRITE   := $(OBJ_DIR)/test_tls_record_write
+TEST_TLS_RECORD_NONCE   := $(OBJ_DIR)/test_tls_record_nonce
+TEST_TLS_RECORD_ENCRYPT := $(OBJ_DIR)/test_tls_record_encrypt
+TEST_TLS_RECORD_DECRYPT := $(OBJ_DIR)/test_tls_record_decrypt
+TEST_TLS_RECORD_SEQ     := $(OBJ_DIR)/test_tls_record_seq
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -84,7 +93,8 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_TRANSCRIPT) $(TEST_TLS_RECORD) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_TRANSCRIPT) \
+	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -130,7 +140,7 @@ build: $(TESTS)
 # The per-module objects are only ever prerequisites of the test binaries,
 # so GNU make treats them as intermediates and deletes them after each
 # link — forcing a full recompile on every `make test`. Keep them.
-.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs) $(tls_objs)
+.SECONDARY: $(util_objs) $(parse_objs) $(file_objs) $(http1_objs) $(h2_objs) $(hpack_objs) $(crypto_objs) $(transport_objs) $(tls_objs) $(patsubst ../../src/tls/record/%.S,$(OBJ_DIR)/tls_record_%.o,$(wildcard ../../src/tls/record/*.S))
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -162,6 +172,9 @@ $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_%.o: ../../src/tls/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_record_%.o: ../../src/tls/record/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
@@ -294,14 +307,14 @@ $(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(O
 $(TEST_TLS_TRANSCRIPT): test_tls_transcript.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_record: tls + crypto + util (PLAN.MD Phase 11).
-# record.S is the record layer: tls_record_parse/write (plaintext),
-# tls_record_nonce/encrypt/decrypt (AES-128-GCM seal/open with the
-# TLS 1.3 per-record nonce) and the tls_record_next_*_seq counters in
-# src/tls/data.S. It calls memcpy (util) and aes_gcm_* (crypto); the
-# suite is pinned against the RFC 8448 §3 record vectors and a C
-# cross-check that crafts records via aes_gcm_encrypt directly.
-$(TEST_TLS_RECORD): test_tls_record.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+# test_tls_record_*: tls + crypto + util (PLAN.MD Phase 11).
+# One suite per src/tls/record/*.S module (parse, write, nonce, encrypt,
+# decrypt, seq) — each a self-contained binary with its own main(), like
+# the test_h2_* suites below. All share test_tls_record/common.h (RFC 8448
+# vectors + asm wrappers) and call memcpy (util) / aes_gcm_* (crypto).
+TLS_RECORD_COMMON := test_tls_record/common.h
+
+$(OBJ_DIR)/test_tls_record_%: test_tls_record/%.c $(TLS_RECORD_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
