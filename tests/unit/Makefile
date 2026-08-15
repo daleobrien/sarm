@@ -238,8 +238,9 @@ $(TEST_HMAC): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 $(TEST_HKDF): test_hkdf.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
-# test_aes128: only needs crypto (pure function, standard ABI).
-# aes128_encrypt(pt=x0, rk=x1, ct=x2) is called directly.
+# test_aes128: only needs crypto (pure functions, standard ABI).
+# aes128_encrypt(pt=x0, rk=x1, ct=x2) and aes128_key_expand(key=x0,
+# rk=x1) are called directly.
 $(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 

@@ -1,19 +1,24 @@
 // Unit tests for src/crypto/aes128.S
 //
-// The asm file exports one symbol:
-//   aes128_encrypt — AES-128 block encryption
-//     (plaintext=x0, round_keys=x1, ciphertext=x2)
-//   Encrypts a single 16-byte block; the caller must supply the full
-//   176-byte FIPS-197 round-key schedule (11 x 16-byte keys, RK0..RK10).
+// The asm file exports two symbols:
+//   aes128_key_expand — AES-128 key expansion (FIPS-197 §5.2)
+//     (key=x0, round_keys=x1) — expands a 16-byte key into the full
+//     176-byte round-key schedule (11 x 16-byte keys, RK0..RK10).
+//   aes128_encrypt — AES-128 block encryption (FIPS-197 §5.1)
+//     (plaintext=x0, round_keys=x1, ciphertext=x2) — encrypts a single
+//     16-byte block; the caller supplies the schedule from
+//     aes128_key_expand.
 //
-// The asm symbol is bare (no leading underscore, matching the rest of
-// the codebase), so the C declaration below pins it with an __asm__
-// label to bypass the Mach-O underscore mangling of C names.
+// The asm symbols are bare (no leading underscore, matching the rest of
+// the codebase), so the C declarations below pin them with __asm__
+// labels to bypass the Mach-O underscore mangling of C names.
 //
 // These tests drive the asm against:
-//   1. the FIPS-197 Appendix C.1 known-answer vector (external ground
-//      truth, including the published round-key schedule),
-//   2. an independent plain-C AES-128 implementation in this file,
+//   1. the FIPS-197 Appendix A.1 / C.1 known-answer vectors (external
+//      ground truth: the published round-key schedule and ciphertext),
+//   2. the NIST SP 800-38A F.1.1 ECB-AES128 vector through the full asm
+//      pipeline (asm key expansion + asm encryption),
+//   3. an independent plain-C AES-128 implementation in this file,
 //      cross-checked over a deterministic key/plaintext sweep, every
 //      16-byte buffer alignment, and in-place (aliased) outputs.
 
@@ -21,6 +26,9 @@
 
 extern void aes128_encrypt(const uint8_t *plaintext, const uint8_t *round_keys,
                            uint8_t *ciphertext) __asm__("aes128_encrypt");
+
+extern void aes128_key_expand(const uint8_t *key, uint8_t *round_keys)
+    __asm__("aes128_key_expand");
 
 // ── FIPS-197 S-box and Rcon ──────────────────────────────────────────
 
@@ -147,6 +155,26 @@ static const uint8_t KAT_RK[176] = {
     0x13,0x11,0x1d,0x7f, 0xe3,0x94,0x4a,0x17, 0xf3,0x07,0xa7,0x8b, 0x4d,0x2b,0x30,0xc5,
 };
 
+// ── NIST SP 800-38A Appendix F.1.1 (ECB-AES128) ──────────────────────
+// A second independent NIST known-answer vector on a completely
+// different key, run through the full asm pipeline (key expansion +
+// encryption).
+
+static const uint8_t SP800_KEY[16] = {
+    0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+    0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+};
+
+static const uint8_t SP800_PT[16] = {
+    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96,
+    0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a,
+};
+
+static const uint8_t SP800_CT[16] = {
+    0x3a, 0xd7, 0x7b, 0xb4, 0x0d, 0x7a, 0x36, 0x60,
+    0xa8, 0x9e, 0xca, 0xf3, 0x24, 0x66, 0xef, 0x97,
+};
+
 // ── helpers ──────────────────────────────────────────────────────────
 
 static int blk_eq(const uint8_t a[16], const uint8_t b[16]) {
@@ -174,14 +202,20 @@ static uint32_t rng_next(void) {
 
 // ── tests ────────────────────────────────────────────────────────────
 
-// Validate the test's own key expansion against the round keys FIPS-197
-// publishes for the C.1 key — otherwise the cross-checks below would be
-// comparing two equally-broken key schedules.
+// Validate both the test's own key expansion and the asm expansion
+// against the round keys FIPS-197 publishes for the C.1 key — otherwise
+// the cross-checks below would be comparing two equally-broken key
+// schedules (PLAN.MD 6.1 acceptance: NIST vectors).
 static void test_aes128_key_schedule(void) {
-    TEST_SUITE("aes128 key expansion (FIPS-197 C.1)");
+    TEST_SUITE("aes128 key expansion (FIPS-197 A.1 / C.1)");
     uint8_t rk[176];
+
     key_expand(KAT_KEY, rk);
-    ASSERT_EQ("expanded schedule == FIPS-197 published round keys",
+    ASSERT_EQ("reference schedule == FIPS-197 published round keys",
+              0, memcmp(rk, KAT_RK, 176));
+
+    aes128_key_expand(KAT_KEY, rk);
+    ASSERT_EQ("asm schedule == FIPS-197 published round keys",
               0, memcmp(rk, KAT_RK, 176));
 }
 
@@ -199,27 +233,55 @@ static void test_aes128_kat(void) {
     ASSERT_TRUE("reference agrees on C.1", blk_eq(KAT_CT, ct));
 }
 
-// 256 deterministic (key, plaintext) pairs, asm vs plain-C reference.
+// The SP 800-38A vector through the full asm pipeline: asm key
+// expansion feeding asm encryption (PLAN.MD 6.2 acceptance: NIST AES
+// vectors).
+static void test_aes128_sp800_38a(void) {
+    TEST_SUITE("aes128 NIST SP 800-38A F.1.1 (ECB-AES128)");
+    uint8_t rk[176], ct[16], want[16];
+
+    aes128_key_expand(SP800_KEY, rk);
+    aes128_encrypt(SP800_PT, rk, ct);
+    ASSERT_TRUE("asm pipeline == SP 800-38A ciphertext", blk_eq(SP800_CT, ct));
+
+    // The C reference must agree too — guards against two equally-broken
+    // implementations agreeing with each other.
+    key_expand(SP800_KEY, rk);
+    ref_encrypt(SP800_PT, rk, want);
+    ASSERT_TRUE("reference agrees on SP 800-38A", blk_eq(SP800_CT, want));
+}
+
+// 256 deterministic (key, plaintext) pairs, asm vs plain-C reference —
+// both the key schedule and the block cipher, so the full asm pipeline
+// (aes128_key_expand -> aes128_encrypt) is exercised end to end.
 static void test_aes128_crosscheck(void) {
     TEST_SUITE("aes128 vs plain-C reference (256 vectors)");
-    uint8_t key[16], pt[16], rk[176], want[16], got[16];
+    uint8_t key[16], pt[16], rk_c[176], rk_a[176], want[16], got[16];
     int failures = 0;
+    int ks_failures = 0;
 
     for (int v = 0; v < 256; v++) {
         for (int i = 0; i < 16; i++)
             key[i] = (uint8_t)rng_next();
         for (int i = 0; i < 16; i++)
             pt[i] = (uint8_t)rng_next();
-        key_expand(key, rk);
-        ref_encrypt(pt, rk, want);
-        aes128_encrypt(pt, rk, got);
+        key_expand(key, rk_c);
+        aes128_key_expand(key, rk_a);
+        if (memcmp(rk_c, rk_a, 176) != 0) {
+            if (ks_failures < 3)
+                _FAIL("vector %d — key schedule mismatch", v);
+            ks_failures++;
+        }
+        ref_encrypt(pt, rk_c, want);
+        aes128_encrypt(pt, rk_a, got);
         if (!blk_eq(want, got)) {
             if (failures < 3)
                 _FAIL("vector %d — ciphertext mismatch", v);
             failures++;
         }
     }
-    ASSERT_EQ("256 deterministic vectors match reference", 0, failures);
+    ASSERT_EQ("256 asm key schedules match reference", 0, ks_failures);
+    ASSERT_EQ("256 ciphertexts match reference", 0, failures);
 }
 
 // The asm loads with ld1/st1, which are alignment-agnostic — sweep every
@@ -251,6 +313,31 @@ static void test_aes128_alignment(void) {
     ASSERT_EQ("all 4096 offset combos match reference", 0, failures);
 }
 
+// aes128_key_expand reads the key with ld1 and writes with st1, which
+// are alignment-agnostic — sweep every start offset for both buffers
+// (256 combos) against the reference schedule.
+static void test_aes128_key_expand_alignment(void) {
+    TEST_SUITE("aes128 key expansion alignment (offsets 0-15)");
+    static uint8_t kb[16 + 16];
+    static uint8_t rkb[176 + 16];
+    uint8_t want[176];
+    key_expand(KAT_KEY, want);
+
+    int failures = 0;
+    for (int ko = 0; ko <= 15; ko++) {
+        for (int ro = 0; ro <= 15; ro++) {
+            memcpy(kb + ko, KAT_KEY, 16);
+            aes128_key_expand(kb + ko, rkb + ro);
+            if (memcmp(want, rkb + ro, 176) != 0) {
+                if (failures < 3)
+                    _FAIL("key_off %d rk_off %d — schedule mismatch", ko, ro);
+                failures++;
+            }
+        }
+    }
+    ASSERT_EQ("all 256 offset combos match reference", 0, failures);
+}
+
 // The asm loads everything into registers before its single store, so a
 // ciphertext buffer aliasing the plaintext or the round-key schedule is
 // safe. Guard that property explicitly.
@@ -269,6 +356,14 @@ static void test_aes128_inplace(void) {
     aes128_encrypt(KAT_PT, buf, buf);
     ASSERT_TRUE("ct == rk (ciphertext overwrites schedule)",
                 blk_eq(want, buf));
+
+    // aes128_key_expand reads the 16-byte key once (ld1) before its first
+    // store, so the schedule may overwrite the key buffer — but the buffer
+    // must hold the full 176 bytes.
+    memcpy(buf, KAT_KEY, 16);
+    aes128_key_expand(buf, buf);
+    ASSERT_TRUE("rk == key (schedule overwrites key)",
+                memcmp(buf, KAT_RK, 176) == 0);
 }
 
 // A single-bit flip anywhere in the key or plaintext must diffuse through
@@ -334,8 +429,10 @@ static void test_aes128_avalanche(void) {
 int main(void) {
     test_aes128_key_schedule();
     test_aes128_kat();
+    test_aes128_sp800_38a();
     test_aes128_crosscheck();
     test_aes128_alignment();
+    test_aes128_key_expand_alignment();
     test_aes128_inplace();
     test_aes128_avalanche();
     test_summary();
