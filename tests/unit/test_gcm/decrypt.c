@@ -1,41 +1,11 @@
-// Unit tests for src/crypto/gcm.S
+// Unit tests for AES-GCM decryption and authentication — src/crypto/gcm/decrypt.S
 //
-// The asm file exports four symbols (PLAN.MD §7):
-//   gf_mult_128     — GF(2^128) multiplication, SP 800-38D §6.3 (x0, x1, x2)
-//   ghash           — GHASH of the padded AAD || ciphertext || bit lengths
-//                     (h=x0, aad=x1, aad_len=x2, ct=x3, ct_len=x4, out=x5)
-//   aes_gcm_encrypt — AES-128-GCM seal (key=x0, iv=x1, aad=x2, aad_len=x3,
-//                     pt=x4, pt_len=x5, ct=x6, tag=x7), 96-bit IV, 16-byte tag
-//   aes_gcm_decrypt — AES-128-GCM open (key=x0, iv=x1, aad=x2, aad_len=x3,
-//                     ct=x4, ct_len=x5, tag=x6, pt=x7); returns 1 on a
-//                     verified tag (plaintext written) and 0 otherwise
-//                     (plaintext buffer untouched)
-//
-// The asm symbols are bare (no leading underscore, matching the rest of
-// the codebase), so the C declarations below pin them with __asm__ labels
-// to bypass the Mach-O underscore mangling of C names.
-//
-// These tests drive the asm against:
-//   1. the NIST SP 800-38D Appendix B known-answer vectors (Test Cases
-//      1-4, AES-128, 96-bit IVs), cross-checked against two independent
-//      sources — Botan's gcm.vec and the OpenSSL-backed Python
-//      `cryptography` library,
-//   2. additional vectors generated with the same independent library
-//      (covering partial final blocks, partial AAD, multi-block input),
-//   3. GHASH known-answer values recovered independently from the NIST
-//      vectors (GHASH(H,A,C) = E_K(J0) XOR tag with raw AES-128-ECB),
-//   4. an independent plain-C reference implementation in this file
-//      (the same canonical SP 800-38D Algorithm 1 code the rest of the
-//      crypto tests use), cross-checked over deterministic sweeps of
-//      message lengths, buffer alignments, and in-place outputs.
+// The aes_gcm_decrypt symbol: AES-128-GCM open
+// (key=x0, iv=x1, aad=x2, aad_len=x3, ct=x4, ct_len=x5, tag=x6, pt=x7)
+// Returns 1 on verified tag (plaintext written) and 0 otherwise
 
 #include "test_harness.h"
 
-extern void gf_mult_128(const uint8_t *x, const uint8_t *y, uint8_t *z)
-    __asm__("gf_mult_128");
-extern void ghash(const uint8_t *h, const uint8_t *aad, uint64_t aad_len,
-                  const uint8_t *ct, uint64_t ct_len, uint8_t *out)
-    __asm__("ghash");
 extern void aes_gcm_encrypt(const uint8_t *key, const uint8_t *iv,
                             const uint8_t *aad, uint64_t aad_len,
                             const uint8_t *pt, uint64_t pt_len,
@@ -47,7 +17,7 @@ extern uint64_t aes_gcm_decrypt(const uint8_t *key, const uint8_t *iv,
                                 const uint8_t *tag, uint8_t *pt)
     __asm__("aes_gcm_decrypt");
 
-// ── AES-128 reference (FIPS 197 §5) — same portable core as test_aes128.c ──
+// ── AES-128 reference (FIPS 197 §5) ──────────────────────────────────────
 
 static const uint8_t SBOX[256] = {
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
@@ -134,11 +104,7 @@ static void ref_encrypt(const uint8_t pt[16], const uint8_t rk[176],
         ct[i] = s[i];
 }
 
-// ── independent C reference (SP 800-38D §6.3/§6.4) ──────────────────────
-// The canonical bit-serial multiplication from the spec's Algorithm 1,
-// operating on GCM wire-order byte strings. This is deliberately a
-// completely different algorithm from the asm's PMULL path, so a shared
-// misunderstanding cannot hide in both.
+// ── independent C references (SP 800-38D §6.3/§6.4) ──────────────────────
 
 static void ref_gf_mult(const uint8_t x[16], const uint8_t y[16],
                         uint8_t z[16]) {
@@ -255,81 +221,58 @@ static int ref_gcm_decrypt(const uint8_t key[16], const uint8_t iv[12],
     return 1;
 }
 
-// ── NIST SP 800-38D Appendix B test cases (AES-128, 96-bit IVs) ────────
-// Values as published in Botan's gcm.vec and re-verified against the
-// OpenSSL-backed Python `cryptography` library (see err/gen_gcm_vectors.py).
+// ── NIST SP 800-38D Appendix B test cases ────────────────────────────────
 
-// NIST SP 800-38D Appendix B, Test Case 1
+// Test Case 1
 static const uint8_t TC1_KEY[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
 };
-
 static const uint8_t TC1_IV[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-
-static const uint8_t TC1_AAD[] = {
-};
-
-static const uint8_t TC1_PT[] = {
-};
-
-static const uint8_t TC1_CT[] = {
-};
-
+static const uint8_t TC1_AAD[] = {};
+static const uint8_t TC1_CT[] = {};
 static const uint8_t TC1_TAG[] = {
     0x58, 0xe2, 0xfc, 0xce, 0xfa, 0x7e, 0x30, 0x61, 0x36, 0x7f, 0x1d, 0x57,
     0xa4, 0xe7, 0x45, 0x5a,
 };
-
 #define TC1_PT_LEN 0
 #define TC1_AAD_LEN 0
 
-// NIST SP 800-38D Appendix B, Test Case 2
+// Test Case 2
 static const uint8_t TC2_KEY[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
 };
-
 static const uint8_t TC2_IV[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-
-static const uint8_t TC2_AAD[] = {
-};
-
+static const uint8_t TC2_AAD[] = {};
 static const uint8_t TC2_PT[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
 };
-
 static const uint8_t TC2_CT[] = {
     0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92, 0xf3, 0x28, 0xc2, 0xb9,
     0x71, 0xb2, 0xfe, 0x78,
 };
-
 static const uint8_t TC2_TAG[] = {
     0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd, 0xf5, 0x3a, 0x67, 0xb2,
     0x12, 0x57, 0xbd, 0xdf,
 };
-
 #define TC2_PT_LEN 16
 #define TC2_AAD_LEN 0
 
-// NIST SP 800-38D Appendix B, Test Case 3
+// Test Case 3
 static const uint8_t TC3_KEY[] = {
     0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c, 0x6d, 0x6a, 0x8f, 0x94,
     0x67, 0x30, 0x83, 0x08,
 };
-
 static const uint8_t TC3_IV[] = {
     0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad, 0xde, 0xca, 0xf8, 0x88,
 };
-
-static const uint8_t TC3_AAD[] = {
-};
-
+static const uint8_t TC3_AAD[] = {};
 static const uint8_t TC3_PT[] = {
     0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5, 0xa5, 0x59, 0x09, 0xc5,
     0xaf, 0xf5, 0x26, 0x9a, 0x86, 0xa7, 0xa9, 0x53, 0x15, 0x34, 0xf7, 0xda,
@@ -338,7 +281,6 @@ static const uint8_t TC3_PT[] = {
     0xb1, 0x6a, 0xed, 0xf5, 0xaa, 0x0d, 0xe6, 0x57, 0xba, 0x63, 0x7b, 0x39,
     0x1a, 0xaf, 0xd2, 0x55,
 };
-
 static const uint8_t TC3_CT[] = {
     0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24, 0x4b, 0x72, 0x21, 0xb7,
     0x84, 0xd0, 0xd4, 0x9c, 0xe3, 0xaa, 0x21, 0x2f, 0x2c, 0x02, 0xa4, 0xe0,
@@ -347,31 +289,25 @@ static const uint8_t TC3_CT[] = {
     0x1b, 0xa3, 0x0b, 0x39, 0x6a, 0x0a, 0xac, 0x97, 0x3d, 0x58, 0xe0, 0x91,
     0x47, 0x3f, 0x59, 0x85,
 };
-
 static const uint8_t TC3_TAG[] = {
     0x4d, 0x5c, 0x2a, 0xf3, 0x27, 0xcd, 0x64, 0xa6, 0x2c, 0xf3, 0x5a, 0xbd,
     0x2b, 0xa6, 0xfa, 0xb4,
 };
-
 #define TC3_PT_LEN 64
 #define TC3_AAD_LEN 0
 
-// NIST SP 800-38D Appendix B, Test Case 4 (20-byte AAD, 60-byte PT:
-// exercises partial AAD and partial ciphertext padding)
+// Test Case 4
 static const uint8_t TC4_KEY[] = {
     0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c, 0x6d, 0x6a, 0x8f, 0x94,
     0x67, 0x30, 0x83, 0x08,
 };
-
 static const uint8_t TC4_IV[] = {
     0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad, 0xde, 0xca, 0xf8, 0x88,
 };
-
 static const uint8_t TC4_AAD[] = {
     0xfe, 0xed, 0xfa, 0xce, 0xde, 0xad, 0xbe, 0xef, 0xfe, 0xed, 0xfa, 0xce,
     0xde, 0xad, 0xbe, 0xef, 0xab, 0xad, 0xda, 0xd2,
 };
-
 static const uint8_t TC4_PT[] = {
     0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5, 0xa5, 0x59, 0x09, 0xc5,
     0xaf, 0xf5, 0x26, 0x9a, 0x86, 0xa7, 0xa9, 0x53, 0x15, 0x34, 0xf7, 0xda,
@@ -379,7 +315,6 @@ static const uint8_t TC4_PT[] = {
     0x95, 0x68, 0x09, 0x53, 0x2f, 0xcf, 0x0e, 0x24, 0x49, 0xa6, 0xb5, 0x25,
     0xb1, 0x6a, 0xed, 0xf5, 0xaa, 0x0d, 0xe6, 0x57, 0xba, 0x63, 0x7b, 0x39,
 };
-
 static const uint8_t TC4_CT[] = {
     0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24, 0x4b, 0x72, 0x21, 0xb7,
     0x84, 0xd0, 0xd4, 0x9c, 0xe3, 0xaa, 0x21, 0x2f, 0x2c, 0x02, 0xa4, 0xe0,
@@ -387,12 +322,10 @@ static const uint8_t TC4_CT[] = {
     0x54, 0x66, 0x93, 0x1c, 0x7d, 0x8f, 0x6a, 0x5a, 0xac, 0x84, 0xaa, 0x05,
     0x1b, 0xa3, 0x0b, 0x39, 0x6a, 0x0a, 0xac, 0x97, 0x3d, 0x58, 0xe0, 0x91,
 };
-
 static const uint8_t TC4_TAG[] = {
     0x5b, 0xc9, 0x4f, 0xbc, 0x32, 0x21, 0xa5, 0xdb, 0x94, 0xfa, 0xe9, 0x5a,
     0xe7, 0x12, 0x1a, 0x47,
 };
-
 #define TC4_PT_LEN 60
 #define TC4_AAD_LEN 20
 
@@ -404,25 +337,16 @@ static const uint8_t X1_KEY[] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88,
     0x09, 0xcf, 0x4f, 0x3c,
 };
-
 static const uint8_t X1_IV[] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
 };
-
-static const uint8_t X1_AAD[] = {
-};
-
-static const uint8_t X1_PT[] = {
-};
-
-static const uint8_t X1_CT[] = {
-};
-
+static const uint8_t X1_AAD[] = {};
+static const uint8_t X1_PT[] = {};
+static const uint8_t X1_CT[] = {};
 static const uint8_t X1_TAG[] = {
     0xa7, 0x15, 0xb9, 0x95, 0x67, 0xea, 0xea, 0x48, 0x06, 0xb3, 0xa9, 0x1c,
     0x78, 0x5f, 0x11, 0xcc,
 };
-
 #define X1_PT_LEN 0
 #define X1_AAD_LEN 0
 
@@ -431,64 +355,44 @@ static const uint8_t X2_KEY[] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88,
     0x09, 0xcf, 0x4f, 0x3c,
 };
-
 static const uint8_t X2_IV[] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
 };
-
-static const uint8_t X2_AAD[] = {
-};
-
-static const uint8_t X2_PT[] = {
-    0x32, 0x37, 0x10, 0xd4, 0x1d,
-};
-
-static const uint8_t X2_CT[] = {
-    0x69, 0xf8, 0x2b, 0x82, 0xa5,
-};
-
+static const uint8_t X2_AAD[] = {};
+static const uint8_t X2_PT[] = {0x32, 0x37, 0x10, 0xd4, 0x1d};
+static const uint8_t X2_CT[] = {0x69, 0xf8, 0x2b, 0x82, 0xa5};
 static const uint8_t X2_TAG[] = {
     0xec, 0x15, 0x72, 0x52, 0x56, 0x81, 0x8c, 0xd9, 0xe5, 0x3a, 0xac, 0x58,
     0x55, 0xbd, 0x24, 0xde,
 };
-
 #define X2_PT_LEN 5
 #define X2_AAD_LEN 0
 
-// Independent vector 3: 2-byte AAD + 37-byte PT (partial AAD and partial
-// ciphertext blocks together)
+// Independent vector 3: 2-byte AAD + 37-byte PT
 static const uint8_t X3_KEY[] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88,
     0x09, 0xcf, 0x4f, 0x3c,
 };
-
 static const uint8_t X3_IV[] = {
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
 };
-
-static const uint8_t X3_AAD[] = {
-    0xaa, 0xbb,
-};
-
+static const uint8_t X3_AAD[] = {0xaa, 0xbb};
 static const uint8_t X3_PT[] = {
     0x13, 0xec, 0xdf, 0xd2, 0x32, 0xb7, 0x9d, 0x47, 0xc9, 0x46, 0x3a, 0x01,
     0x0c, 0x2c, 0x8f, 0x31, 0x0f, 0xc5, 0xb7, 0x57, 0x2f, 0x71, 0x2f, 0xc2,
     0xb4, 0x47, 0xa4, 0x5c, 0xcf, 0x00, 0x42, 0xae, 0xef, 0x10, 0xab, 0xb2,
     0x84,
 };
-
 static const uint8_t X3_CT[] = {
     0x1b, 0x38, 0x37, 0x2e, 0x75, 0x5e, 0xa5, 0xe8, 0x62, 0x81, 0x51, 0x92,
     0x21, 0x4a, 0xcd, 0x5e, 0x51, 0xbb, 0xe4, 0x4a, 0x7d, 0x12, 0xcc, 0xde,
     0x3f, 0x3c, 0xc8, 0x7d, 0x9a, 0xee, 0x21, 0x1e, 0xe3, 0xe3, 0xff, 0x9e,
     0x84,
 };
-
 static const uint8_t X3_TAG[] = {
     0xd8, 0xef, 0xff, 0x8b, 0x59, 0x95, 0x22, 0x44, 0x95, 0x57, 0xaf, 0x8b,
     0xec, 0x88, 0x8c, 0x62,
 };
-
 #define X3_PT_LEN 37
 #define X3_AAD_LEN 2
 
@@ -497,16 +401,13 @@ static const uint8_t X4_KEY[] = {
     0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04,
     0x03, 0x02, 0x01, 0x00,
 };
-
 static const uint8_t X4_IV[] = {
     0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0xf0, 0x0d, 0xfe, 0xed,
 };
-
 static const uint8_t X4_AAD[] = {
     0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
     0xcc, 0xdd, 0xee, 0xff,
 };
-
 static const uint8_t X4_PT[] = {
     0xd7, 0xa7, 0x62, 0x58, 0xa5, 0xc2, 0x29, 0xdf, 0x57, 0x58, 0x70, 0xea,
     0x5a, 0xfd, 0xfa, 0xde, 0xe7, 0xc4, 0x00, 0x02, 0x73, 0x55, 0x28, 0x55,
@@ -518,7 +419,6 @@ static const uint8_t X4_PT[] = {
     0x1b, 0x7a, 0x0f, 0x6a, 0x41, 0xe3, 0x50, 0x5f, 0x08, 0xcd, 0x80, 0xc3,
     0x8c, 0xf8, 0x16, 0x1a,
 };
-
 static const uint8_t X4_CT[] = {
     0xf3, 0xfe, 0xd2, 0x90, 0x72, 0x3b, 0x65, 0xb1, 0xde, 0xba, 0x3f, 0x95,
     0xf7, 0x60, 0xbe, 0x8c, 0x73, 0x2d, 0x91, 0xa7, 0x45, 0xdc, 0x3c, 0x48,
@@ -530,221 +430,14 @@ static const uint8_t X4_CT[] = {
     0x49, 0x35, 0xbc, 0x36, 0xf6, 0x13, 0x15, 0x66, 0xc3, 0xc6, 0x86, 0x26,
     0x22, 0x5f, 0x69, 0x04,
 };
-
 static const uint8_t X4_TAG[] = {
     0xc3, 0x7c, 0x34, 0xb5, 0x60, 0x03, 0xfe, 0x9a, 0xca, 0x2a, 0x70, 0xe1,
     0xbd, 0x98, 0x0e, 0xce,
 };
-
 #define X4_PT_LEN 100
 #define X4_AAD_LEN 16
 
-// ── GHASH known-answer values ───────────────────────────────────────────
-// Derived independently: GHASH(H,A,C) = E_K(J0) XOR tag, where the tag is
-// the NIST vector output from the OpenSSL-backed cryptography library and
-// E_K(J0) comes from raw AES-128-ECB (see err/gen_gcm_vectors.py).
-
-// GHASH KAT 1: H = E_0(0^128) = 66e94bd4ef8a2c3b884cfa59ca342b2e,
-// A = C = empty → the input string is a single all-zero block → result 0.
-static const uint8_t GHASH_K1_H[] = {
-    0x66, 0xe9, 0x4b, 0xd4, 0xef, 0x8a, 0x2c, 0x3b, 0x88, 0x4c, 0xfa, 0x59,
-    0xca, 0x34, 0x2b, 0x2e,
-};
-
-static const uint8_t GHASH_K1_OUT[] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00,
-};
-
-// GHASH KAT 2: TC4's H, AAD (20 B) and ciphertext (60 B)
-static const uint8_t GHASH_K2_H[] = {
-    0xb8, 0x3b, 0x53, 0x37, 0x08, 0xbf, 0x53, 0x5d, 0x0a, 0xa6, 0xe5, 0x29,
-    0x80, 0xd5, 0x3b, 0x78,
-};
-
-static const uint8_t GHASH_K2_AAD[] = {
-    0xfe, 0xed, 0xfa, 0xce, 0xde, 0xad, 0xbe, 0xef, 0xfe, 0xed, 0xfa, 0xce,
-    0xde, 0xad, 0xbe, 0xef, 0xab, 0xad, 0xda, 0xd2,
-};
-
-static const uint8_t GHASH_K2_CT[] = {
-    0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24, 0x4b, 0x72, 0x21, 0xb7,
-    0x84, 0xd0, 0xd4, 0x9c, 0xe3, 0xaa, 0x21, 0x2f, 0x2c, 0x02, 0xa4, 0xe0,
-    0x35, 0xc1, 0x7e, 0x23, 0x29, 0xac, 0xa1, 0x2e, 0x21, 0xd5, 0x14, 0xb2,
-    0x54, 0x66, 0x93, 0x1c, 0x7d, 0x8f, 0x6a, 0x5a, 0xac, 0x84, 0xaa, 0x05,
-    0x1b, 0xa3, 0x0b, 0x39, 0x6a, 0x0a, 0xac, 0x97, 0x3d, 0x58, 0xe0, 0x91,
-};
-
-static const uint8_t GHASH_K2_OUT[] = {
-    0x69, 0x8e, 0x57, 0xf7, 0x0e, 0x6e, 0xcc, 0x7f, 0xd9, 0x46, 0x3b, 0x72,
-    0x60, 0xa9, 0xae, 0x5f,
-};
-
-// GHASH KAT 3: independent vector 4's H, AAD (16 B) and ciphertext (100 B)
-static const uint8_t GHASH_K3_H[] = {
-    0xe5, 0x31, 0x13, 0x21, 0x91, 0x8c, 0x38, 0x6e, 0x63, 0xe9, 0x8d, 0xff,
-    0x0a, 0xfa, 0x77, 0x0d,
-};
-
-static const uint8_t GHASH_K3_AAD[] = {
-    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-    0xcc, 0xdd, 0xee, 0xff,
-};
-
-static const uint8_t GHASH_K3_CT[] = {
-    0xf3, 0xfe, 0xd2, 0x90, 0x72, 0x3b, 0x65, 0xb1, 0xde, 0xba, 0x3f, 0x95,
-    0xf7, 0x60, 0xbe, 0x8c, 0x73, 0x2d, 0x91, 0xa7, 0x45, 0xdc, 0x3c, 0x48,
-    0x94, 0x26, 0x02, 0x04, 0x92, 0x81, 0xff, 0xa0, 0x69, 0x6f, 0xda, 0xa2,
-    0x62, 0xbd, 0x17, 0xcd, 0xc8, 0xaa, 0x0d, 0x57, 0x9e, 0xd6, 0x9a, 0x92,
-    0x70, 0xb2, 0x25, 0x19, 0x28, 0xe6, 0xa2, 0x56, 0x79, 0x94, 0x8d, 0x91,
-    0x03, 0x15, 0xc3, 0xcc, 0xd4, 0x18, 0x5c, 0x5f, 0xae, 0xf6, 0xb0, 0x03,
-    0x36, 0xf5, 0x4b, 0xfb, 0xb8, 0x6c, 0xfe, 0x6d, 0x09, 0xf9, 0x16, 0x7b,
-    0x49, 0x35, 0xbc, 0x36, 0xf6, 0x13, 0x15, 0x66, 0xc3, 0xc6, 0x86, 0x26,
-    0x22, 0x5f, 0x69, 0x04,
-};
-
-static const uint8_t GHASH_K3_OUT[] = {
-    0xab, 0xd2, 0x69, 0x39, 0x65, 0x53, 0x52, 0xef, 0x85, 0xe0, 0xc6, 0x3c,
-    0x4b, 0x62, 0x6f, 0x01,
-};
-
-// ── helpers ─────────────────────────────────────────────────────────────
-
-// Deterministic LCG (Numerical Recipes) — same vectors on every run.
-static uint32_t rng_state = 0x9e3779b9u;
-static uint32_t rng_next(void) {
-    rng_state = rng_state * 1664525u + 1013904223u;
-    return rng_state;
-}
-
 // ── tests ───────────────────────────────────────────────────────────────
-
-// The multiplicative identity in GCM byte order is 0x80 || 0^15 (the
-// coefficient of x^0 is byte 0's MSB); x^127 is 0^15 || 0x01. Both must
-// round-trip through the asm's rbit/PMULL path exactly.
-static void test_gcm_gf_mult_kat(void) {
-    TEST_SUITE("gf_mult_128 known answers");
-    static const uint8_t ONE[16] = {0x80};
-    static const uint8_t X127[16] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                     0x00, 0x00, 0x00, 0x01};
-    uint8_t z[16], want[16];
-
-    gf_mult_128(TC2_CT, ONE, z);         // a·1 == a
-    ASSERT_EQ("a·1 == a", 0, memcmp(z, TC2_CT, 16));
-    gf_mult_128(ONE, ONE, z);            // 1·1 == 1
-    ASSERT_EQ("1·1 == 1", 0, memcmp(z, ONE, 16));
-    gf_mult_128(X127, X127, z);          // x^254 ≡ x^126+x^12+x^6+x^5+x^2+1
-    ref_gf_mult(X127, X127, want);
-    ASSERT_EQ("x^127·x^127 == reference", 0, memcmp(z, want, 16));
-
-    // H·H for the zero key (H = 66e94bd4...), cross-checked against the
-    // reference — the asm and the reference are separately validated by
-    // the NIST vectors below.
-    ref_gf_mult(GHASH_K1_H, GHASH_K1_H, want);
-    gf_mult_128(GHASH_K1_H, GHASH_K1_H, z);
-    ASSERT_EQ("H·H == reference", 0, memcmp(z, want, 16));
-}
-
-// 256 deterministic (X, Y) pairs, asm vs the plain-C Algorithm 1.
-static void test_gcm_gf_mult_crosscheck(void) {
-    TEST_SUITE("gf_mult_128 vs plain-C reference (256 vectors)");
-    uint8_t x[16], y[16], want[16], got[16];
-    int failures = 0;
-    for (int v = 0; v < 256; v++) {
-        for (int i = 0; i < 16; i++) {
-            x[i] = (uint8_t)rng_next();
-            y[i] = (uint8_t)rng_next();
-        }
-        ref_gf_mult(x, y, want);
-        gf_mult_128(x, y, got);
-        if (memcmp(want, got, 16) != 0 && failures < 3)
-            _FAIL("vector %d — product mismatch", v);
-        if (memcmp(want, got, 16) != 0)
-            failures++;
-    }
-    ASSERT_EQ("256 asm products match reference", 0, failures);
-}
-
-// GHASH known-answer values recovered independently from the NIST vectors
-// (PLAN.MD 7.2 acceptance: NIST GCM vectors).
-static void test_gcm_ghash_kat(void) {
-    TEST_SUITE("ghash known answers (NIST-derived)");
-    uint8_t out[16];
-
-    ghash(GHASH_K1_H, NULL, 0, NULL, 0, out);
-    ASSERT_EQ("empty A/C → all-zero block", 0, memcmp(out, GHASH_K1_OUT, 16));
-
-    ghash(GHASH_K2_H, GHASH_K2_AAD, sizeof(GHASH_K2_AAD),
-          GHASH_K2_CT, sizeof(GHASH_K2_CT), out);
-    ASSERT_EQ("KAT 2 (TC4 H/A/C)", 0, memcmp(out, GHASH_K2_OUT, 16));
-
-    ghash(GHASH_K3_H, GHASH_K3_AAD, sizeof(GHASH_K3_AAD),
-          GHASH_K3_CT, sizeof(GHASH_K3_CT), out);
-    ASSERT_EQ("KAT 3 (independent H/A/C)", 0, memcmp(out, GHASH_K3_OUT, 16));
-}
-
-// asm ghash vs the C reference over every (aad_len, ct_len) combination
-// around the block boundary — exercises partial-block padding.
-static void test_gcm_ghash_crosscheck(void) {
-    TEST_SUITE("ghash vs plain-C reference (length sweep)");
-    static const uint64_t lens[] = {0, 1, 7, 8, 15, 16, 17, 31, 32, 33,
-                                    47, 48, 63, 64, 65, 128};
-    uint8_t aad[256], ct[256], want[16], got[16];
-    for (int i = 0; i < 256; i++) {
-        aad[i] = (uint8_t)i;
-        ct[i] = (uint8_t)(i * 7 + 3);
-    }
-    int failures = 0;
-    for (size_t ai = 0; ai < sizeof(lens) / sizeof(lens[0]); ai++) {
-        for (size_t ci = 0; ci < sizeof(lens) / sizeof(lens[0]); ci++) {
-            ref_ghash(GHASH_K2_H, aad, lens[ai], ct, lens[ci], want);
-            ghash(GHASH_K2_H, aad, lens[ai], ct, lens[ci], got);
-            if (memcmp(want, got, 16) != 0) {
-                if (failures < 3)
-                    _FAIL("aad_len=%llu ct_len=%llu — mismatch",
-                          (unsigned long long)lens[ai],
-                          (unsigned long long)lens[ci]);
-                failures++;
-            }
-        }
-    }
-    ASSERT_EQ("all 256 length combos match reference", 0, failures);
-}
-
-// Run the NIST vectors through the full asm seal pipeline
-// (PLAN.MD 7.3 acceptance).
-static void test_gcm_encrypt_kat(void) {
-    TEST_SUITE("aes_gcm_encrypt NIST SP 800-38D vectors");
-    uint8_t ct[128], tag[16];
-    int failures = 0;
-
-    aes_gcm_encrypt(TC1_KEY, TC1_IV, TC1_AAD, TC1_AAD_LEN, TC1_PT,
-                    TC1_PT_LEN, ct, tag);
-    if (memcmp(tag, TC1_TAG, 16) != 0) {
-        _FAIL("TC1 tag mismatch");
-        failures++;
-    }
-    aes_gcm_encrypt(TC2_KEY, TC2_IV, TC2_AAD, TC2_AAD_LEN, TC2_PT,
-                    TC2_PT_LEN, ct, tag);
-    if (memcmp(ct, TC2_CT, TC2_PT_LEN) != 0 || memcmp(tag, TC2_TAG, 16) != 0) {
-        _FAIL("TC2 ct/tag mismatch");
-        failures++;
-    }
-    aes_gcm_encrypt(TC3_KEY, TC3_IV, TC3_AAD, TC3_AAD_LEN, TC3_PT,
-                    TC3_PT_LEN, ct, tag);
-    if (memcmp(ct, TC3_CT, TC3_PT_LEN) != 0 || memcmp(tag, TC3_TAG, 16) != 0) {
-        _FAIL("TC3 ct/tag mismatch");
-        failures++;
-    }
-    aes_gcm_encrypt(TC4_KEY, TC4_IV, TC4_AAD, TC4_AAD_LEN, TC4_PT,
-                    TC4_PT_LEN, ct, tag);
-    if (memcmp(ct, TC4_CT, TC4_PT_LEN) != 0 || memcmp(tag, TC4_TAG, 16) != 0) {
-        _FAIL("TC4 ct/tag mismatch");
-        failures++;
-    }
-    ASSERT_EQ("all NIST encrypt vectors pass", 0, failures);
-}
 
 // Run the NIST vectors through the full asm open pipeline
 // (PLAN.MD 7.5 acceptance: all NIST GCM vectors pass).
@@ -887,150 +580,11 @@ static void test_gcm_auth_failures(void) {
     ASSERT_EQ("reference rejects modified ciphertext too", 0, fails);
 }
 
-// asm seal → asm open round-trip over a sweep of (aad_len, pt_len)
-// combinations, cross-checked against the C reference.
-static void test_gcm_roundtrip(void) {
-    TEST_SUITE("gcm round-trip vs reference (length sweep)");
-    static const uint64_t alens[] = {0, 1, 15, 16, 17, 31, 32, 33, 64};
-    static const uint64_t plens[] = {0, 1, 15, 16, 17, 31, 32, 33, 64, 65, 129};
-    uint8_t key[16], iv[12], aad[128], pt[256], ct[256], ref_ct[256],
-            ref_tag[16], tag[16], out[256];
-    for (int i = 0; i < 16; i++)
-        key[i] = (uint8_t)rng_next();
-    for (int i = 0; i < 12; i++)
-        iv[i] = (uint8_t)rng_next();
-    for (int i = 0; i < 128; i++)
-        aad[i] = (uint8_t)(i * 13 + 1);
-    for (int i = 0; i < 256; i++)
-        pt[i] = (uint8_t)(i * 29 + 7);
-
-    int failures = 0;
-    int count = 0;
-    for (size_t ai = 0; ai < sizeof(alens) / sizeof(alens[0]); ai++) {
-        for (size_t pi = 0; pi < sizeof(plens) / sizeof(plens[0]); pi++) {
-            uint64_t al = alens[ai], pl = plens[pi];
-            aes_gcm_encrypt(key, iv, aad, al, pt, pl, ct, tag);
-            ref_gcm_encrypt(key, iv, aad, al, pt, pl, ref_ct, ref_tag);
-            if (memcmp(ct, ref_ct, pl) != 0 || memcmp(tag, ref_tag, 16) != 0) {
-                if (failures < 3)
-                    _FAIL("aad=%llu pt=%llu — seal mismatch vs reference",
-                          (unsigned long long)al, (unsigned long long)pl);
-                failures++;
-            }
-            if (aes_gcm_decrypt(key, iv, aad, al, ct, pl, tag, out) != 1 ||
-                memcmp(out, pt, pl) != 0) {
-                if (failures < 3)
-                    _FAIL("aad=%llu pt=%llu — open failed",
-                          (unsigned long long)al, (unsigned long long)pl);
-                failures++;
-            }
-            count++;
-        }
-    }
-    ASSERT_EQ("all 99 length combos round-trip and match", 0, failures);
-    ASSERT_EQ("swept 99 combos", 99, count);
-}
-
-// The ld1/st1 and tbl paths are alignment-agnostic — verify every buffer
-// at every 0..7 start offset for the TC4 vector (partial AAD + partial
-// ciphertext).
-static void test_gcm_alignment(void) {
-    TEST_SUITE("gcm buffer alignment (offsets 0-7)");
-    static uint8_t kb[16 + 8], ib[12 + 8], ab[20 + 8], pb[60 + 8];
-    static uint8_t cb[60 + 8], tb[16 + 8], ob[60 + 8];
-    int failures = 0;
-    for (int o = 0; o <= 7; o++) {
-        memcpy(kb + o, TC4_KEY, 16);
-        memcpy(ib + o, TC4_IV, 12);
-        memcpy(ab + o, TC4_AAD, TC4_AAD_LEN);
-        memcpy(pb + o, TC4_PT, TC4_PT_LEN);
-        aes_gcm_encrypt(kb + o, ib + o, ab + o, TC4_AAD_LEN, pb + o,
-                        TC4_PT_LEN, cb + o, tb + o);
-        if (memcmp(cb + o, TC4_CT, TC4_PT_LEN) != 0 ||
-            memcmp(tb + o, TC4_TAG, 16) != 0) {
-            if (failures < 3)
-                _FAIL("offset %d — seal mismatch", o);
-            failures++;
-        }
-        if (aes_gcm_decrypt(kb + o, ib + o, ab + o, TC4_AAD_LEN, cb + o,
-                            TC4_PT_LEN, tb + o, ob + o) != 1 ||
-            memcmp(ob + o, TC4_PT, TC4_PT_LEN) != 0) {
-            if (failures < 3)
-                _FAIL("offset %d — open mismatch", o);
-            failures++;
-        }
-    }
-    ASSERT_EQ("all 8 offset runs seal and open correctly", 0, failures);
-}
-
-// In-place operation: ct aliasing pt (stream cipher, safe) for both seal
-// and open.
-static void test_gcm_inplace(void) {
-    TEST_SUITE("gcm in-place (ct == pt)");
-    uint8_t buf[128], tag[16], out[128];
-    memcpy(buf, TC4_PT, TC4_PT_LEN);
-    aes_gcm_encrypt(TC4_KEY, TC4_IV, TC4_AAD, TC4_AAD_LEN, buf,
-                    TC4_PT_LEN, buf, tag);
-    if (memcmp(buf, TC4_CT, TC4_PT_LEN) != 0 ||
-        memcmp(tag, TC4_TAG, 16) != 0) {
-        _FAIL("in-place seal produced wrong ct/tag");
-    } else {
-        _PASS("in-place seal matches TC4");
-    }
-    memcpy(out, buf, TC4_PT_LEN);        // decrypt back in place
-    if (aes_gcm_decrypt(TC4_KEY, TC4_IV, TC4_AAD, TC4_AAD_LEN, out,
-                        TC4_PT_LEN, tag, out) != 1 ||
-        memcmp(out, TC4_PT, TC4_PT_LEN) != 0) {
-        _FAIL("in-place open failed");
-    } else {
-        _PASS("in-place open recovers the plaintext");
-    }
-}
-
-// One large message (1024 bytes) to exercise the counter across many
-// blocks, cross-checked against the reference.
-static void test_gcm_large_message(void) {
-    TEST_SUITE("gcm 1024-byte message");
-    uint8_t key[16], iv[12], aad[33], pt[1024], ct[1024], ref_ct[1024];
-    uint8_t tag[16], ref_tag[16], out[1024];
-    for (int i = 0; i < 16; i++)
-        key[i] = (uint8_t)rng_next();
-    for (int i = 0; i < 12; i++)
-        iv[i] = (uint8_t)rng_next();
-    for (int i = 0; i < 33; i++)
-        aad[i] = (uint8_t)(i + 1);
-    for (int i = 0; i < 1024; i++)
-        pt[i] = (uint8_t)(i * 31 + 11);
-
-    aes_gcm_encrypt(key, iv, aad, 33, pt, 1024, ct, tag);
-    ref_gcm_encrypt(key, iv, aad, 33, pt, 1024, ref_ct, ref_tag);
-    if (memcmp(ct, ref_ct, 1024) != 0 || memcmp(tag, ref_tag, 16) != 0) {
-        _FAIL("1024-byte seal mismatch vs reference");
-    } else {
-        _PASS("1024-byte seal matches reference");
-    }
-    if (aes_gcm_decrypt(key, iv, aad, 33, ct, 1024, tag, out) != 1 ||
-        memcmp(out, pt, 1024) != 0) {
-        _FAIL("1024-byte open failed");
-    } else {
-        _PASS("1024-byte open recovers the plaintext");
-    }
-}
-
 int main(void) {
-    test_gcm_gf_mult_kat();
-    test_gcm_gf_mult_crosscheck();
-    test_gcm_ghash_kat();
-    test_gcm_ghash_crosscheck();
-    test_gcm_encrypt_kat();
     test_gcm_decrypt_kat();
     test_gcm_independent_vectors();
     test_gcm_reference_matches();
     test_gcm_auth_failures();
-    test_gcm_roundtrip();
-    test_gcm_alignment();
-    test_gcm_inplace();
-    test_gcm_large_message();
     test_summary();
     return 0;
 }
