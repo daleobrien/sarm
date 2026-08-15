@@ -40,7 +40,8 @@ transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(
 # TLS module objects, including submodules in record/, transcript/, etc.
 tls_objs     := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tls_%.o,$(wildcard ../../src/tls/*.S)) \
                 $(patsubst ../../src/tls/record/%.S,$(OBJ_DIR)/tls_record_%.o,$(wildcard ../../src/tls/record/*.S)) \
-                $(patsubst ../../src/tls/transcript/%.S,$(OBJ_DIR)/tls_transcript_%.o,$(wildcard ../../src/tls/transcript/*.S))
+                $(patsubst ../../src/tls/transcript/%.S,$(OBJ_DIR)/tls_transcript_%.o,$(wildcard ../../src/tls/transcript/*.S)) \
+                $(patsubst ../../src/tls/handshake/%.S,$(OBJ_DIR)/tls_handshake_%.o,$(wildcard ../../src/tls/handshake/*.S))
 data_objs    := $(OBJ_DIR)/data.o
 
 # util/write_all.S now tail-calls transport_write, so any test binary that
@@ -70,6 +71,7 @@ TEST_GCM   := $(OBJ_DIR)/test_gcm
 TEST_X25519 := $(OBJ_DIR)/test_x25519
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
+TEST_TLS_CLIENT_HELLO := $(OBJ_DIR)/test_tls_client_hello
 # transcript suites — one per src/tls/transcript/*.S module; all share
 # test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
 TEST_TLS_TRANSCRIPT_INIT := $(OBJ_DIR)/test_tls_transcript_init
@@ -98,7 +100,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -184,6 +186,9 @@ $(OBJ_DIR)/tls_record_%.o: ../../src/tls/record/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/tls_transcript_%.o: ../../src/tls/transcript/%.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/tls_handshake_%.o: ../../src/tls/handshake/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(data_objs): ../../src/data.S | $(OBJ_DIR)
@@ -304,6 +309,13 @@ $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
 # (aes_gcm from crypto + memcpy from util), so util_objs is linked as
 # well (util_objs drags in the transport module per the comment at the top).
 $(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_client_hello: the ClientHello parser (PLAN.MD Phase 12).
+# Links the same object set as test_tls — tls_parse_client_hello writes
+# into tls_state (tls_objs/data.S) and the tls_objs wildcard also pulls
+# in record/*.S and transcript/*.S, hence crypto_objs + util_objs.
+$(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_transcript_*: tls + crypto + util (PLAN.MD Phase 9).

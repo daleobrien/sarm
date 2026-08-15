@@ -85,6 +85,15 @@ tls_alpn:              .skip TLS_ALPN_BUF  // TLS_ALPN
 tls_alpn_h2:
     .ascii "h2"
 
+// tls_sni_hostname — the one hostname the ClientHello parser (PLAN.MD
+// Phase 12.5) matches server_name extensions against. No virtual-host
+// infrastructure exists yet, so this is a single compile-time value
+// rather than a field in tls_state.
+.align 4
+.global tls_sni_hostname
+tls_sni_hostname:
+    .ascii "localhost"
+
 // tls_transcript_ctx — the running SHA-256 context of the handshake
 // transcript (PLAN.MD §9). SHA256_CTX_SIZE bytes laid out by the
 // SHA256_CTX_* offsets in defs.S (the same contract as sha256_ctx in

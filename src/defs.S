@@ -752,6 +752,11 @@
 // (2 bytes). The string itself lives in src/tls/data.S (tls_alpn_h2).
 .equ TLS_ALPN_H2_LEN, 2
 
+// SNI (RFC 6066 §3): the one hostname this server currently answers
+// for — no virtual-host infrastructure yet (PLAN.MD Phase 12.5). The
+// string itself lives in src/tls/data.S (tls_sni_hostname).
+.equ TLS_SNI_HOSTNAME_LEN, 9  // "localhost"
+
 // record layer (§5): content types
 .equ TLS_RECORD_CHANGE_CIPHER_SPEC, 20  // 0x14
 .equ TLS_RECORD_ALERT,              21  // 0x15
