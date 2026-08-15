@@ -68,16 +68,17 @@ TEST_ITOA := $(OBJ_DIR)/test_itoa
 TEST_FNV1A_64 := $(OBJ_DIR)/test_fnv1a_64
 TEST_ATOI := $(OBJ_DIR)/test_atoi
 TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
-TEST_SHA256 := $(OBJ_DIR)/test_sha256
-TEST_HMAC   := $(OBJ_DIR)/test_hmac
-TEST_HKDF   := $(OBJ_DIR)/test_hkdf
-TEST_AES128 := $(OBJ_DIR)/test_aes128
-TEST_GCM   := $(OBJ_DIR)/test_gcm
-TEST_X25519 := $(OBJ_DIR)/test_x25519
-TEST_P256 := $(OBJ_DIR)/test_p256
-TEST_P256_SCALAR := $(OBJ_DIR)/test_p256_scalar
-TEST_P256_POINT := $(OBJ_DIR)/test_p256_point
-TEST_P256_ECDSA := $(OBJ_DIR)/test_p256_ecdsa
+# Split test suites — one per .c file under the test directory
+SHA256_TESTS := $(patsubst test_sha256/%.c,$(OBJ_DIR)/test_sha256_%,$(wildcard test_sha256/*.c))
+HMAC_TESTS := $(OBJ_DIR)/test_hmac
+HKDF_TESTS := $(patsubst test_hkdf/%.c,$(OBJ_DIR)/test_hkdf_%,$(wildcard test_hkdf/*.c))
+AES128_TESTS := $(patsubst test_aes128/%.c,$(OBJ_DIR)/test_aes128_%,$(wildcard test_aes128/*.c))
+GCM_TESTS := $(patsubst test_gcm/%.c,$(OBJ_DIR)/test_gcm_%,$(wildcard test_gcm/*.c))
+X25519_TESTS := $(OBJ_DIR)/test_x25519
+P256_TESTS := $(patsubst test_p256/%.c,$(OBJ_DIR)/test_p256_%,$(wildcard test_p256/*.c))
+P256_SCALAR_TESTS := $(patsubst test_p256_scalar/%.c,$(OBJ_DIR)/test_p256_scalar_%,$(wildcard test_p256_scalar/*.c))
+P256_POINT_TESTS := $(patsubst test_p256_point/%.c,$(OBJ_DIR)/test_p256_point_%,$(wildcard test_p256_point/*.c))
+P256_ECDSA_TESTS := $(patsubst test_p256_ecdsa/%.c,$(OBJ_DIR)/test_p256_ecdsa_%,$(wildcard test_p256_ecdsa/*.c))
 TEST_CRYPTO_RANDOM := $(OBJ_DIR)/test_crypto_random
 TEST_TRANSPORT := $(OBJ_DIR)/test_transport
 TEST_TLS := $(OBJ_DIR)/test_tls
@@ -114,7 +115,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(TEST_SHA256) $(TEST_HMAC) $(TEST_HKDF) $(TEST_AES128) $(TEST_GCM) $(TEST_X25519) $(TEST_P256) $(TEST_P256_SCALAR) $(TEST_P256_POINT) $(TEST_P256_ECDSA) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -139,14 +140,16 @@ test: $(TESTS)
 		total_passed=$$((total_passed + t_passed)); \
 		total_failed=$$((total_failed + t_failed)); \
 		if [ $$rc -eq 0 ]; then \
-			printf "── test (%-19s ... (%3d tests) \033[0;32m✓\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
+			printf "── test (%-25s ... (%3d tests) \033[0;32m✓\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
 		else \
 			failures=$$((failures + 1)); \
-			printf "── test (%-19s ... (%3d tests) \033[0;31m✗\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
+			printf "── test (%-25s ... (%3d tests) \033[0;31m✗\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
 			logs="$${logs}$$(printf "\n━━━ %s ━━━\n%s\n" "$$name" "$$out")"; \
 		fi; \
 	done; \
 	if [ $$failures -eq 0 ]; then \
+		echo ""; \
+		echo "✅ All tests passed ($$total_passed tests)."; \
 		exit 0; \
 	else \
 		printf '%s\n' "$$logs"; \
@@ -273,15 +276,18 @@ $(TEST_FNV1A_64): test_fnv1a_64.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 $(TEST_ATOI_N): test_atoi_n.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
+# Split test suites: one .c file per src/crypto/* function module.
+# Each test suite is split into separate binaries (one per test_sha256/*.c, etc.)
+
 # test_sha256: only needs crypto (pure function, standard ABI).
 # sha256(state=x0, data=x1, nblocks=x2) is called directly.
-$(TEST_SHA256): test_sha256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_sha256_%: test_sha256/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_hmac: only needs crypto (pure function, standard ABI).
 # hmac_sha256(key=x0, keylen=x1, data=x2, datalen=x3, digest=x4) is
 # called directly; it links sha256.o for the streaming sha256_* calls.
-$(TEST_HMAC): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(HMAC_TESTS): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_hkdf: only needs crypto (pure functions, standard ABI).
@@ -290,13 +296,13 @@ $(TEST_HMAC): test_hmac.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # and hkdf_expand_label(secret=x0, label=x1, label_len=x2, context=x3,
 # context_len=x4, out=x5, outlen=x6) are called directly; the module
 # links sha256.o + hmac.o for the HMAC calls.
-$(TEST_HKDF): test_hkdf.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_hkdf_%: test_hkdf/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_aes128: only needs crypto (pure functions, standard ABI).
 # aes128_encrypt(pt=x0, rk=x1, ct=x2) and aes128_key_expand(key=x0,
 # rk=x1) are called directly.
-$(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_aes128_%: test_aes128/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_gcm: only needs crypto (pure functions, standard ABI); gcm.o
@@ -306,7 +312,7 @@ $(TEST_AES128): test_aes128.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # pt=x4, pt_len=x5, ct=x6, tag=x7) and aes_gcm_decrypt(key=x0, iv=x1,
 # aad=x2, aad_len=x3, ct=x4, ct_len=x5, tag=x6, pt=x7, returns x0=1/0)
 # are called directly.
-$(TEST_GCM): test_gcm.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_gcm_%: test_gcm/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_x25519: only needs crypto (pure functions, standard ABI).
@@ -316,30 +322,30 @@ $(TEST_GCM): test_gcm.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 # x25519_fe_scalar_product(out=x0,a=x1,scalar=x2), x25519_fe_recip(out=x0,a=x1),
 # x25519_swap_conditional(x=x0,qpx=x1,iswap=x2) and
 # x25519(out=x0,scalar=x1,point=x2) are called directly.
-$(TEST_X25519): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(X25519_TESTS): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_p256.c drives p256_fe_* (PLAN.MD Phase 16.1) against Python-computed
 # reference vectors for the real NIST P-256 prime.
-$(TEST_P256): test_p256.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_p256_%: test_p256/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_p256_scalar.c drives p256_scalar_* (arithmetic mod n) against
 # Python-computed reference vectors for the real P-256 group order.
-$(TEST_P256_SCALAR): test_p256_scalar.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_p256_scalar_%: test_p256_scalar/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_p256_point.c drives p256_point_* (PLAN.MD Phase 16.2/16.3/16.4)
 # against a Python transliteration of the exact same Jacobian formulas
 # (dbl/add) and against cryptography-library-derived public keys
 # (point_mul).
-$(TEST_P256_POINT): test_p256_point.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_p256_point_%: test_p256_point/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_p256_ecdsa.c drives p256_ecdsa_sign_with_k/verify (PLAN.MD
 # Phase 16.5/16.6) against vectors cross-checked with (and, for verify,
 # produced directly by) the `cryptography` library.
-$(TEST_P256_ECDSA): test_p256_ecdsa.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+$(OBJ_DIR)/test_p256_ecdsa_%: test_p256_ecdsa/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
 # test_crypto_random: only needs crypto (crypto_random_bytes is a

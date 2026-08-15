@@ -195,7 +195,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some security tests failed!${CLR}"
         exit 1
     else
-        printf "── test (%-19s ... (%3d tests) ${GRN}✓${CLR}\n" "security)" "$PASS"
+        printf "── test (%-25s ... (%3d tests) ${GRN}✓${CLR}\n" "security)" "$PASS"
         exit 0
     fi
 else

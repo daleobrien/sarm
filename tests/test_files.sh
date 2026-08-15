@@ -327,7 +327,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some tests failed!${CLR}"
         exit 1
     else
-        printf "── test (%-19s ... (%3d files) ${GRN}✓${CLR}\n" "file integrity)" "$PASS"
+        printf "── test (%-25s ... (%3d files) ${GRN}✓${CLR}\n" "file integrity)" "$PASS"
         exit 0
     fi
 else
