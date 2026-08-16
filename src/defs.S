@@ -93,11 +93,13 @@
 .equ SYS_nanosleep,    101
 .equ SYS_writev,       66
 .equ SYS_gettimeofday, 169
+.equ SYS_recvfrom,     207
 
 // socket stuff
 .equ AF_INET,          2
 .equ SOCK_STREAM,      1
 .equ SOL_SOCKET,       1
+.equ MSG_PEEK,         0x02
 .equ SO_REUSEADDR,     2
 .equ SO_RCVTIMEO,      20
 // Linux doesn't have SO_NOSIGPIPE; we ignore SIGPIPE instead.
@@ -372,6 +374,7 @@
 .equ SYS_renameatx_np, 488
 .equ SYS_writev,       121
 .equ SYS_gettimeofday, 116
+.equ SYS_recvfrom,     29
 
 // socket
 .equ AF_INET,          2
@@ -380,6 +383,7 @@
 .equ SO_REUSEADDR,     4
 .equ SO_RCVTIMEO,      0x1006
 .equ SO_NOSIGPIPE,     0x1022
+.equ MSG_PEEK,         0x02
 
 // mmap
 .equ PROT_READ,        1
@@ -930,7 +934,14 @@
 .equ TLS_SERVER_HS_TRAFFIC_SECRET, 480 // 32 B — server_handshake_traffic_
                                 //   secret (Phase 10), persisted as the
                                 //   Finished BaseKey (Phase 18, §4.4.4)
-.equ TLS_STATE_SIZE,        512
+.equ TLS_CLIENT_HS_TRAFFIC_SECRET, 512 // 32 B — client_handshake_traffic_
+                                //   secret (Phase 10), persisted as the
+                                //   BaseKey for verifying the client's own
+                                //   Finished (Phase 20, §4.4.4) — Phase 10
+                                //   originally treated this as transient
+                                //   scratch since nothing needed it again
+                                //   until the live handshake driver does
+.equ TLS_STATE_SIZE,        544
 
 // ── SHA-256 streaming context (sha256_ctx) ──────────────────────────
 // Streaming SHA-256 (PLAN.MD §3.2): sha256_init / sha256_update /

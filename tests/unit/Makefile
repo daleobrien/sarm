@@ -52,6 +52,16 @@ data_objs    := $(OBJ_DIR)/data.o
 # util/write_all.S now tail-calls transport_write, so any test binary that
 # links the util objects must also link the transport module.
 util_objs += $(transport_objs)
+# transport_read/transport_write's TRANSPORT_TLS branch (Phase 20) now
+# calls into the TLS record layer (tls_read_record, tls_app_data_read/
+# write), so every test binary that links util_objs (nearly all of
+# them) transitively needs tls_objs, and tls_objs in turn needs
+# crypto_objs, to resolve at link time even when a given test never
+# exercises TLS at runtime. Folded in here rather than at each of the
+# many individual test rules; any rule that *also* lists tls_objs/
+# crypto_objs explicitly alongside util_objs had that now-redundant
+# listing removed to avoid duplicate-symbol linker errors.
+util_objs += $(tls_objs) $(crypto_objs)
 stubs_objs   := $(OBJ_DIR)/stubs.o
 stubs_resp_objs := $(OBJ_DIR)/stubs_response.o
 
@@ -112,6 +122,7 @@ TEST_TLS_RECORD_NONCE   := $(OBJ_DIR)/test_tls_record_nonce
 TEST_TLS_RECORD_ENCRYPT := $(OBJ_DIR)/test_tls_record_encrypt
 TEST_TLS_RECORD_DECRYPT := $(OBJ_DIR)/test_tls_record_decrypt
 TEST_TLS_RECORD_SEQ     := $(OBJ_DIR)/test_tls_record_seq
+TEST_TLS_RECORD_READ_RECORD := $(OBJ_DIR)/test_tls_record_read_record
 # HTTP/2 suites — one per stage group; all share test_h2_common.h.
 TEST_H2_FRAMES    := $(OBJ_DIR)/test_h2_frames
 TEST_H2_PREFACE   := $(OBJ_DIR)/test_h2_preface
@@ -129,7 +140,7 @@ TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
 	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) $(TLS_APPLICATION_TESTS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
-	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
+	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) $(TEST_TLS_RECORD_READ_RECORD) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
 	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
@@ -366,11 +377,14 @@ $(OBJ_DIR)/test_p256_ecdsa_%: test_p256_ecdsa/%.c $(HARNESS) $(crypto_objs) | $(
 $(TEST_CRYPTO_RANDOM): test_crypto_random.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
-# test_transport: only needs transport — transport_read/transport_write
-# dispatch on `transport_mode`, which lives in src/transport/data.S (part
-# of the transport_objs wildcard), so no data.o or stubs are needed.
-$(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(transport_objs) $(LDFLAGS) -o $@
+# test_transport: transport_read/transport_write dispatch on
+# `transport_mode` (src/transport/data.S). The TRANSPORT_TLS branch
+# (Phase 20) calls into the TLS record layer, which calls into util's
+# memcpy, so this links util_objs (which by now already carries
+# transport_objs/tls_objs/crypto_objs — see the util_objs += lines
+# above) rather than assembling the dependency chain by hand here.
+$(TEST_TRANSPORT): test_transport.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls: the tls module (PLAN.MD §2) — the wire constants in
 # defs.S are compile-time, so this links src/tls/data.S: the tls_state
@@ -379,39 +393,39 @@ $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
 # picks up transcript/*.S (sha256_* streaming API) and record/*.S
 # (aes_gcm from crypto + memcpy from util), so util_objs is linked as
 # well (util_objs drags in the transport module per the comment at the top).
-$(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS): test_tls.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_client_hello: the ClientHello parser.
 # Links the same object set as test_tls — tls_parse_client_hello writes
 # into tls_state (tls_objs/data.S) and the tls_objs wildcard also pulls
 # in record/*.S and transcript/*.S, hence crypto_objs + util_objs.
-$(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_server_hello: the ServerHello generator.
 # Same object set as test_tls_client_hello — tls_build_server_hello
 # calls crypto_random_bytes and x25519 from crypto_objs.
-$(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_key_schedule.c drives tls_derive_handshake_secrets (PLAN.MD
 # Phase 10) directly against tls_state, and cross-checks it with
 # hkdf_expand_label from crypto_objs.
-$(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_encrypted_extensions.c drives tls_encrypted_extensions_write
 # plus a seal/open round trip through
 # tls_record_encrypt/tls_record_decrypt (tls_objs' record/*.S), which
 # calls aes_gcm_encrypt/decrypt from crypto_objs.
-$(TEST_TLS_ENCRYPTED_EXTENSIONS): test_tls_encrypted_extensions.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS_ENCRYPTED_EXTENSIONS): test_tls_encrypted_extensions.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_certificate.c drives tls_certificate_write against the embedded
 # certs/cert.der (tls_objs' cert_data.S).
-$(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_certificate_verify_*: one suite per
 # src/tls/handshake/certificate_verify/*.S module —
@@ -420,21 +434,21 @@ $(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(tls_objs) $(crypto_
 # structurally + by verifying against the server's real pubkey). Same
 # object set as test_tls_certificate — the private key and DER helper
 # both live in crypto_objs/tls_objs already.
-$(OBJ_DIR)/test_tls_certificate_verify_%: test_tls_certificate_verify/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(OBJ_DIR)/test_tls_certificate_verify_%: test_tls_certificate_verify/%.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_finished_*: one suite per src/tls/handshake/finished/*.S
 # module — finished_key and verify_data (both thin,
 # cross-checked wrappers over already-verified primitives) and write
 # (end-to-end, reads tls_server_hs_traffic_secret from tls_state).
-$(OBJ_DIR)/test_tls_finished_%: test_tls_finished/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(OBJ_DIR)/test_tls_finished_%: test_tls_finished/%.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_application_*: one suite per Phase 19 module — secrets
 # (key-schedule tail, HKDF-Expand-Label wrappers) and write/read (thin
 # record-layer specializations over tls_record_encrypt/decrypt).
-$(OBJ_DIR)/test_tls_application_%: test_tls_application/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(OBJ_DIR)/test_tls_application_%: test_tls_application/%.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_transcript_*: tls + crypto + util.
 # One suite per src/tls/transcript/*.S module (init, add, hash) — each a
@@ -445,8 +459,8 @@ $(OBJ_DIR)/test_tls_application_%: test_tls_application/%.c $(HARNESS) $(tls_obj
 # calls memcpy from util.
 TLS_TRANSCRIPT_COMMON := test_tls_transcript/common.h
 
-$(OBJ_DIR)/test_tls_transcript_%: test_tls_transcript/%.c $(TLS_TRANSCRIPT_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(OBJ_DIR)/test_tls_transcript_%: test_tls_transcript/%.c $(TLS_TRANSCRIPT_COMMON) $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_record_*: tls + crypto + util.
 # One suite per src/tls/record/*.S module (parse, write, nonce, encrypt,
@@ -455,8 +469,8 @@ $(OBJ_DIR)/test_tls_transcript_%: test_tls_transcript/%.c $(TLS_TRANSCRIPT_COMMO
 # vectors + asm wrappers) and call memcpy (util) / aes_gcm_* (crypto).
 TLS_RECORD_COMMON := test_tls_record/common.h
 
-$(OBJ_DIR)/test_tls_record_%: test_tls_record/%.c $(TLS_RECORD_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+$(OBJ_DIR)/test_tls_record_%: test_tls_record/%.c $(TLS_RECORD_COMMON) $(HARNESS) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_parse: needs util + parse + data + file + stubs.
 # parse_header_end uses parse data. get_header_field calls streqn_i.

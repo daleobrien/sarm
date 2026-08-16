@@ -56,12 +56,12 @@ khs_empty_hash:
 //   tls_transcript_hash) are the only connection-specific inputs; Early
 //   Secret and both "derived" intermediates depend on nothing but fixed
 //   constants, so they're recomputed here rather than cached. The
-//   client handshake traffic *secret* itself is transient (kept only
-//   in a stack scratch buffer) — only its key/IV derivatives are
-//   persisted, since nothing past this call needs the secret again.
-//   The server handshake traffic secret IS persisted
-//   (TLS_SERVER_HS_TRAFFIC_SECRET), since Phase 18's Finished message
-//   needs it as the Finished BaseKey (RFC 8446 §4.4.4). The Master
+//   client and server handshake traffic secrets are both persisted
+//   (TLS_CLIENT_HS_TRAFFIC_SECRET, TLS_SERVER_HS_TRAFFIC_SECRET): the
+//   server's is the Finished BaseKey for the message Phase 18 sends
+//   (RFC 8446 §4.4.4), and the client's is the BaseKey Phase 20's
+//   handshake driver needs to verify the Finished the client sends
+//   back. The Master
 //   Secret is stored for Phase 19's application traffic secrets; it
 //   is not itself a key.
 //
@@ -125,16 +125,20 @@ tls_derive_handshake_secrets:
     bl      hkdf_extract
 
     // ── client_handshake_traffic_secret, then its key/iv ─────────────
+    // Persisted (not scratch) since Phase 20's handshake driver needs
+    // it again as the BaseKey for verifying the client's own Finished
+    // (RFC 8446 §4.4.4) — the same reason the server direction below
+    // is persisted rather than kept transient.
     add     x0, x19, #TLS_HANDSHAKE_SECRET
     adr_l   x1, khs_label_c_hs_traffic
     mov     x2, #12
     mov     x3, x20                     // transcript hash
     mov     x4, #32
-    add     x5, sp, #128                // traffic secret scratch
+    add     x5, x19, #TLS_CLIENT_HS_TRAFFIC_SECRET
     mov     x6, #32
     bl      hkdf_expand_label
 
-    add     x0, sp, #128
+    add     x0, x19, #TLS_CLIENT_HS_TRAFFIC_SECRET
     adr_l   x1, khs_label_key
     mov     x2, #3
     mov     x3, #0
@@ -143,7 +147,7 @@ tls_derive_handshake_secrets:
     mov     x6, #16
     bl      hkdf_expand_label
 
-    add     x0, sp, #128
+    add     x0, x19, #TLS_CLIENT_HS_TRAFFIC_SECRET
     adr_l   x1, khs_label_iv
     mov     x2, #2
     mov     x3, #0

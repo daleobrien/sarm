@@ -38,6 +38,11 @@ addr:
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // padding
 .align 4
 
+// tls_peek_byte — scratch destination for the MSG_PEEK recvfrom() that
+// decides TLS vs plaintext on each newly accepted connection (Phase 20)
+tls_peek_byte: .byte 0
+.align 4
+
 get_req:
     .ascii "GET "
 .equ get_req_len, . - get_req
@@ -90,6 +95,11 @@ sockfd:             .skip 8
 
 .text
 .align 2
+
+.extern tls_server_handshake
+.extern h2_connection_loop
+.extern child
+.extern child_end
 
 #ifdef __linux__
 .global _start
@@ -285,8 +295,64 @@ loop:
     // store x0 (return of accept) in clientfd
     str_l x0, clientfd
 
-    // handle the request inline (no fork — connection-per-loop cycle)
-    b child
+    // ── TLS detection (PLAN.MD Phase 20) ────────────────────────────
+    // Peek (MSG_PEEK — the byte stays on the socket either way) the
+    // connection's very first byte without consuming it: a TLS 1.3
+    // ClientHello always starts with a handshake record (type 0x16,
+    // RFC 8446 §5.1), which no plaintext HTTP/1 or HTTP/2 request ever
+    // does (HTTP/1 starts with a method like "GET", HTTP/2 with the
+    // "PRI *" preface). A TLS connection runs the full handshake, then
+    // is handed straight to h2_connection_loop over the now-encrypted
+    // transport — matching the Phase 20 diagram (TLS transport →
+    // existing H2) exactly, no HTTP/1-over-TLS support (see
+    // src/transport/README's scope note). Anything else falls through
+    // to the existing plaintext child path, completely unchanged.
+    SCWINUM SYS_recvfrom
+    ldr_l x0, clientfd
+    adr_l x1, tls_peek_byte
+    mov x2, #1
+    mov x3, #MSG_PEEK
+    mov x4, #0
+    mov x5, #0
+    SCWISVC
+    SCERR
+    b.cs Lmain_tls_close        // peek failed — close like a dead connection
+    cmp x0, #1
+    b.ne Lmain_tls_close        // 0 bytes peeked — client already closed
+
+    adr_l x1, tls_peek_byte
+    ldrb w2, [x1]
+    cmp w2, #TLS_RECORD_HANDSHAKE
+    b.eq Lmain_tls_detected
+    b child                     // not TLS — existing plaintext path
+Lmain_tls_detected:
+
+    ldr_l x0, clientfd
+    bl tls_server_handshake
+    b.cs Lmain_tls_close        // handshake failed — close, never reaches H2
+
+    // record start time for request timing (child_end's "Took: Nµs"
+    // log expects req_start set — the plaintext path sets it in
+    // child.S right before parsing; TLS has no equivalent single point
+    // until now, since the handshake itself isn't "the request")
+    SCWINUM SYS_gettimeofday
+    adr_l x0, req_start
+    mov x1, #0
+    SCWISVC
+    SCERR
+
+    ldr_l x0, clientfd
+    adr_l x1, buf
+    mov x2, #0
+    bl h2_connection_loop       // returns when the connection ends
+
+Lmain_tls_close:
+    // transport_mode is a single global (one connection in flight at a
+    // time, PLAN.MD's connection-per-loop model) — reset it before the
+    // next accept, which may well be a plaintext connection.
+    adr_l x9, transport_mode
+    str xzr, [x9]               // TRANSPORT_PLAIN == 0
+    b child_end
 
 
 exit:

@@ -166,7 +166,8 @@
 #define TLS_SESSION_ID_LEN   440
 #define TLS_SESSION_ID       448
 #define TLS_SERVER_HS_TRAFFIC_SECRET 480
-#define TLS_STATE_SIZE       512
+#define TLS_CLIENT_HS_TRAFFIC_SECRET 512
+#define TLS_STATE_SIZE       544
 
 // ── asm symbol addressing ──────────────────────────────────────────
 // Take the address of a pure-assembly symbol by name (see file header).
@@ -359,17 +360,20 @@ static void test_state_offsets(void) {
 	ASSERT_TLS_OFFSET("tls_server_hs_traffic_secret",
 	                  tls_server_hs_traffic_secret,
 	                  TLS_SERVER_HS_TRAFFIC_SECRET);
+	ASSERT_TLS_OFFSET("tls_client_hs_traffic_secret",
+	                  tls_client_hs_traffic_secret,
+	                  TLS_CLIENT_HS_TRAFFIC_SECRET);
 }
 
 static void test_state_alignment_and_size(void) {
 	TEST_SUITE("tls_state alignment & size");
 	ASSERT_EQ("tls_state 16-byte aligned", 0,
 	          (int64_t)ASM_SYM_ADDR(tls_state) % 16);
-	// storage extent: last field (tls_server_hs_traffic_secret) + its
+	// storage extent: last field (tls_client_hs_traffic_secret) + its
 	// buffer. If data.S's layout drifts from defs.S's TLS_STATE_SIZE
 	// this catches it.
 	ASSERT_EQ("storage extent == TLS_STATE_SIZE", TLS_STATE_SIZE,
-	          TLS_OFFSET(tls_server_hs_traffic_secret) + 32);
+	          TLS_OFFSET(tls_client_hs_traffic_secret) + 32);
 	// every scalar/array field boundary stays 8-aligned (defs.S contract)
 	ASSERT_EQ("TLS_ALPN 8-aligned", 0, TLS_ALPN % 8);
 }

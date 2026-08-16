@@ -40,6 +40,18 @@ This module has been split into focused submodules for clarity and maintainabili
   - Removes padding (everything after the inner type byte)
   - Validates inner type in range 20-23
 
+- **`read_record.S`** — `tls_read_record` (PLAN.MD Phase 20)
+  - The network-level counterpart to `tls_record_parse`: reads one
+    complete record straight off a file descriptor (header, then
+    exactly `fragment_length` more bytes, via `raw_read_exact` —
+    deliberately not `transport_read`, to avoid recursing back into
+    its own `TRANSPORT_TLS` branch) and hands the assembled buffer to
+    `tls_record_parse` for validation
+  - Used by `tls_server_handshake` (`src/tls/server/`) to read the
+    ClientHello and the client's Finished, and by `transport_read`'s
+    own `TRANSPORT_TLS` branch to pull each application_data record
+    off the wire post-handshake
+
 - **`next_client_seq.S`** / **`next_server_seq.S`** — `tls_record_next_client_seq`, `tls_record_next_server_seq`
   - Manage per-connection, per-direction sequence counters
   - Return current counter, then increment exactly once per call
@@ -169,6 +181,25 @@ Output:
   x0 = current sequence number (counter incremented by 1)
 ```
 
+### `tls_read_record`
+```
+Input:
+  x0 = file descriptor
+  x1 = pointer to the destination buffer
+  x2 = destination buffer capacity in bytes (>= TLS_RECORD_HEADER_LEN)
+
+Output (carry clear — success):
+  x0 = content type (20..23)
+  x1 = pointer to the fragment (buf + TLS_RECORD_HEADER_LEN)
+  x2 = fragment length in bytes
+  x3 = total record length (header + fragment)
+
+Output (carry set — failure):
+  x0 = TLS_RECORD_ERR_SHORT (I/O error or EOF) / _LENGTH (record too
+       large for the buffer) / _TYPE / _VERSION / _BOUNDS (from
+       tls_record_parse)
+```
+
 ### `tls_app_data_write`
 ```
 Input:
@@ -235,6 +266,22 @@ All 773 record-layer tests pass:
   zero- and one-byte edge cases, a `tls_server_seq`/`tls_client_seq`
   increment check per call, an oversized-plaintext rejection, and a
   tampered-tag MAC-failure rejection
+
+`tests/unit/test_tls_record/read_record.c` (PLAN.MD Phase 20) covers
+`tls_read_record` over a real `socketpair()`: a full record delivered
+across two separate `write()` calls (forcing the underlying
+`raw_read_exact` to loop across short reads), EOF before a complete
+header, a record whose claimed length exceeds the destination buffer,
+and an `application_data`-typed record round-tripping correctly.
+
+`tls_server_handshake` (`src/tls/server/`, Phase 20) — the driver that
+sequences this whole module against a live connection — is validated
+by a real end-to-end interop test rather than a synthetic unit test:
+a genuine TLS 1.3 client (Python's `ssl` module, and separately `curl`
+built against LibreSSL) completing the full handshake and then
+multiple HTTP/2 requests/responses over the resulting encrypted
+connection, byte-for-byte matching the plaintext response. See
+`src/tls/server/README.md`.
 
 ## References
 

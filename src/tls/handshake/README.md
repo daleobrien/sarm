@@ -1,5 +1,10 @@
 # TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17-19)
 
+> The live handshake *driver* that sequences everything in this
+> module against a real connection — `tls_server_handshake` — lives in
+> `src/tls/server/` (PLAN.MD Phase 20), not here: see
+> `src/tls/server/README.md`.
+
 ## Overview
 
 The handshake module parses and generates TLS 1.3 handshake messages.

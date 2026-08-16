@@ -52,6 +52,9 @@
 .global tls_session_id_len
 .global tls_session_id
 .global tls_server_hs_traffic_secret
+.global tls_client_hs_traffic_secret
+.global tls_hs_msg_buf
+.global tls_hs_record_buf
 
 // tls_state — one block per connection (a connection handler is one
 // process, so the global is per-connection, like request/response).
@@ -85,6 +88,32 @@ tls_session_id_len:    .quad 0             // TLS_SESSION_ID_LEN — the
                                             //   length, echoed in ServerHello
 tls_session_id:        .skip 32            // TLS_SESSION_ID
 tls_server_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_SERVER_HS_TRAFFIC_SECRET
+tls_client_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_CLIENT_HS_TRAFFIC_SECRET
+
+// tls_hs_msg_buf — scratch buffer for constructing one plaintext
+// handshake message body at a time during tls_server_handshake (Phase
+// 20). Not part of the fixed tls_state layout (no TLS_* offset, no
+// offset test) since nothing addresses it by a persistent field
+// contract — it's pure scratch, reused sequentially for each message
+// the way src/data.S's `buf` is reused across HTTP requests. Sized
+// well past the largest message this server ever builds (Certificate,
+// at 13 + the embedded DER certificate's length, comfortably under
+// 1 KB for a P-256 cert).
+.align 4
+tls_hs_msg_buf: .skip 2048
+
+// tls_hs_record_buf — scratch buffer for one whole TLS record (header
+// + fragment) at a time during tls_server_handshake: reading the
+// ClientHello and the client's Finished off the wire, and wrapping
+// each outgoing handshake message in its record header before
+// sending. Deliberately separate from src/data.S's `buf` (the HTTP
+// request/response buffer) — the TLS module has no business depending
+// on the HTTP layer's scratch space, and every test binary that links
+// any part of the TLS module would otherwise need to link src/data.S
+// too. Sized to the largest record this server ever needs to hold:
+// header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded.
+.align 4
+tls_hs_record_buf: .skip 16448
 
 // tls_alpn_h2 — the ALPN identifier this server offers: "h2" (2 bytes,
 // 16-aligned like every string in the tree).
