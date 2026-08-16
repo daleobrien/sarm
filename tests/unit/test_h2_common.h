@@ -38,6 +38,8 @@
 #define H2_FLAG_ACK         0x1
 #define H2_FLAG_END_STREAM  0x1
 #define H2_FLAG_END_HEADERS 0x4
+#define H2_FLAG_PADDED      0x8
+#define H2_FLAG_PRIORITY    0x20
 
 // request type ids, mirroring defs.S
 #define GET_ID     0

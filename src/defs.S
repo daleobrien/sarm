@@ -603,6 +603,9 @@
 // frame header (§4.1) — one SETTINGS entry is 2-byte id + 4-byte value
 .equ H2_WIRE_HEADER_LEN, 9
 .equ H2_SETTINGS_ENTRY_LEN, 6
+// §6.2 — the optional priority field on a HEADERS frame: 4-byte stream
+// dependency (top bit exclusive) + 1-byte weight, ahead of the block
+.equ H2_PRIORITY_FIELD_LEN, 5
 .equ H2_MAX_FRAME_SIZE,  0x00ffffff // 2^24 - 1, absolute wire limit
 .equ H2_DEFAULT_MAX_FRAME_SIZE, 16384 // 2^14, initial SETTINGS_MAX_FRAME_SIZE
 .equ H2_DEFAULT_HEADER_TABLE_SIZE, 4096

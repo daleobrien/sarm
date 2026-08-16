@@ -9,6 +9,8 @@
 //   IDLE and moved to OPEN, and the END_STREAM flag then moves it to
 //   HALF_CLOSED_REMOTE. The frame's flags are recorded on the stream
 //   entry (END_STREAM/END_HEADERS are extracted there), the
+//   PADDED and PRIORITY fields are stripped off the front of the payload
+//   (§6.2) so that what is left is the header block fragment alone; the
 //   HPACK-encoded header block is decoded with h2_hpack_decode_block,
 //   and the decoded fields are converted into the protocol-neutral
 //   `request` struct by h2_build_request. An undecodable block is a
@@ -104,9 +106,40 @@ h2_handle_headers:
     // entry already holds, which includes H2S_FLAG_SERVING
     ldr x13, [sp, #40]
     str x13, [x19, #H2S_FLAGS]  // extract END_STREAM / END_HEADERS / ...
-    // the HPACK-encoded header block reaches the decoder here
+    // ── §6.2 — the header block fragment is not the whole payload ──
+    // Two optional fields sit in front of it, and both have to come off
+    // before a single byte reaches HPACK. Chrome sets PRIORITY on its
+    // request HEADERS, so its block starts five octets in; feeding those
+    // five (80 00 00 00 ff — exclusive, dependency 0, weight 255) to the
+    // decoder reads 0x80 as an indexed field with index 0, which is
+    // exactly the "decoder error" HPACK reserves (RFC 7541 §6.1), and
+    // the connection dies with GOAWAY(COMPRESSION_ERROR) on the very
+    // first request. Safari sends neither field, which is why it never
+    // showed this.
+    //
+    // The priority fields themselves are deprecated (§5.3) and carry no
+    // meaning here — they are skipped, not parsed.
     mov x0, x22             // payload
-    ldr w1, [x20, #H2F_LENGTH]
+    ldr w1, [x20, #H2F_LENGTH]  // bytes left in it
+    ldr x13, [sp, #40]
+    tst w13, #H2_FLAG_PADDED
+    b.eq .Lh2_headers_no_pad
+    cbz w1, .Lh2_headers_size_error  // no room for the Pad Length octet
+    ldrb w14, [x0]                   // Pad Length
+    add x0, x0, #1
+    sub w1, w1, #1
+    cmp w14, w1
+    b.hi .Lh2_headers_protocol_error // padding runs past the payload (§6.1)
+    sub w1, w1, w14
+.Lh2_headers_no_pad:
+    tst w13, #H2_FLAG_PRIORITY
+    b.eq .Lh2_headers_block
+    cmp w1, #H2_PRIORITY_FIELD_LEN
+    b.lo .Lh2_headers_size_error
+    add x0, x0, #H2_PRIORITY_FIELD_LEN  // stream dependency (4) + weight (1)
+    sub w1, w1, #H2_PRIORITY_FIELD_LEN
+.Lh2_headers_block:
+    // the HPACK-encoded header block reaches the decoder here
     bl h2_hpack_decode_block
     b.cs .Lh2_headers_err   // x0 = COMPRESSION_ERROR (connection error)
     // convert the decoded fields into the common request
@@ -129,6 +162,14 @@ h2_handle_headers:
     cmn xzr, xzr             // success — carry clear
     mov x0, #0
     ret
+.Lh2_headers_size_error:
+    cmp xzr, xzr             // failure — carry set
+    mov x0, #H2_ERR_FRAME_SIZE_ERROR
+    b .Lh2_headers_err
+.Lh2_headers_protocol_error:
+    cmp xzr, xzr             // failure — carry set
+    mov x0, #H2_ERR_PROTOCOL_ERROR
+    b .Lh2_headers_err
 .Lh2_headers_too_many:
     cmp xzr, xzr             // failure — carry set
     mov x0, #H2_ERR_ENHANCE_YOUR_CALM

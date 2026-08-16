@@ -65,6 +65,116 @@ static void test_h2_headers_hpack(void) {
 	              REQ->path, LITLEN("www/index.html"));
 }
 
+// §6.2 — PADDED and PRIORITY put extra octets in front of the header
+// block fragment. Chrome sets PRIORITY on its request HEADERS, so leaving
+// those five octets in place hands 0x80 to the HPACK decoder as an
+// indexed field with index 0 and the connection dies with
+// COMPRESSION_ERROR on the very first request.
+static void test_h2_headers_prefix_fields(void) {
+	TEST_SUITE("h2_handle_headers — 8.5 PADDED/PRIORITY prefix stripping");
+
+	// :method GET, :scheme https, :path /index.html
+	static const uint8_t block[] = { 0x82, 0x87, 0x85 };
+	uint8_t wire[9];
+	uint8_t payload[64];
+	h2_frame_header_t hdr;
+	h2_conn_t conn;
+	int64_t carry;
+	unsigned long n;
+
+	// ── PRIORITY alone — the exact five octets Chrome sends ─────────
+	static const uint8_t prio[] = { 0x80, 0x00, 0x00, 0x00, 0xff };
+	memcpy(payload, prio, sizeof(prio));
+	memcpy(payload + sizeof(prio), block, sizeof(block));
+	n = sizeof(prio) + sizeof(block);
+
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+	put_wire_header(wire, (uint32_t)n, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS |
+	                H2_FLAG_PRIORITY, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("PRIORITY HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	h2_hpack_field_t *f = h2_hpack_fields_addr();
+	check_field("field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+	check_field("field 2 :path /index.html", 0, f[2].name, f[2].name_len,
+	            f[2].value, f[2].value_len, ":path", "/index.html");
+
+	// ── PADDED alone — Pad Length octet, then the block, then padding ─
+	payload[0] = 4; // Pad Length
+	memcpy(payload + 1, block, sizeof(block));
+	memset(payload + 1 + sizeof(block), 0, 4);
+	n = 1 + sizeof(block) + 4;
+
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+	put_wire_header(wire, (uint32_t)n, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS |
+	                H2_FLAG_PADDED, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("PADDED HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	f = h2_hpack_fields_addr();
+	check_field("padded field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+
+	// ── both flags together — pad length, priority, block, padding ───
+	payload[0] = 2;
+	memcpy(payload + 1, prio, sizeof(prio));
+	memcpy(payload + 1 + sizeof(prio), block, sizeof(block));
+	memset(payload + 1 + sizeof(prio) + sizeof(block), 0, 2);
+	n = 1 + sizeof(prio) + sizeof(block) + 2;
+
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+	put_wire_header(wire, (uint32_t)n, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS |
+	                H2_FLAG_PADDED | H2_FLAG_PRIORITY, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("PADDED+PRIORITY HEADERS accepted", 0,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+	f = h2_hpack_fields_addr();
+	check_field("both field 0 :method GET", 0, f[0].name, f[0].name_len,
+	            f[0].value, f[0].value_len, ":method", "GET");
+
+	// ── §6.1 — padding longer than the payload is a PROTOCOL_ERROR ──
+	payload[0] = 200;
+	memcpy(payload + 1, block, sizeof(block));
+	n = 1 + sizeof(block);
+
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+	put_wire_header(wire, (uint32_t)n, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS |
+	                H2_FLAG_PADDED, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("over-long padding rejected", H2_ERR_PROTOCOL_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+
+	// ── §6.2 — PRIORITY set but fewer than 5 octets is FRAME_SIZE ───
+	memcpy(payload, prio, 3);
+	reset_streams();
+	reset_conn(&conn);
+	reset_fields();
+	put_wire_header(wire, 3, H2_FRAME_HEADERS,
+	                H2_FLAG_END_STREAM | H2_FLAG_END_HEADERS |
+	                H2_FLAG_PRIORITY, 1);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("truncated priority field rejected", H2_ERR_FRAME_SIZE_ERROR,
+	          h2_dispatch_wrapper(&hdr, payload, &conn, &carry));
+	ASSERT_EQ("carry set", 1, carry);
+}
+
 static void test_h2_pseudo_request(void) {
 	TEST_SUITE("h2_build_request — 8.2 pseudo-headers → common request");
 
@@ -305,6 +415,7 @@ static void test_h2_request_equivalence(void) {
 
 int main(void) {
 	test_h2_headers_hpack();
+	test_h2_headers_prefix_fields();
 	test_h2_pseudo_request();
 	test_h2_pseudo_validate();
 	test_h2_request_equivalence();
