@@ -1,4 +1,4 @@
-# TLS Handshake Message Module
+# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17-19)
 
 ## Overview
 
@@ -27,7 +27,16 @@ Finished message (RFC 8446 §4.4.4) proves the server computed the
 *same* key schedule and saw the *same* handshake transcript as the
 client, using an HMAC-SHA256 MAC keyed off the server handshake
 traffic secret (now persisted in `tls_state` for exactly this purpose)
-rather than another signature.
+rather than another signature. Phase 19 runs the key schedule's last
+step: once the handshake reaches `TLS_HS_CONNECTED`, `tls_master_secret`
+(persisted since Phase 10, unused until now) is expanded into the
+client and server application traffic keys/IVs, and both record
+sequence counters are reset — RFC 8446 §5.3 treats moving to a new set
+of traffic keys as a key change, and sequence numbers restart at every
+key change. The application-data record wrappers that actually use
+these keys (`tls_app_data_write` / `tls_app_data_read`) live in
+`src/tls/record/` instead, alongside the generic record layer they
+specialize — see `src/tls/record/README.md`.
 
 ## Module Structure
 
@@ -216,6 +225,24 @@ split into three files (one function each, the same convention as
   moves to the application traffic keys derived from
   `tls_master_secret` (Phase 19).
 
+### `application_secrets.S` — `tls_derive_application_secrets`
+
+Runs the last step of the TLS 1.3 key schedule (RFC 8446 §7.1): from
+`tls_master_secret` (persisted by `tls_derive_handshake_secrets`,
+Phase 10) and the caller-supplied CH..server-Finished transcript hash,
+derives `client_application_traffic_secret_0` /
+`server_application_traffic_secret_0` (kept only in stack scratch —
+transient, like the client handshake traffic secret in
+`key_schedule.S`) and expands each into a key/IV pair
+(`TLS_CLIENT_APP_KEY`/`_IV`, `TLS_SERVER_APP_KEY`/`_IV`). Also zeroes
+`tls_client_seq`/`tls_server_seq`: RFC 8446 §5.3 requires sequence
+numbers to restart whenever the keys change, and moving from handshake
+keys to application keys is exactly such a change. A single function
+covering both directions, the same shape as
+`tls_derive_handshake_secrets` — not split further, since (like that
+function) it has one coherent job: run the key schedule to its next
+milestone.
+
 ## API Reference
 
 ### `tls_parse_client_hello`
@@ -363,6 +390,19 @@ Output:
        (tls_server_hs_traffic_secret, src/tls/data.S)
 ```
 
+### `tls_derive_application_secrets`
+```
+Input:
+  x0 = pointer to the 32-byte ClientHello..server-Finished transcript
+       hash
+
+Output:
+  none (void) — tls_client_app_key, tls_client_app_iv,
+  tls_server_app_key, tls_server_app_iv are filled in and
+  tls_client_seq/tls_server_seq are reset to 0 (src/tls/data.S). No
+  failure mode — HKDF-Expand-Label never fails.
+```
+
 ## Build Integration
 
 Follows the same convention as `src/tls/record/` and
@@ -453,13 +493,23 @@ random P-256 scalars
     (handshake header + verify_data) against a Python reference built
     from the same finished_key/verify_data functions validated above,
     with `tls_server_hs_traffic_secret` set directly per vector
+- `tests/unit/test_tls_application/secrets.c` — 27 tests:
+  `tls_derive_application_secrets` against vectors computed by a
+  from-scratch HMAC-SHA256 HKDF-Expand-Label reference, cross-checked
+  derivation by derivation against `cryptography`'s `HKDFExpand`
+  (mechanical composition of the already-verified `hkdf_expand_label`,
+  same rationale as the Phase 18 wrappers), plus the §5.3 sequence
+  reset and transcript-hash dependence. `tls_app_data_write`/
+  `tls_app_data_read` (`src/tls/record/`) are tested alongside the
+  record layer — see `src/tls/record/README.md`.
 
 ## References
 
 - RFC 8446 — TLS 1.3 (§4.1.2: ClientHello, §4.1.3: ServerHello, §4.3.1:
   EncryptedExtensions, §4.4.2: Certificate, §4.4.3: CertificateVerify,
   §4.4.4: Finished, §4.2: Extensions, §4.2.8: key_share, §4.2.3:
-  signature_algorithms, §6.2: Alert descriptions, §7.1: key schedule)
+  signature_algorithms, §6.2: Alert descriptions, §7.1: key schedule,
+  §5.3: per-record nonce and sequence numbers)
 - RFC 7748 — Elliptic Curves for Security (§5: the X25519 base point)
 - RFC 6066 — TLS Extensions: server_name (§3)
 - RFC 7301 — ALPN (§3.1: the ProtocolNameList wire format)
@@ -470,4 +520,4 @@ random P-256 scalars
 - PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
   Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
   Phase 15: Certificate handling, Phase 16: ECDSA P-256, Phase 17:
-  CertificateVerify, Phase 18: Finished
+  CertificateVerify, Phase 18: Finished, Phase 19: TLS application data

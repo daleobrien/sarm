@@ -40,11 +40,30 @@ This module has been split into focused submodules for clarity and maintainabili
   - Removes padding (everything after the inner type byte)
   - Validates inner type in range 20-23
 
-- **`seq.S`** — `tls_record_next_client_seq`, `tls_record_next_server_seq`
+- **`next_client_seq.S`** / **`next_server_seq.S`** — `tls_record_next_client_seq`, `tls_record_next_server_seq`
   - Manage per-connection, per-direction sequence counters
   - Return current counter, then increment exactly once per call
-  - Reset to zero at connection start and on key change (key schedule responsibility)
+  - Reset to zero at connection start and on key change (key schedule responsibility — see `tls_derive_application_secrets`, PLAN.MD Phase 19)
   - Sequence stored in `src/tls/data.S` as `tls_client_seq` / `tls_server_seq`
+
+- **`application_write.S`** — `tls_app_data_write` (PLAN.MD Phase 19)
+  - Seal one outgoing application_data record under the server's
+    application traffic key/IV (`tls_derive_application_secrets`,
+    `src/tls/handshake/application_secrets.S`)
+  - A thin, `tls_state`-aware specialization of `tls_record_encrypt`:
+    pulls `TLS_SERVER_APP_KEY`/`TLS_SERVER_APP_IV` and the next
+    sequence number (`tls_record_next_server_seq`) so the caller only
+    hands over plaintext and a destination buffer
+  - Mechanical composition of two already-verified primitives — no
+    algorithmic content of its own
+
+- **`application_read.S`** — `tls_app_data_read` (PLAN.MD Phase 19)
+  - Open one incoming TLSCiphertext record under the client's
+    application traffic key/IV, mirroring `tls_app_data_write` for the
+    read direction
+  - A thin, `tls_state`-aware specialization of `tls_record_decrypt`:
+    pulls `TLS_CLIENT_APP_KEY`/`TLS_CLIENT_APP_IV` and the next
+    sequence number (`tls_record_next_client_seq`)
 
 ### Constants
 
@@ -150,6 +169,43 @@ Output:
   x0 = current sequence number (counter incremented by 1)
 ```
 
+### `tls_app_data_write`
+```
+Input:
+  x0 = plaintext fragment pointer (ignored when len == 0)
+  x1 = fragment length in bytes (0..TLS_MAX_PLAINTEXT)
+  x2 = pointer to the output buffer (>= 5 + len + 17 bytes)
+
+Output (carry clear — success):
+  x0 = total record length (5 + len + 17)
+
+Output (carry set — failure):
+  x0 = TLS_RECORD_ERR_TYPE / _LENGTH / _EMPTY (propagated from
+       tls_record_encrypt)
+
+Reads TLS_SERVER_APP_KEY / TLS_SERVER_APP_IV from tls_state and
+consumes the next server sequence number (tls_record_next_server_seq).
+```
+
+### `tls_app_data_read`
+```
+Input:
+  x0 = pointer to the record buffer (header + ciphertext + tag)
+  x1 = number of bytes available in the buffer
+  x2 = pointer to the plaintext output buffer (>= len - 16 bytes)
+
+Output (carry clear — success):
+  x0 = content length in bytes (padding and the type byte removed)
+  x1 = inner content type (20..23)
+
+Output (carry set — failure):
+  x0 = TLS_RECORD_ERR_SHORT / _LENGTH / _BOUNDS / _MAC / _INNER
+       (propagated from tls_record_decrypt)
+
+Reads TLS_CLIENT_APP_KEY / TLS_CLIENT_APP_IV from tls_state and
+consumes the next client sequence number (tls_record_next_client_seq).
+```
+
 ## Build Integration
 
 - Each submodule is compiled as a separate ARM64 object file
@@ -169,8 +225,22 @@ All 773 record-layer tests pass:
 - Sequence counter increment and independence
 - Error cases: tag tamper, key mismatch, truncation, all-zero plaintext, invalid inner types
 
+`tests/unit/test_tls_application/` (PLAN.MD Phase 19) covers
+`tls_app_data_write`/`tls_app_data_read` alongside
+`tls_derive_application_secrets`:
+- `write.c` / `read.c` — RFC 8448 §3's actual server/client
+  application_data records (`RFC_SAP_KEY`/`RFC_CAP_KEY`) as the
+  primary cross-check, plus Python-generated vectors (via
+  `cryptography`'s `AESGCM`) covering multiple lengths including the
+  zero- and one-byte edge cases, a `tls_server_seq`/`tls_client_seq`
+  increment check per call, an oversized-plaintext rejection, and a
+  tampered-tag MAC-failure rejection
+
 ## References
 
-- RFC 8446 — TLS 1.3 (§5: Record Protocol)
-- RFC 8448 — Example Handshake and Traffic Keys for TLS 1.3 (§3: Wire Formats)
-- PLAN.MD — Phase 11: TLS Record Layer Implementation
+- RFC 8446 — TLS 1.3 (§5: Record Protocol, §5.3: per-record nonce and
+  sequence numbers, §7.1: key schedule)
+- RFC 8448 — Example Handshake and Traffic Keys for TLS 1.3 (§3: Wire
+  Formats, including the client/server application_data records)
+- PLAN.MD — Phase 11: TLS Record Layer Implementation, Phase 19: TLS
+  application data

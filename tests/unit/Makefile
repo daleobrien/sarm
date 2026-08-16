@@ -94,6 +94,11 @@ TLS_CERTIFICATE_VERIFY_TESTS := $(patsubst test_tls_certificate_verify/%.c,$(OBJ
 # finished suites — one per src/tls/handshake/finished/*.S module;
 # vectors are self-contained, no common.h needed.
 TLS_FINISHED_TESTS := $(patsubst test_tls_finished/%.c,$(OBJ_DIR)/test_tls_finished_%,$(wildcard test_tls_finished/*.c))
+# application suites — one per Phase 19 module (src/tls/handshake/
+# application_secrets.S, src/tls/record/application_write.S,
+# src/tls/record/application_read.S); vectors are self-contained, no
+# common.h needed.
+TLS_APPLICATION_TESTS := $(patsubst test_tls_application/%.c,$(OBJ_DIR)/test_tls_application_%,$(wildcard test_tls_application/*.c))
 # transcript suites — one per src/tls/transcript/*.S module; all share
 # test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
 TEST_TLS_TRANSCRIPT_INIT := $(OBJ_DIR)/test_tls_transcript_init
@@ -122,7 +127,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) $(TLS_APPLICATION_TESTS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -200,6 +205,7 @@ $(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
@@ -422,6 +428,12 @@ $(OBJ_DIR)/test_tls_certificate_verify_%: test_tls_certificate_verify/%.c $(HARN
 # cross-checked wrappers over already-verified primitives) and write
 # (end-to-end, reads tls_server_hs_traffic_secret from tls_state).
 $(OBJ_DIR)/test_tls_finished_%: test_tls_finished/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_application_*: one suite per Phase 19 module — secrets
+# (key-schedule tail, HKDF-Expand-Label wrappers) and write/read (thin
+# record-layer specializations over tls_record_encrypt/decrypt).
+$(OBJ_DIR)/test_tls_application_%: test_tls_application/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_transcript_*: tls + crypto + util.
