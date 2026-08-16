@@ -14,6 +14,11 @@
 //   - a new SETTINGS_INITIAL_WINDOW_SIZE applies retroactively: the send
 //     window of every stream still in the table shifts by the difference
 //     (§6.9.2), not just that of streams opened afterwards
+//   - a SETTINGS that is not itself an ACK is answered with an empty
+//     SETTINGS ACK (§6.5.3), over the client fd in H2C_FD. The peer
+//     keeps enforcing its previous SETTINGS_INITIAL_WINDOW_SIZE until
+//     that ACK lands, so skipping it makes a browser police a stale
+//     65535-byte receive window and reject any larger response
 //
 // Input/Arguments:
 //   x0 — parsed frame header
@@ -24,16 +29,17 @@
 //   x0 — 0 on success, error code on failure; carry set on error
 //
 // Clobbered Registers:
-//   x3, x4, x5, x6, x7, x8, x9, x10
+//   x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x30 (saved/restored)
 //
 // Stack Usage:
-//   none
+//   16 bytes: str x30, [sp, #-16]!; plus 16 bytes for the ACK frame
 // ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 2
 .global h2_handle_settings
 h2_handle_settings:
+    str x30, [sp, #-16]!   // save the return address — the ACK reply calls write_all
     // SETTINGS is a connection-level frame — stream id must be 0
     ldr w3, [x0, #H2F_STREAM_ID]
     cbnz w3, .Lh2_settings_protocol_error
@@ -49,7 +55,7 @@ h2_handle_settings:
     msub w5, w6, w5, w4 // w5 = length % 6
     cbnz w5, .Lh2_settings_size_error
 
-    cbz w4, .Lh2_settings_ok // an empty SETTINGS frame is valid
+    cbz w4, .Lh2_settings_send_ack // an empty SETTINGS frame is valid
 
 .Lh2_settings_loop:
     // id — 16-bit big-endian
@@ -153,7 +159,34 @@ h2_handle_settings:
     add x1, x1, #H2_SETTINGS_ENTRY_LEN
     cbnz w4, .Lh2_settings_loop
 
+.Lh2_settings_send_ack:
+    // §6.5.3 — a SETTINGS frame that is not itself an ACK must be
+    // acknowledged with an empty SETTINGS frame carrying the ACK flag.
+    //
+    // This is not a formality. Until the ACK arrives the peer is still
+    // policing its *previous* SETTINGS_INITIAL_WINDOW_SIZE on the streams
+    // it is receiving: a browser that opened with a 2 MiB window is still
+    // counting against the 65535-byte default, so the first response over
+    // 64 KiB looks to it like a flow-control violation and it kills the
+    // whole connection with GOAWAY(FLOW_CONTROL_ERROR). Everything
+    // smaller arrives fine, which is what makes it look like only the big
+    // assets "fail to load".
+    ldr x0, [x2, #H2C_FD]
+    tbnz x0, #63, .Lh2_settings_ok  // no connection (unit tests) — nothing to write
+    sub sp, sp, #16
+    str xzr, [sp]                   // length 0 + type/flags, cleared then set
+    str xzr, [sp, #8]               // stream id 0
+    mov w3, #H2_FRAME_SETTINGS
+    strb w3, [sp, #3]
+    mov w3, #H2_FLAG_ACK
+    strb w3, [sp, #4]
+    mov x1, sp
+    mov x2, #9                      // an ACK is header-only, no payload
+    bl write_all                    // a write failure means a dead connection
+    add sp, sp, #16
+
 .Lh2_settings_ok:
+    ldr x30, [sp], #16
     cmn xzr, xzr
     mov x0, #0
     ret
@@ -167,16 +200,19 @@ h2_handle_settings:
     b .Lh2_settings_ok
 
 .Lh2_settings_protocol_error:
+    ldr x30, [sp], #16
     cmp xzr, xzr
     mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
 
 .Lh2_settings_size_error:
+    ldr x30, [sp], #16
     cmp xzr, xzr
     mov x0, #H2_ERR_FRAME_SIZE_ERROR
     ret
 
 .Lh2_settings_flow_control_error:
+    ldr x30, [sp], #16
     cmp xzr, xzr
     mov x0, #H2_ERR_FLOW_CONTROL_ERROR
     ret
