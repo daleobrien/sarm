@@ -339,7 +339,7 @@ if [ $QUIET -eq 1 ]; then
         echo "${RED}Some protocol tests failed!${CLR}"
         exit 1
     else
-        printf "── test (%-37s ... (%3d tests) ${GRN}✓${CLR}\n" "protocol detection)" "$PASS"
+        printf "── %-37s ... (%3d tests) ${GRN}✓${CLR}\n" "protocol detection" "$PASS"
         exit 0
     fi
 else
