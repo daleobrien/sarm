@@ -26,8 +26,8 @@
 // The candidate driver is rebuilt by `make` after every candidate
 // install, so it always tests the exact source under evaluation.
 
-#ifndef YMAWKY_DIFF_DRIVER_H
-#define YMAWKY_DIFF_DRIVER_H
+#ifndef sarm_DIFF_DRIVER_H
+#define sarm_DIFF_DRIVER_H
 
 #include <stdint.h>
 #include <stdio.h>

@@ -4,7 +4,7 @@
 // reply_status), get.S (create_response), parse.S, file.S, data.S, and
 // util.S. Unlike stubs.S — which stubs out the header/get functions for
 // the other test suites — this file only provides the symbols that would
-// otherwise live in the embedded table (embedded.S) and in ymawky.S.
+// otherwise live in the embedded table (embedded.S) and in sarm.S.
 
 #include "defs.S"
 
@@ -154,12 +154,12 @@ embedded_count:
 .global embedded_files
 .global embedded_count
 
-// ── stub for ymawky.S (reply_status tails into child_end) ───────────
+// ── stub for sarm.S (reply_status tails into child_end) ───────────
 
 .text
 .align 2
 
-// child_end — normally in ymawky.S, where it closes the client fd, logs
+// child_end — normally in sarm.S, where it closes the client fd, logs
 // request timing, and exits the child process (so it never returns). The
 // test calls reply_status with flag=1, which returns via its own frame
 // instead of reaching this symbol; this stub only exists so the linker

@@ -103,7 +103,7 @@ class Benchmark:
     def parse_output(output: str, wall_ns: float) -> BenchmarkResult | None:
         """Extract a measurement from benchmark stdout.
 
-        Priority: JSON object containing ``runtime_ns`` (the ymawky
+        Priority: JSON object containing ``runtime_ns`` (the sarm
         protocol) -> ``RESULT_NS=...`` (the OPTIMISATION.MD prototype) ->
         wall-clock time of the whole command.
         """

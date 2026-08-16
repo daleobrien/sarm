@@ -51,7 +51,7 @@ header_etag: .ascii "\r\nETag: "
 
 .align 4
 header_tail:
-    .ascii "\r\nConnection: close\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: ymawky\r\n\r\n"
+    .ascii "\r\nConnection: close\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: sarm\r\n\r\n"
 .equ header_tail_len, . - header_tail
     .align 4 // pad the string block to a 16-byte multiple
 

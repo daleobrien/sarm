@@ -3,7 +3,7 @@
 #include "../defs.S"
 
 // ─────────────────────────────────────────────────────────────────────
-// File: hmac.S — HMAC-SHA256 for ymawky (PLAN.MD Phase 4)
+// File: hmac.S — HMAC-SHA256 for sarm (PLAN.MD Phase 4)
 //
 // One-shot HMAC-SHA256 (RFC 2104 / FIPS 198-1, hash from RFC 4231),
 // built on the streaming SHA-256 API from sha256.S. No libc or external

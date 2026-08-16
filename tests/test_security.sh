@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ymawky security test harness
+# sarm security test harness
 #
 # Tests the most important security properties by starting the server and
 # probing it with curl, verifying that:
@@ -102,17 +102,17 @@ if [ "$DO_BUILD" -eq 1 ]; then
     fi
 fi
 
-if [ ! -x "./ymawky" ]; then
-    echo "$0: './ymawky' binary not found or not executable — run 'make' first" >&2
+if [ ! -x "./sarm" ]; then
+    echo "$0: './sarm' binary not found or not executable — run 'make' first" >&2
     exit 2
 fi
 
 # ── start ────────────────────────────────────────────────────────────
 if [ $QUIET -eq 0 ]; then echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; fi
 if [ $QUIET -eq 1 ]; then
-    ./ymawky "$HOST_PORT" >/dev/null 2>&1 &
+    ./sarm "$HOST_PORT" >/dev/null 2>&1 &
 else
-    ./ymawky "$HOST_PORT" &
+    ./sarm "$HOST_PORT" &
 fi
 SERVER_PID=$!
 

@@ -56,7 +56,7 @@ parse_request:
 
     adr_l x23, request
 
-    // ── method detection (direct word compares; see dispatch in ymawky.S) ──
+    // ── method detection (direct word compares; see dispatch in sarm.S) ──
     ldr w5, [x19]              // first 4 bytes of request
 
     // GET ?

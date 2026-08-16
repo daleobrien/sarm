@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ymawky file-integrity test harness (local build)
+# sarm file-integrity test harness (local build)
 #
-# Builds ymawky via 'make', starts the local executable, then downloads
+# Builds sarm via 'make', starts the local executable, then downloads
 # every file from www/ and verifies each one matches the on-disk source
 # byte-for-byte.  Accounts for transparent gzip Content-Encoding.
 #
@@ -115,9 +115,9 @@ check_file() {
     expected_ct=$(mime_type "$ext")
 
     local tmpfile
-    tmpfile=$(mktemp "/tmp/ymawky_file_test_XXXXXX")
+    tmpfile=$(mktemp "/tmp/sarm_file_test_XXXXXX")
     local tmphead
-    tmphead=$(mktemp "/tmp/ymawky_file_head_XXXXXX")
+    tmphead=$(mktemp "/tmp/sarm_file_head_XXXXXX")
 
     # Fetch file and response headers in one go.
     # --max-time keeps a single request from hanging the whole suite if
@@ -150,7 +150,7 @@ check_file() {
     if [ "$has_gzip" -gt 0 ]; then
         # Server sent gzip — decompress and compare
         local ungz
-        ungz=$(mktemp "/tmp/ymawky_file_ungz_XXXXXX")
+        ungz=$(mktemp "/tmp/sarm_file_ungz_XXXXXX")
         if ! gzip -d -c "$tmpfile" > "$ungz" 2>/dev/null; then
             nope "GET ${url_path} — failed to decompress gzip body"
             rm -f "$tmpfile" "$tmphead" "$ungz"
@@ -235,17 +235,17 @@ if [ "$DO_BUILD" -eq 1 ]; then
     fi
 fi
 
-if [ ! -x "./ymawky" ]; then
-    echo "$0: './ymawky' binary not found or not executable — run 'make' first" >&2
+if [ ! -x "./sarm" ]; then
+    echo "$0: './sarm' binary not found or not executable — run 'make' first" >&2
     exit 2
 fi
 
 # ── start ────────────────────────────────────────────────────────
 if [ $QUIET -eq 0 ]; then echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; fi
 if [ $QUIET -eq 1 ]; then
-    ./ymawky "$HOST_PORT" >/dev/null 2>&1 &
+    ./sarm "$HOST_PORT" >/dev/null 2>&1 &
 else
-    ./ymawky "$HOST_PORT" &
+    ./sarm "$HOST_PORT" &
 fi
 SERVER_PID=$!
 
@@ -289,7 +289,7 @@ fi
 
 # Collect all files under www/ (recursive, sorted for determinism)
 # Use a temp file to avoid subshell losing PASS/FAIL counts
-FILE_LIST=$(mktemp "/tmp/ymawky_file_list_XXXXXX")
+FILE_LIST=$(mktemp "/tmp/sarm_file_list_XXXXXX")
 find "$WWW_DIR" -type f -not -name '.DS_Store' | sort > "$FILE_LIST"
 file_count=0
 while IFS= read -r disk_path; do

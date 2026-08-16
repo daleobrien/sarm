@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for the ymawky AArch64 optimization harness.
+"""Shared helpers for the sarm AArch64 optimization harness.
 
 Implements the "LLM proposes -> assembler builds -> tests prove correctness
 -> benchmark measures -> keep only improvements" loop described in

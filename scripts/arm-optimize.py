@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""arm-optimize.py -- automated AArch64 optimization harness for ymawky.
+"""arm-optimize.py -- automated AArch64 optimization harness for sarm.
 
 Implements OPTIMISATION.MD: LLM/mutation proposes -> assembler builds ->
 tests prove correctness -> differential checks -> benchmark measures ->
@@ -148,7 +148,7 @@ def default_differential() -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="arm-optimize.py",
-        description="Automated AArch64 assembly optimization loop for ymawky",
+        description="Automated AArch64 assembly optimization loop for sarm",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -216,7 +216,7 @@ def main() -> None:
 
     workdir = args.workdir.resolve()
     if not (workdir / "src").is_dir():
-        raise SystemExit(f"--workdir {workdir} does not look like the ymawky root")
+        raise SystemExit(f"--workdir {workdir} does not look like the sarm root")
 
     if args.source:
         source = args.source if args.source.is_absolute() else workdir / args.source

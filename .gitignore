@@ -1,5 +1,5 @@
-# the built binary (anchor to the repo root so src/ymawky/ is NOT ignored)
-/ymawky
+# the built binary (anchor to the repo root so src/sarm/ is NOT ignored)
+/sarm
 .*
 !.gitignore
 err/*

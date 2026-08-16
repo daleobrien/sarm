@@ -1,6 +1,6 @@
-# ymawky Architecture & Implementation Summary
+# sarm Architecture & Implementation Summary
 
-**ymawky** — "yuh maw kee" — a static-file web server written entirely in hand-rolled ARM64 (AArch64) assembly for macOS and Linux. No libc, syscall-only, single-process (no fork). Serves **HTTP/1.1** and **HTTP/2** (RFC 9113). All content is embedded into the binary at build time — there are no filesystem reads for request serving. GPL-3.0.
+**sarm** — "yuh maw kee" — a static-file web server written entirely in hand-rolled ARM64 (AArch64) assembly for macOS and Linux. No libc, syscall-only, single-process (no fork). Serves **HTTP/1.1** and **HTTP/2** (RFC 9113). All content is embedded into the binary at build time — there are no filesystem reads for request serving. GPL-3.0.
 
 > This document describes the current tree. Features from earlier versions (PUT, DELETE, CGI, directory listing, fork-per-connection) were removed — see the git history for those. Anything referenced here can be found in `src/`; the per-function files carry their own doc headers.
 
@@ -33,11 +33,11 @@ The assembly is split one function per file, grouped into module folders under `
 | `src/transport/*.S` | The transport seam (PLAN.MD §1.2-§1.3): `transport_read`/`transport_write` — the single read/write choke points of the HTTP/2 engine — plus `transport_mode` (PLAIN default; TLS stub fails closed) |
 | `src/tls/*.S` | TLS 1.3 (PLAN.MD §2+): today only `data.S` — the `tls_state` per-connection struct (wire constants + field offsets in `defs.S`) and the `tls_alpn_h2` ALPN identifier. Handshake/record/key-schedule functions land in later phases |
 | `src/crypto/*.S` | Cryptographic primitives for the planned TLS work (PLAN.MD): `sha256` (ARMv8 SHA-256 extension, streaming `sha256_init`/`update`/`final`), `hmac_sha256` (RFC 4231, built on the streaming SHA-256), `hkdf_extract`/`hkdf_expand` (RFC 5869) + `hkdf_expand_label` (RFC 8446 §7.1, built on HMAC-SHA256), `aes128_encrypt`/`aes128_key_expand` (AES-128 block cipher + key schedule, ARMv8 Crypto Extensions AESE/AESMC) |
-| `src/ymawky/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `log_timing`, `verify_http_version` |
+| `src/sarm/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `log_timing`, `verify_http_version` |
 
 ---
 
-## Startup & Main Loop (`src/ymawky/main.S:_main`)
+## Startup & Main Loop (`src/sarm/main.S:_main`)
 
 1. **Argument parsing**: If `argc > 1`, inspects `argv[1][0]`. If `< 'A'` (numeric), parses as port via `atoi` and overwrites the `addr` struct's port field (big-endian `rev16`). If `>= 'A'`, sets `x28=1` — a vestigial "debug" flag that is never read again (there is no fork to disable).
 2. **Socket setup**: `socket(AF_INET, SOCK_STREAM, 0)` → `setsockopt(SO_REUSEADDR)` → `bind(addr:16)` → `listen(5)`. Binds `0.0.0.0` on Linux, `127.0.0.1` on macOS.
@@ -55,7 +55,7 @@ loop:
 
 ---
 
-## Connection Handling (`child`, `src/ymawky/child.S`)
+## Connection Handling (`child`, `src/sarm/child.S`)
 
 1. **Socket options**: `SO_RCVTIMEO` (from `RECV_TIMEOUT`, a `struct timeval`) on the client fd; macOS additionally sets `SO_NOSIGPIPE`.
 2. **Read loop**: `read(clientfd, buf+offset, BUF_SIZE-offset)`, cumulative byte count in `x7`. On the **first** read, `h2_probe(buf, x7)` checks whether the buffered bytes are the HTTP/2 client connection preface prefix:
@@ -66,7 +66,7 @@ loop:
 5. **`parse_request`**: fills the protocol-neutral `request` struct (see below); failure → 400.
 6. **Method dispatch** on `REQ_METHOD`: `GET` → `get`, `HEAD` → `head`, `OPTIONS` → `options`, `BREW` → 418, anything else → 501.
 
-`child_end` (`src/ymawky/child_end.S`) records `req_end`, prints `Took: Nµs` via `log_timing`, closes `clientfd` (and `file_des` if it is not -1), and branches back to `loop`.
+`child_end` (`src/sarm/child_end.S`) records `req_end`, prints `Took: Nµs` via `log_timing`, closes `clientfd` (and `file_des` if it is not -1), and branches back to `loop`.
 
 ---
 
@@ -176,7 +176,7 @@ Builds the header in `header_buf` (`RESPONSE_HEADER_SIZE`, overflow → carry se
 3. `Content-Range: bytes start-end/total` for 206.
 4. `Content-Type` (skipped for 204 or empty resources).
 5. `Content-Encoding: gzip` when the embedded resource is gzipped; `ETag` when a precomputed hash exists.
-6. Fixed tail: `Connection: close`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Allow: GET, HEAD, OPTIONS`, `Accept-Ranges: bytes`, `Server: ymawky`.
+6. Fixed tail: `Connection: close`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Allow: GET, HEAD, OPTIONS`, `Accept-Ranges: bytes`, `Server: sarm`.
 7. **One `writev`** (zero-copy): `header_buf` + body as two iovecs; write errors are ignored (the connection is closing anyway).
 
 ### `reply_status(code, ret)` (`src/http1/reply_status.S`)

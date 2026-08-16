@@ -1,7 +1,7 @@
-# certs/ — TLS 1.3 test certificates for ymawky
+# certs/ — TLS 1.3 test certificates for sarm
 
 Self-signed **ECDSA P-256 (secp256r1)** test certificates for exercising the
-ymawky TLS 1.3 server implementation against the cipher suite it supports,
+sarm TLS 1.3 server implementation against the cipher suite it supports,
 `TLS_AES_128_GCM_SHA256`.
 
 ## Files
@@ -36,7 +36,7 @@ the first build on a fresh checkout.
 
 ## Why ECDSA P-256?
 
-ymawky's TLS implementation (see `src/defs.S`) is locked to:
+sarm's TLS implementation (see `src/defs.S`) is locked to:
 
 - cipher suite `TLS_AES_128_GCM_SHA256` (`0x1301`) — the only suite implemented
 - signature scheme `ecdsa_secp256r1_sha256` (`0x0403`) — the only scheme the
@@ -107,11 +107,11 @@ openssl s_client -connect 127.0.0.1:8443 \
 Expected client output: `Protocol: TLSv1.3`, `Cipher is TLS_AES_128_GCM_SHA256`,
 `Verify return code: 0 (ok)`.
 
-## Notes for later (TLS 1.3 testing with ymawky)
+## Notes for later (TLS 1.3 testing with sarm)
 
 - **Self-signed**: test clients must trust it explicitly — `curl --cacert certs/cert.pem`,
   `openssl s_client -CAfile certs/cert.pem`, or `-k` / `-no_verify` to skip
-  verification. ymawky (the server) never checks its own cert, so this is only
+  verification. sarm (the server) never checks its own cert, so this is only
   a client-side concern.
 - **`cert.der` is what goes on the wire**: the TLS 1.3 `Certificate` message
   carries the cert in DER. Parse/embed `cert.der`; keep `key.pem` for signing

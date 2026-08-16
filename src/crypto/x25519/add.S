@@ -1,5 +1,5 @@
 // ====================================================================
-// ARM64 (AArch64) X25519 Implementation for ymawky (PLAN.MD Phase 8)
+// ARM64 (AArch64) X25519 Implementation for sarm (PLAN.MD Phase 8)
 // File: x25519.S
 //
 //   x25519_fe_frombytes   — decode 32 little-endian bytes to a field

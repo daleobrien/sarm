@@ -1,12 +1,12 @@
 #!/bin/sh
-# generate.sh — (re)generate the ymawky TLS 1.3 test certificates.
+# generate.sh — (re)generate the sarm TLS 1.3 test certificates.
 #
 # Produces (in this directory):
 #   key.pem   — EC P-256 (secp256r1) private key, chmod 600
 #   cert.pem  — self-signed cert, ecdsa-with-SHA256, SANs localhost/127.0.0.1/::1
 #   cert.der  — DER form of cert.pem
 #
-# The key type and signature scheme must match what the ymawky TLS 1.3
+# The key type and signature scheme must match what the sarm TLS 1.3
 # implementation supports (see src/defs.S):
 #   - cipher suite      TLS_AES_128_GCM_SHA256 (0x1301)
 #   - signature scheme  ecdsa_secp256r1_sha256 (0x0403)

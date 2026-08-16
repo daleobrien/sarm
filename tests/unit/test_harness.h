@@ -1,5 +1,5 @@
-// ymawky unit test harness — minimal C assertion macros
-// This file is part of ymawky.
+// sarm unit test harness — minimal C assertion macros
+// This file is part of sarm.
 // Copyright (C) 2026 imtomt
 // SPDX-License-Identifier: GPL-3.0-only
 //

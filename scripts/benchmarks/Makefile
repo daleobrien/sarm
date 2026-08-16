@@ -1,4 +1,4 @@
-# Benchmarks for individual ymawky assembly functions.
+# Benchmarks for individual sarm assembly functions.
 #
 # Each bench_<function> target compiles the function's own .S file (so a
 # candidate installed by the optimizer is picked up automatically) plus a

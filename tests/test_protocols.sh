@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ymawky protocol-detection test harness (Stage 14)
+# sarm protocol-detection test harness (Stage 14)
 #
 # Proves that HTTP/1 and HTTP/2 share ONE port (RFC 9113 §3.4 prior
 # knowledge, detected from the "PRI * HTTP/2.0" client connection
@@ -60,8 +60,8 @@ check_body() {
     local disk_path="$3"
 
     local tmp head
-    tmp=$(mktemp "/tmp/ymawky_proto_body_XXXXXX")
-    head=$(mktemp "/tmp/ymawky_proto_head_XXXXXX")
+    tmp=$(mktemp "/tmp/sarm_proto_body_XXXXXX")
+    head=$(mktemp "/tmp/sarm_proto_head_XXXXXX")
     curl -s --max-time 5 -o "$tmp" -D "$head" $proto_args "${BASE}${path}" 2>/dev/null || true
 
     local has_gzip
@@ -70,7 +70,7 @@ check_body() {
     local rc=1
     if [ "$has_gzip" -gt 0 ]; then
         local ungz
-        ungz=$(mktemp "/tmp/ymawky_proto_ungz_XXXXXX")
+        ungz=$(mktemp "/tmp/sarm_proto_ungz_XXXXXX")
         if gzip -d -c "$tmp" > "$ungz" 2>/dev/null && diff -q "$ungz" "$disk_path" >/dev/null 2>&1; then
             rc=0
         fi
@@ -146,17 +146,17 @@ if [ "$DO_BUILD" -eq 1 ]; then
     fi
 fi
 
-if [ ! -x "./ymawky" ]; then
-    echo "$0: './ymawky' binary not found or not executable — run 'make' first" >&2
+if [ ! -x "./sarm" ]; then
+    echo "$0: './sarm' binary not found or not executable — run 'make' first" >&2
     exit 2
 fi
 
 # ── start ────────────────────────────────────────────────────────
 if [ $QUIET -eq 0 ]; then echo "━━━ STARTING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; fi
 if [ $QUIET -eq 1 ]; then
-    ./ymawky "$HOST_PORT" >/dev/null 2>&1 &
+    ./sarm "$HOST_PORT" >/dev/null 2>&1 &
 else
-    ./ymawky "$HOST_PORT" &
+    ./sarm "$HOST_PORT" &
 fi
 SERVER_PID=$!
 
@@ -236,8 +236,8 @@ fi
 # the headers) must be served byte-for-byte identically to a request
 # written in a single burst — the probe never consumes HTTP/1 bytes.
 if [ "$NC_AVAILABLE" -eq 1 ]; then
-    frag=$(mktemp "/tmp/ymawky_proto_frag_XXXXXX")
-    whole=$(mktemp "/tmp/ymawky_proto_whole_XXXXXX")
+    frag=$(mktemp "/tmp/sarm_proto_frag_XXXXXX")
+    whole=$(mktemp "/tmp/sarm_proto_whole_XXXXXX")
 
     # logo.png is not gzip-eligible, so the raw body is comparable
     ( printf 'GET /logo.png HTTP/1.1\r\n'; sleep 0.2; printf 'Host: 127.0.0.1\r\n\r\n' ) \
@@ -261,7 +261,7 @@ if [ "$NC_AVAILABLE" -eq 1 ]; then
     # the body is the last Content-Length bytes of the response
     total=$(wc -c < "$frag" 2>/dev/null || echo 0)
     clen=$(LC_ALL=C grep -a -i '^Content-Length:' "$frag" 2>/dev/null | head -1 | tr -d '\r' | awk '{print $2}')
-    frag_body=$(mktemp "/tmp/ymawky_proto_fragbody_XXXXXX")
+    frag_body=$(mktemp "/tmp/sarm_proto_fragbody_XXXXXX")
     if [ -n "$clen" ] && [ "$total" -ge "$clen" ] 2>/dev/null; then
         dd if="$frag" of="$frag_body" bs=1 skip=$((total - clen)) 2>/dev/null
         if cmp -s "$frag_body" "www/logo.png"; then

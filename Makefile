@@ -10,16 +10,16 @@ CFLAGS += -O3
 LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e _main -arch arm64
 
 # Build pipeline:
-#   www/ ──embed_www.sh──> src/embedded.S ──cc──> build/embedded.o ──ld──> ymawky
+#   www/ ──embed_www.sh──> src/embedded.S ──cc──> build/embedded.o ──ld──> sarm
 
 # Dependency graph:
-#   www/* ──> src/embedded.S ──> build/embedded.o ──> ymawky
+#   www/* ──> src/embedded.S ──> build/embedded.o ──> sarm
 #
-# ymawky depends on 'assets' so that changing any file under www/
+# sarm depends on 'assets' so that changing any file under www/
 # triggers regeneration of src/embedded.S, recompilation of
 # build/embedded.o, and relinking of the final binary.
-ymawky: assets $(OBJS) build/embedded.o
-	@ld $(OBJS) build/embedded.o -o ymawky $(LDFLAGS)
+sarm: assets $(OBJS) build/embedded.o
+	@ld $(OBJS) build/embedded.o -o sarm $(LDFLAGS)
 	@rm -rf build
 
 build/%.o: src/%.S
@@ -29,8 +29,8 @@ build/%.o: src/%.S
 # Production build: same pipeline as the default target, but the final
 # binary is stripped of local symbols with `strip -x`.
 .PHONY: production
-production: ymawky
-	@strip -x ymawky
+production: sarm
+	@strip -x sarm
 
 .PHONY: assets
 assets: src/embedded.S
@@ -42,11 +42,11 @@ src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 
 .PHONY: clean
 clean:
-	rm -f ymawky src/embedded.S
+	rm -f sarm src/embedded.S
 	rm -rf build www_gz www/err
 
 .PHONY: test
-test: ymawky
+test: sarm
 	@./tests/test_files.sh --no-build --quiet
 	@./tests/test_security.sh --no-build --quiet
 	@./tests/test_protocols.sh --no-build --quiet

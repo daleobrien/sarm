@@ -72,16 +72,16 @@ http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
 
 .align 4
-ymawky_connecting: .asciz "ymawky is connecting... "
-.equ ymawky_connecting_len, . - ymawky_connecting
+sarm_connecting: .asciz "sarm is connecting... "
+.equ sarm_connecting_len, . - sarm_connecting
 
 .align 4
-ymawky_connected: .asciz "connected!\n"
-.equ ymawky_connected_len, . - ymawky_connected
+sarm_connected: .asciz "connected!\n"
+.equ sarm_connected_len, . - sarm_connected
 
 .align 4
-ymawky_shutdown: .asciz "ymawky is shutting down :(\n"
-.equ ymawky_shutdown_len, . - ymawky_shutdown
+sarm_shutdown: .asciz "sarm is shutting down :(\n"
+.equ sarm_shutdown_len, . - sarm_shutdown
 .align 4
 
 .bss
@@ -140,8 +140,8 @@ _main:
 skip_argv:
     SCWINUM SYS_write
     mov x0, #1
-    adr_l x1, ymawky_connecting
-    mov x2, ymawky_connecting_len
+    adr_l x1, sarm_connecting
+    mov x2, sarm_connecting_len
     SCWISVC
     SCERR
 
@@ -186,8 +186,8 @@ skip_argv:
 
     SCWINUM SYS_write
     mov x0, #1
-    adr_l x1, ymawky_connected
-    mov x2, ymawky_connected_len
+    adr_l x1, sarm_connected
+    mov x2, sarm_connected_len
     SCWISVC
     SCERR
 
@@ -292,8 +292,8 @@ loop:
 exit:
     SCWINUM SYS_write
     mov x0, #1
-    adr_l x1, ymawky_shutdown
-    mov x2, ymawky_shutdown_len
+    adr_l x1, sarm_shutdown
+    mov x2, sarm_shutdown_len
     SCWISVC
     SCERR
 

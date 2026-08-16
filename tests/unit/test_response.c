@@ -16,7 +16,7 @@
 //
 // Output is captured through a pipe: the test sets the clientfd global to
 // the pipe's write end, calls the encoder, then compares what it wrote.
-// This file is part of ymawky.
+// This file is part of sarm.
 // Copyright (C) 2026 imtomt
 // SPDX-License-Identifier: GPL-3.0-only
 
@@ -152,7 +152,7 @@ static void test_response_200(void) {
         "Referrer-Policy: no-referrer\r\n"
         "Allow: GET, HEAD, OPTIONS\r\n"
         "Accept-Ranges: bytes\r\n"
-        "Server: ymawky\r\n"
+        "Server: sarm\r\n"
         "\r\n"
         "hello world";
 
@@ -197,7 +197,7 @@ static void test_response_206(void) {
         "Referrer-Policy: no-referrer\r\n"
         "Allow: GET, HEAD, OPTIONS\r\n"
         "Accept-Ranges: bytes\r\n"
-        "Server: ymawky\r\n"
+        "Server: sarm\r\n"
         "\r\n"
         "llo w";
 
@@ -242,7 +242,7 @@ static void test_response_head(void) {
         "Referrer-Policy: no-referrer\r\n"
         "Allow: GET, HEAD, OPTIONS\r\n"
         "Accept-Ranges: bytes\r\n"
-        "Server: ymawky\r\n"
+        "Server: sarm\r\n"
         "\r\n";
 
     char buf[512];
@@ -276,7 +276,7 @@ static void test_reply_status_error(int64_t status,
             "Referrer-Policy: no-referrer\r\n"
             "Allow: GET, HEAD, OPTIONS\r\n"
             "Accept-Ranges: bytes\r\n"
-            "Server: ymawky\r\n"
+            "Server: sarm\r\n"
             "\r\n";
 
         memcpy(expected, expected_status_line, (unsigned long)expected_line_len);

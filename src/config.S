@@ -1,4 +1,4 @@
-// Default docroot, relative to ymawky's current working environment.
+// Default docroot, relative to sarm's current working environment.
 // Note that this needs the trailing /.
 // Default: www/
 #define DOCROOT "www/"
@@ -28,7 +28,7 @@
 // Note that currently, proc_info() will fail to recognize greater than 512
 // processes. This is because proc_info has to write into a buffer, we gave it
 // 2048 bytes. 2048 / 4 = 512 max procs. If you want more, you gotta increase
-// the buffer in ymawky.S. I'll leave that as an exercise to the reader.
+// the buffer in sarm.S. I'll leave that as an exercise to the reader.
 // Default: 256
 .equ MAX_PROCS, 256
 

@@ -5,7 +5,7 @@
 //
 // Description: Data shared between the accept loop (main.S) and the
 //   connection handler (child.S). Everything else in the original
-//   ymawky.S data section was single-user and lives with its function.
+//   sarm.S data section was single-user and lives with its function.
 //
 // Exported Symbols:
 //   one — constant 1 used by setsockopt() (SO_REUSEADDR, SO_NOSIGPIPE)

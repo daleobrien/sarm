@@ -11,7 +11,7 @@ set -eu
 
 WWW_DIR="www"
 OUTPUT="src/embedded.S"
-FLAGS=$(mktemp /tmp/ymawky_flags_XXXXXX)
+FLAGS=$(mktemp /tmp/sarm_flags_XXXXXX)
 trap 'rm -f "$FLAGS"' EXIT
 
 # Persistent gzip cache dir — must outlive this script for the assembler.

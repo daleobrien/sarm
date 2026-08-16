@@ -1,4 +1,4 @@
-# Unit test Makefile for ymawky assembly functions
+# Unit test Makefile for sarm assembly functions
 # Builds and runs unit tests for individual .S functions without
 # needing the full server binary.
 #

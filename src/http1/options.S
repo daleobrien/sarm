@@ -24,7 +24,7 @@
 .global options
 options:
     // the request was already parsed into the `request` struct by
-    // parse_request (ymawky.S dispatch) — read the path from there.
+    // parse_request (sarm.S dispatch) — read the path from there.
     adr_l x9, request
     ldr x0, [x9, #REQ_PATH]
 
