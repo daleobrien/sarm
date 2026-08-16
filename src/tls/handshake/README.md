@@ -1,4 +1,4 @@
-# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17)
+# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17-18)
 
 ## Overview
 
@@ -22,7 +22,12 @@ CertificateVerify message (RFC 8446 §4.4.3) signs the running
 handshake transcript with the embedded ECDSA P-256 private key
 (Phase 16's `p256_ecdsa_sign_with_k`), so any client that later
 validates the certificate chain can trust the rest of the handshake
-came from its owner.
+came from its owner. Phase 18 closes out the handshake proper: the
+Finished message (RFC 8446 §4.4.4) proves the server computed the
+*same* key schedule and saw the *same* handshake transcript as the
+client, using an HMAC-SHA256 MAC keyed off the server handshake
+traffic secret (now persisted in `tls_state` for exactly this purpose)
+rather than another signature.
 
 ## Module Structure
 
@@ -179,6 +184,39 @@ split into three files (one function each, matching `server_hello/`):
   way: `tls_record_encrypt` under the server's handshake traffic key,
   after feeding it to `tls_transcript_add` for Phase 18's Finished.
 
+### `finished/` — `tls_finished_write`
+
+Generates the server's Finished handshake message (RFC 8446 §4.4.4),
+split into three files (one function each, the same convention as
+`certificate_verify/`):
+
+- **`finished_key.S`** — `tls_finished_key`: derives
+  `finished_key = HKDF-Expand-Label(BaseKey, "finished", "", 32)`. A
+  thin wrapper over the already-verified `hkdf_expand_label` (Phase
+  10) — BaseKey is passed in rather than hardcoded, since the
+  derivation itself doesn't care which handshake traffic secret it's
+  keying off (only `write.S` below pins it to the server's).
+- **`verify_data.S`** — `tls_finished_verify_data`: computes
+  `verify_data = HMAC(finished_key, transcript_hash)`, wrapping
+  `hmac_sha256` (`src/crypto/hmac.S`, PLAN.MD §3.3) the same way
+  `finished_key.S` wraps `hkdf_expand_label`. Unlike Phase 17's
+  content hash, the transcript hash here is passed through unchanged
+  — RFC 8446 §4.4.4 hashes the running transcript directly, with no
+  extra framing.
+- **`write.S`** — `tls_finished_write`: reads the server's
+  `TLS_SERVER_HS_TRAFFIC_SECRET` (now persisted in `tls_state`
+  specifically for this — Phase 10's key schedule previously treated
+  it as transient scratch, since nothing needed it again until now),
+  derives `finished_key` and `verify_data`, and serializes the 4-byte
+  handshake header (type 20, fixed length 32) followed directly by
+  `verify_data`. Unlike CertificateVerify, Finished has no randomness
+  and no failure mode — HMAC-SHA256 always succeeds — so this is a
+  plain serializer, the same shape as `tls_encrypted_extensions_write`.
+  The caller sends the result the usual way: `tls_record_encrypt`
+  under the server's handshake traffic key, after which the connection
+  moves to the application traffic keys derived from
+  `tls_master_secret` (Phase 19).
+
 ## API Reference
 
 ### `tls_parse_client_hello`
@@ -292,6 +330,40 @@ Output (carry set — failure):
        retry produced r == 0 / s == 0)
 ```
 
+### `tls_finished_key`
+```
+Input:
+  x0 = pointer to the 32-byte BaseKey (a handshake traffic secret)
+  x1 = pointer to the 32-byte output buffer
+
+Output:
+  none (void) — 32 key bytes written to [x1]
+```
+
+### `tls_finished_verify_data`
+```
+Input:
+  x0 = pointer to the 32-byte finished_key (from tls_finished_key)
+  x1 = pointer to the 32-byte transcript hash
+  x2 = pointer to the 32-byte output buffer
+
+Output:
+  none (void) — 32 verify_data bytes written to [x2]
+```
+
+### `tls_finished_write`
+```
+Input:
+  x0 = pointer to the output buffer (>= 36 bytes)
+  x1 = pointer to the 32-byte transcript hash
+
+Output:
+  x0 = total message length (36) — no failure mode, HMAC-SHA256
+       never fails. Reads its BaseKey from
+       tls_state's TLS_SERVER_HS_TRAFFIC_SECRET field
+       (tls_server_hs_traffic_secret, src/tls/data.S)
+```
+
 ## Build Integration
 
 Follows the same convention as `src/tls/record/` and
@@ -368,13 +440,27 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
     transcript produce different signatures (the RNG is actually
     used); a signature is rejected against a transcript hash other
     than the one it was signed over
+- `tests/unit/test_tls_finished/` — one suite per `finished/*.S`
+  module (PLAN.MD Phase 18):
+  - `finished_key.c` — 9 tests: `tls_finished_key` against vectors
+    computed by manually assembling RFC 8446's HkdfLabel struct bytes
+    and feeding them to `cryptography`'s `HKDFExpand` — cross-checking
+    both the `"finished"` label and the empty-context path against a
+    real, independently-implemented HKDF-Expand — plus determinism
+  - `verify_data.c` — 9 tests: `tls_finished_verify_data` against
+    vectors cross-checked with `cryptography`'s `HMAC`, plus
+    transcript-hash dependence
+  - `write.c` — 16 tests: `tls_finished_write`'s full 36-byte output
+    (handshake header + verify_data) against a Python reference built
+    from the same finished_key/verify_data functions validated above,
+    with `tls_server_hs_traffic_secret` set directly per vector
 
 ## References
 
 - RFC 8446 — TLS 1.3 (§4.1.2: ClientHello, §4.1.3: ServerHello, §4.3.1:
   EncryptedExtensions, §4.4.2: Certificate, §4.4.3: CertificateVerify,
-  §4.2: Extensions, §4.2.8: key_share, §4.2.3: signature_algorithms,
-  §6.2: Alert descriptions, §7.1: key schedule)
+  §4.4.4: Finished, §4.2: Extensions, §4.2.8: key_share, §4.2.3:
+  signature_algorithms, §6.2: Alert descriptions, §7.1: key schedule)
 - RFC 7748 — Elliptic Curves for Security (§5: the X25519 base point)
 - RFC 6066 — TLS Extensions: server_name (§3)
 - RFC 7301 — ALPN (§3.1: the ProtocolNameList wire format)
@@ -385,4 +471,4 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
 - PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
   Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
   Phase 15: Certificate handling, Phase 16: ECDSA P-256, Phase 17:
-  CertificateVerify
+  CertificateVerify, Phase 18: Finished

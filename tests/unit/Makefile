@@ -91,6 +91,9 @@ TEST_TLS_CERTIFICATE := $(OBJ_DIR)/test_tls_certificate
 # module (PLAN.MD Phase 17); all share the server's real pubkey and DER
 # helpers, but need no common.h (each vector table is self-contained).
 TLS_CERTIFICATE_VERIFY_TESTS := $(patsubst test_tls_certificate_verify/%.c,$(OBJ_DIR)/test_tls_certificate_verify_%,$(wildcard test_tls_certificate_verify/*.c))
+# finished suites — one per src/tls/handshake/finished/*.S module
+# (PLAN.MD Phase 18); vectors are self-contained, no common.h needed.
+TLS_FINISHED_TESTS := $(patsubst test_tls_finished/%.c,$(OBJ_DIR)/test_tls_finished_%,$(wildcard test_tls_finished/*.c))
 # transcript suites — one per src/tls/transcript/*.S module; all share
 # test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
 TEST_TLS_TRANSCRIPT_INIT := $(OBJ_DIR)/test_tls_transcript_init
@@ -119,7 +122,7 @@ TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
-	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) \
+	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
@@ -412,6 +415,13 @@ $(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(tls_objs) $(crypto_
 # object set as test_tls_certificate — the private key and DER helper
 # both live in crypto_objs/tls_objs already.
 $(OBJ_DIR)/test_tls_certificate_verify_%: test_tls_certificate_verify/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
+
+# test_tls_finished_*: one suite per src/tls/handshake/finished/*.S
+# module (PLAN.MD Phase 18) — finished_key and verify_data (both thin,
+# cross-checked wrappers over already-verified primitives) and write
+# (end-to-end, reads tls_server_hs_traffic_secret from tls_state).
+$(OBJ_DIR)/test_tls_finished_%: test_tls_finished/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_transcript_*: tls + crypto + util (PLAN.MD Phase 9).

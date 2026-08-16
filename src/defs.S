@@ -927,7 +927,10 @@
                                 //   legacy_session_id, 0..32 (§4.1.2)
 .equ TLS_SESSION_ID,        448 // 32 B — echoed verbatim in ServerHello's
                                 //   legacy_session_id_echo (§4.1.3)
-.equ TLS_STATE_SIZE,        480
+.equ TLS_SERVER_HS_TRAFFIC_SECRET, 480 // 32 B — server_handshake_traffic_
+                                //   secret (Phase 10), persisted as the
+                                //   Finished BaseKey (Phase 18, §4.4.4)
+.equ TLS_STATE_SIZE,        512
 
 // ── SHA-256 streaming context (sha256_ctx) ──────────────────────────
 // Streaming SHA-256 (PLAN.MD §3.2): sha256_init / sha256_update /
