@@ -420,9 +420,9 @@ static void test_h2_connection_loop(void) {
 		    in[3] != H2_FRAME_SETTINGS || in[4] != 0 ||
 		    in[5] != 0 || in[6] != 0 || in[7] != 0 || in[8] != 0)
 			_exit(3);
-		// entry 1: SETTINGS_HEADER_TABLE_SIZE = 0
+		// entry 1: SETTINGS_HEADER_TABLE_SIZE = 4096 (protocol default)
 		if (in[9] != 0 || in[10] != H2_SETTINGS_HEADER_TABLE_SIZE ||
-		    in[11] != 0 || in[12] != 0 || in[13] != 0 || in[14] != 0)
+		    in[11] != 0 || in[12] != 0 || in[13] != 0x10 || in[14] != 0)
 			_exit(4);
 		// entry 2: SETTINGS_MAX_CONCURRENT_STREAMS = 32
 		if (in[15] != 0 || in[16] != H2_SETTINGS_MAX_CONCURRENT_STREAMS ||

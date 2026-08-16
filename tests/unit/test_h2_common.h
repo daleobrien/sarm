@@ -645,6 +645,71 @@ static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
 	return next;
 }
 
+// h2_hpack_dyn_reset() — resets the dynamic table to empty, max restored
+// to H2_HPACK_HEADER_TABLE_SIZE. Tests call this for a deterministic
+// starting state, mirroring what h2_connection_loop does per connection.
+static inline void h2_hpack_dyn_reset_wrapper(void) {
+	asm volatile("bl h2_hpack_dyn_reset" ::: "x9", "x10", "memory");
+}
+
+// h2_hpack_table_lookup(idx=x0) → (name=x0, name_len=x1, value=x2,
+//                                  value_len=x3, carry)
+static inline const uint8_t *h2_hpack_table_lookup_wrapper(int64_t idx,
+                                                            int64_t *name_len_out,
+                                                            const uint8_t **value_out,
+                                                            int64_t *value_len_out,
+                                                            int64_t *carry_out) {
+	const uint8_t *name, *value;
+	int64_t name_len, value_len, carry;
+	asm volatile(
+		"cmp xzr, xzr\n"
+		"mov x0, %5\n"
+		"bl h2_hpack_table_lookup\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"mov %3, x3\n"
+		"cset %4, cs\n"
+		: "=r"(name), "=r"(name_len), "=r"(value), "=r"(value_len),
+		  "=r"(carry)
+		: "r"(idx)
+		: "x0", "x1", "x2", "x3", "x4", "x9", "x10", "x11", "x12", "x13",
+		  "x14", "x15", "x16", "memory");
+	*name_len_out = name_len;
+	*value_out = value;
+	*value_len_out = value_len;
+	*carry_out = carry;
+	return name;
+}
+
+// h2_hpack_dyn_insert(name=x0, name_len=x1, value=x2, value_len=x3)
+static inline void h2_hpack_dyn_insert_wrapper(const uint8_t *name,
+                                               int64_t name_len,
+                                               const uint8_t *value,
+                                               int64_t value_len) {
+	asm volatile(
+		"mov x0, %0\n"
+		"mov x1, %1\n"
+		"mov x2, %2\n"
+		"mov x3, %3\n"
+		"bl h2_hpack_dyn_insert\n"
+		:
+		: "r"(name), "r"(name_len), "r"(value), "r"(value_len)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x10", "x11", "x12", "x13", "x14", "x30", "memory");
+}
+
+// h2_hpack_dyn_resize(new_max=x0)
+static inline void h2_hpack_dyn_resize_wrapper(int64_t new_max) {
+	asm volatile(
+		"mov x0, %0\n"
+		"bl h2_hpack_dyn_resize\n"
+		:
+		: "r"(new_max)
+		: "x0", "x1", "x2", "x3", "x4", "x9", "x10", "x11", "x12", "x13",
+		  "x30", "memory");
+}
+
 // h2_hpack_decode_block(ptr=x0, len=x1) → (count=x0, carry)
 static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t len,
                                                     int64_t *carry_out) {

@@ -1,13 +1,12 @@
 #include "../../defs.S"
 
 // h2_settings_frame — the server's opening SETTINGS frame (RFC 9113
-// §3.5, §6.5): SETTINGS_HEADER_TABLE_SIZE = 0 (§6.5.2) tells the client
-// its HPACK encoder may not use a dynamic table, and (Stage 12)
-// SETTINGS_MAX_CONCURRENT_STREAMS = 32 advertises how many concurrent
-// streams this endpoint permits (§5.1.2). Our decoder is
-// static-table-only (hpack module) and rejects any dynamic-table
-// representation, so advertising the table-size limit up front lets
-// conforming clients avoid the COMPRESSION_ERROR entirely.
+// §3.5, §6.5): SETTINGS_HEADER_TABLE_SIZE = H2_HPACK_HEADER_TABLE_SIZE
+// (4096, the RFC 9113 §6.5.2 protocol default — see hpack/dynamic_table/
+// for why this must match the default a client's encoder already
+// assumes before it has processed our SETTINGS, not some smaller value
+// we'd prefer), and (Stage 12) SETTINGS_MAX_CONCURRENT_STREAMS = 32
+// advertises how many concurrent streams this endpoint permits (§5.1.2).
 
 .data
 .align 4
@@ -18,7 +17,10 @@ h2_settings_frame:
     .byte 0x00                        // flags = 0
     .byte 0x00, 0x00, 0x00, 0x00      // stream id = 0
     .byte 0x00, H2_SETTINGS_HEADER_TABLE_SIZE // identifier (16-bit BE)
-    .byte 0x00, 0x00, 0x00, 0x00      // value = 0 — dynamic table disabled
+    .byte (H2_HPACK_HEADER_TABLE_SIZE >> 24) & 0xff
+    .byte (H2_HPACK_HEADER_TABLE_SIZE >> 16) & 0xff
+    .byte (H2_HPACK_HEADER_TABLE_SIZE >> 8) & 0xff
+    .byte H2_HPACK_HEADER_TABLE_SIZE & 0xff  // value = 4096
     .byte 0x00, H2_SETTINGS_MAX_CONCURRENT_STREAMS
     .byte 0x00, 0x00, 0x00, MAX_CONCURRENT_STREAMS  // value = 32
 .equ h2_settings_frame_len, . - h2_settings_frame

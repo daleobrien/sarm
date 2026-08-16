@@ -16,8 +16,8 @@
 //   method is 501. A failed resource lookup is a 404. A path the server
 //   refuses (REQ_FORBIDDEN) is a 403; a satisfiable Range on a GET is a
 //   206 with content-range (HEAD ignores ranges, like HTTP/1's head);
-//   an unsatisfiable range is a 416. The stream is moved to CLOSED once
-//   the response is on the wire.
+//   an unsatisfiable range is a 416. The stream carries H2S_FLAG_SERVING
+//   for the duration and is moved to CLOSED once the response is sent.
 //
 // Input/Arguments:
 //   x0 — stream id
@@ -48,6 +48,19 @@ h2_process_request:
     // create_response / h2_write_headers calls
     mov x19, x0             // stream id
     mov x20, x1             // fd
+    // ── mark the stream as being served, for the whole response ──
+    // The stream stays HALF_CLOSED_REMOTE while we write (that is the
+    // truth on the wire — we have not sent END_STREAM yet, and a
+    // WINDOW_UPDATE for it is perfectly legal), so the "ready to serve"
+    // test alone cannot distinguish it from a request still waiting. The
+    // flag makes that distinction; see H2S_FLAG_SERVING in defs.S for why
+    // it matters.
+    bl h2_stream_find
+    cbz x0, 1f
+    ldr x1, [x0, #H2S_FLAGS]
+    orr x1, x1, #H2S_FLAG_SERVING
+    str x1, [x0, #H2S_FLAGS]
+1:
     adr_l x9, request
     // ── Stage 10 — a path the server refuses to serve is a 403 ──
     ldr x10, [x9, #REQ_FORBIDDEN]
@@ -223,12 +236,16 @@ h2_process_request:
     mov x2, x19
     bl h2_reply_status
 .Lh2pr_done:
-    // the response is fully sent — the stream is closed on our side
+    // the response is fully sent — the stream is closed on our side, and
+    // is no longer being served
     mov x0, x19
     bl h2_stream_find
     cbz x0, 1f
     mov x1, #H2_STREAM_CLOSED
     str x1, [x0, #H2S_STATE]
+    ldr x1, [x0, #H2S_FLAGS]
+    and x1, x1, #~H2S_FLAG_SERVING
+    str x1, [x0, #H2S_FLAGS]
 1:
     cmn xzr, xzr            // success — carry clear
     mov x0, #0

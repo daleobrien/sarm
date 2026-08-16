@@ -21,6 +21,15 @@
 // NOTE: the dispatcher reaches us with br, so x30 is the return address
 // of the dispatcher's caller — save it before our own bl calls.
 //
+// hdr/conn/payload live in x20-x22 (callee-saved), not the x10-x13
+// caller-saved range: this function holds them across several nested
+// bl calls, including into h2_hpack_decode_block, which loops over
+// h2_hpack_decode_field — and that now calls into the HPACK dynamic
+// table (h2_hpack_table_lookup / h2_hpack_dyn_insert / _resize), which
+// uses x9-x16 as genuine scratch. A caller-saved register is never
+// guaranteed to survive a call by any callee at any depth; only x19-x28
+// carry that guarantee, which is why it has to be one of those.
+//
 // Input/Arguments:
 //   x0 — parsed frame header
 //   x1 — payload
@@ -30,22 +39,25 @@
 //   x0 — 0 on success, error code on failure; carry set on error
 //
 // Clobbered Registers:
-//   x0-x15, x19 (saved/restored), x30 (saved/restored)
+//   x0-x18, x19-x22 (saved/restored), x30 (saved/restored)
 //
 // Stack Usage:
-//   32 bytes: stp x19, x30, [sp, #-32]!
+//   48 bytes: stp x19, x20, [sp, #-48]!; stp x21, x22, [sp, #16];
+//   str x30, [sp, #32]
 // ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 2
 .global h2_handle_headers
 h2_handle_headers:
-    stp x19, x30, [sp, #-32]!
-    mov x10, x0             // hdr — saved across the validate/create calls
-    mov x11, x2             // conn — saved across the validate/create calls
-    mov x12, x1             // payload — reaches the HPACK decoder later
+    stp x19, x20, [sp, #-48]!
+    stp x21, x22, [sp, #16]
+    str x30, [sp, #32]
+    mov x20, x0              // hdr — saved across the validate/create calls
+    mov x21, x2              // conn — saved across the validate/create calls
+    mov x22, x1              // payload — reaches the HPACK decoder later
     ldr w13, [x0, #H2F_FLAGS]
-    str x13, [sp, #16]      // frame flags — saved across the decode/build
+    str x13, [sp, #40]       // frame flags — saved across the decode/build
     mov x1, x2              // validate's second argument is the conn
     bl h2_validate_stream_id
     b.cs .Lh2_headers_err
@@ -53,7 +65,7 @@ h2_handle_headers:
     // Only a brand-new stream consumes a slot: an existing stream keeps
     // its entry, so trailers are never counted twice. Open means OPEN or
     // HALF_CLOSED_* — IDLE and CLOSED streams don't count (§5.1.2).
-    ldr w0, [x10, #H2F_STREAM_ID]
+    ldr w0, [x20, #H2F_STREAM_ID]
     bl h2_stream_find
     cbnz x0, .Lh2_headers_count_done
     // ── Stage 13 — GOAWAY received: no brand-new streams (§6.8) ──
@@ -61,7 +73,7 @@ h2_handle_headers:
     // that doesn't exist yet is refused with REFUSED_STREAM (a stream
     // error the loop answers with RST_STREAM). Streams already in the
     // table — accepted before the GOAWAY — run to completion.
-    ldr x14, [x11, #H2C_GOAWAY_RECEIVED]
+    ldr x14, [x21, #H2C_GOAWAY_RECEIVED]
     cbnz x14, .Lh2_headers_refused
     adr_l x9, h2_streams
     mov x13, #H2_MAX_STREAMS
@@ -79,28 +91,31 @@ h2_handle_headers:
     cmp x14, #MAX_CONCURRENT_STREAMS
     b.hs .Lh2_headers_too_many
 .Lh2_headers_count_done:
-    ldr w0, [x10, #H2F_STREAM_ID]
-    mov x1, x11
+    ldr w0, [x20, #H2F_STREAM_ID]
+    mov x1, x21
     bl h2_stream_create
     b.cs .Lh2_headers_err
     mov x19, x0             // stream entry — survives the decode/build calls
-    ldr x13, [sp, #16]
-    str x13, [x19, #H2S_FLAGS]  // extract END_STREAM / END_HEADERS / ...
     mov x1, #H2_EVENT_RECV_HEADERS
     bl h2_stream_event
     b.cs .Lh2_headers_err
+    // record the frame's flags only once the transition is accepted — a
+    // HEADERS frame the state machine rejects must not overwrite what the
+    // entry already holds, which includes H2S_FLAG_SERVING
+    ldr x13, [sp, #40]
+    str x13, [x19, #H2S_FLAGS]  // extract END_STREAM / END_HEADERS / ...
     // the HPACK-encoded header block reaches the decoder here
-    mov x0, x12             // payload
-    ldr w1, [x10, #H2F_LENGTH]
+    mov x0, x22             // payload
+    ldr w1, [x20, #H2F_LENGTH]
     bl h2_hpack_decode_block
     b.cs .Lh2_headers_err   // x0 = COMPRESSION_ERROR (connection error)
     // convert the decoded fields into the common request
     mov x1, x0              // decoded field count
-    ldr w0, [x10, #H2F_STREAM_ID]
+    ldr w0, [x20, #H2F_STREAM_ID]
     bl h2_build_request
     b.cs .Lh2_headers_err   // x0 = PROTOCOL_ERROR (stream error)
     // END_STREAM closes the client's send side → HALF_CLOSED_REMOTE
-    ldr x13, [sp, #16]
+    ldr x13, [sp, #40]
     tst w13, #H2_FLAG_END_STREAM
     b.eq .Lh2_headers_ok
     mov x0, x19
@@ -108,7 +123,9 @@ h2_handle_headers:
     bl h2_stream_event
     b.cs .Lh2_headers_err
 .Lh2_headers_ok:
-    ldp x19, x30, [sp], #32
+    ldr x30, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #48
     cmn xzr, xzr             // success — carry clear
     mov x0, #0
     ret
@@ -120,5 +137,7 @@ h2_handle_headers:
     cmp xzr, xzr             // failure — carry set
     mov x0, #H2_ERR_REFUSED_STREAM
 .Lh2_headers_err:
-    ldp x19, x30, [sp], #32
+    ldr x30, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp], #48
     ret                      // x0 = error, carry set

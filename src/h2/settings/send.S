@@ -4,9 +4,10 @@
 // Function Name: h2_send_settings
 //
 // Description: Emit h2_settings_frame — the opening SETTINGS frame with
-//   SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table disabled), valid as
-//   the first frame of the server connection preface (§3.5, §6.5).
-//   Delegates to write_all (util.S) so partial writes are completed.
+//   SETTINGS_HEADER_TABLE_SIZE = 4096 (the RFC 9113 §6.5.2 protocol
+//   default), valid as the first frame of the server connection
+//   preface (§3.5, §6.5). Delegates to write_all (util.S) so partial
+//   writes are completed.
 //
 // Input/Arguments:
 //   x0 — client file descriptor

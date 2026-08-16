@@ -158,13 +158,17 @@ static void test_h2_send_settings(void) {
 	                  ((uint32_t)frame[7] << 8) | frame[8];
 	ASSERT_EQ("stream id = 0", 0, stream);
 
-	// entry 1: SETTINGS_HEADER_TABLE_SIZE = 0 (dynamic table off)
+	// entry 1: SETTINGS_HEADER_TABLE_SIZE = 4096 (the RFC 9113 §6.5.2
+	// protocol default — see hpack/dynamic_table/ for why this must match
+	// what a client's encoder already assumes before it has processed
+	// our SETTINGS, not some smaller value we'd prefer)
 	uint32_t id = ((uint32_t)frame[9] << 8) | frame[10];
 	ASSERT_EQ("entry id = SETTINGS_HEADER_TABLE_SIZE",
 	          H2_SETTINGS_HEADER_TABLE_SIZE, id);
 	uint32_t value = ((uint32_t)frame[11] << 24) | ((uint32_t)frame[12] << 16) |
 	                 ((uint32_t)frame[13] << 8) | frame[14];
-	ASSERT_EQ("entry value = 0 (dynamic table disabled)", 0, value);
+	ASSERT_EQ("entry value = 4096 (protocol default dynamic table size)",
+	          4096, value);
 
 	// entry 2: SETTINGS_MAX_CONCURRENT_STREAMS = 32 (Stage 12)
 	id = ((uint32_t)frame[15] << 8) | frame[16];

@@ -17,6 +17,11 @@
 //   simple: the whole response is written inline, pausing only for the
 //   credit the peer hasn't granted yet.
 //
+//   A frame dispatched while waiting can itself complete a request — a
+//   browser's parallel page-load requests arrive exactly that way, behind
+//   a large response — so the wait loop carries the connection loop's
+//   request-processing hook and serves it right there, recursively.
+//
 // Input/Arguments:
 //   x0 — client fd
 //   x1 — response struct
@@ -27,10 +32,11 @@
 //     H2_ERR_* from a frame dispatched while waiting for credit
 //
 // Clobbered Registers:
-//   x0-x8, x13, x19-x27 (saved/restored), x30
+//   x0-x9, x13, x19-x27 (saved/restored), x30
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; stp x27, x30, [sp, #64]
+//   ([sp, #80] holds x27 across the nested h2_process_request call)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -159,6 +165,39 @@ h2_write_body:
     mov x2, x26
     bl h2_dispatch_frame
     b.cs .Lh2wb_dispatch_error
+    // ── request processing hook ──
+    // The connection loop's hook can't see the frames we dispatch here,
+    // so a HEADERS block that completed a request while we waited for
+    // credit would sit decoded and unanswered until the connection timed
+    // out — a browser's parallel page-load requests arrive exactly this
+    // way, behind a large response. Serving it here also has to happen
+    // *now* rather than being deferred: the decoded request lives in the
+    // singleton `request` struct and its shared buffers, so the next
+    // HEADERS block overwrites it.
+    //
+    // The resulting recursion (process_request → write_body → wait →
+    // process_request) is bounded by the stream table — h2_stream_create
+    // refuses a new stream once all H2_MAX_STREAMS entries are live — and
+    // cannot re-enter a stream already being served, which is what
+    // H2S_FLAG_SERVING guards: our own stream, and every stream further
+    // out in the recursion, is still HALF_CLOSED_REMOTE right now.
+    adr_l x0, h2_frame_header
+    ldr w0, [x0, #H2F_STREAM_ID]
+    cbz w0, .Lh2wb_loop
+    bl h2_stream_find
+    cbz x0, .Lh2wb_loop
+    ldr x1, [x0, #H2S_STATE]
+    cmp x1, #H2_STREAM_HALF_CLOSED_REMOTE
+    b.ne .Lh2wb_loop
+    ldr x1, [x0, #H2S_FLAGS]
+    tst x1, #H2S_FLAG_SERVING
+    b.ne .Lh2wb_loop
+    adr_l x0, h2_frame_header
+    ldr w0, [x0, #H2F_STREAM_ID]
+    mov x1, x19
+    str x27, [sp, #80]      // h2_process_request preserves only x19-x26
+    bl h2_process_request
+    ldr x27, [sp, #80]
     b .Lh2wb_loop
 .Lh2wb_dispatch_error:
     // stream errors (STREAM_CLOSED, and the REFUSED_STREAM a HEADERS

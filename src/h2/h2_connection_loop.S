@@ -1,5 +1,7 @@
 #include "../defs.S"
 
+.extern h2_hpack_dyn_reset
+
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: h2_connection_loop
 //
@@ -81,6 +83,9 @@ h2_connection_loop:
     stp xzr, xzr, [x9], #16
     subs x10, x10, #1
     b.ne 1b
+    // the HPACK dynamic table is also per-connection state — a previous
+    // connection's entries must not leak into this one's decode
+    bl h2_hpack_dyn_reset
 
     // ── 3.4 — verify the client connection preface ──
     cmp x21, #H2_PREFACE_LEN
@@ -187,10 +192,18 @@ h2_connection_loop:
     sub x21, x21, x23
 
     // ── request processing hook ──
-    // A stream whose request is complete (HALF_CLOSED_REMOTE) is served
-    // immediately through the common request → resource handler. The
-    // stream is never left in HALF_CLOSED_REMOTE: h2_process_request
+    // A stream whose request is complete (HALF_CLOSED_REMOTE, and not
+    // already mid-response — H2S_FLAG_SERVING) is served immediately
+    // through the common request → resource handler. h2_process_request
     // moves it to CLOSED once the response is on the wire.
+    //
+    // "Immediately" is load-bearing, not just tidy: the decoded request
+    // lives in the singleton `request` struct and the shared path /
+    // authority / range buffers h2_build_request fills, so the next
+    // HEADERS block overwrites it. A request that is not served before
+    // the following one decodes cannot be recovered. h2_write_body's
+    // flow-control wait loop dispatches frames too, and carries the same
+    // hook for exactly this reason.
     adr_l x0, h2_frame_header
     ldr w0, [x0, #H2F_STREAM_ID]
     cbz w0, .Lh2cl_frame_loop
@@ -198,6 +211,9 @@ h2_connection_loop:
     cbz x0, .Lh2cl_frame_loop
     ldr x1, [x0, #H2S_STATE]
     cmp x1, #H2_STREAM_HALF_CLOSED_REMOTE
+    b.ne .Lh2cl_frame_loop
+    ldr x1, [x0, #H2S_FLAGS]
+    tst x1, #H2S_FLAG_SERVING
     b.ne .Lh2cl_frame_loop
     adr_l x0, h2_frame_header
     ldr w0, [x0, #H2F_STREAM_ID]

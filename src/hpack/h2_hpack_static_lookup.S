@@ -5,8 +5,10 @@
 //
 // Description: Resolve a static-table index (RFC 7541 Appendix A) to
 //   its name and value. Index 0 and indices beyond the 61-entry static
-//   table are decoding errors — with the dynamic table disabled, there
-//   is nothing else an index could address. This file also holds the
+//   table are decoding errors here — callers that need the combined
+//   static+dynamic address space (RFC 7541 §2.3.3) go through
+//   h2_hpack_table_lookup instead, which routes indices above 61 to
+//   the dynamic table (hpack/dynamic_table/). This file also holds the
 //   table and its strings (h2_hpack_static_table, hp_* labels);
 //   h2_hpack_static_lookup is their only consumer.
 //

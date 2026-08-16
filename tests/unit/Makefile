@@ -40,7 +40,8 @@ http1_srcs   := $(call rwildcard,../../src/http1,*.S)
 http1_objs   := $(patsubst ../../src/http1/%.S,$(OBJ_DIR)/http1_%.o,$(http1_srcs))
 h2_srcs      := $(call rwildcard,../../src/h2,*.S)
 h2_objs      := $(patsubst ../../src/h2/%.S,$(OBJ_DIR)/h2_%.o,$(h2_srcs))
-hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(wildcard ../../src/hpack/*.S))
+hpack_srcs   := $(call rwildcard,../../src/hpack,*.S)
+hpack_objs   := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(hpack_srcs))
 crypto_srcs  := $(call rwildcard,../../src/crypto,*.S)
 crypto_objs  := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_srcs))
 transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(wildcard ../../src/transport/*.S))
@@ -213,6 +214,7 @@ $(OBJ_DIR)/h2_%.o: ../../src/h2/%.S | $(OBJ_DIR)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)

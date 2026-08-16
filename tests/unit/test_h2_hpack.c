@@ -2,9 +2,9 @@
 // The RFC 7541 Appendix A static table (7.1), integer decoding §5.1
 // (7.2), plain-string decoding §5.2 (7.3), indexed header fields §6.1
 // (7.4), literal header fields §6.2.2/§6.2.3 (7.5), Huffman decoding
-// (Appendix B), and the disabled dynamic table (7.6): the opening
-// SETTINGS frame advertises SETTINGS_HEADER_TABLE_SIZE = 0, so the
-// decoder rejects every dynamic-table representation.
+// (Appendix B), and the real bounded dynamic table (7.6, hpack/dynamic_table/):
+// insertion, FIFO eviction, resize, and the combined static+dynamic
+// index space via h2_hpack_table_lookup.
 
 #include "test_h2_common.h"
 
@@ -60,7 +60,7 @@ static void test_h2_hpack_static_table(void) {
 	check_field_error("index 0 rejected", (const uint8_t *)rc, carry);
 	rc = (int64_t)(uintptr_t)h2_hpack_static_lookup_wrapper(
 	    62, &name_len, &v, &value_len, &carry);
-	check_field_error("index 62 rejected (no dynamic table)",
+	check_field_error("index 62 rejected (static table only — h2_hpack_table_lookup handles the dynamic range)",
 	                  (const uint8_t *)rc, carry);
 }
 
@@ -376,15 +376,18 @@ static void test_h2_hpack_literal(void) {
 	check_field_error("name index 62 rejected", next, carry);
 }
 
-static void test_h2_hpack_dynamic_disabled(void) {
-	TEST_SUITE("h2_hpack_decode_field — dynamic table disabled (7.6)");
+static void test_h2_hpack_dynamic_table(void) {
+	TEST_SUITE("h2_hpack_decode_field — dynamic table (RFC 7541 §2.3.2, 7.6)");
 
 	const uint8_t *next, *name, *value;
 	int64_t name_len, value_len, carry;
 
-	// literal with incremental indexing (§6.2.1) is decoded but never
-	// stored: the dynamic table max size is 0, so an entry "added" to it
-	// would be evicted immediately (curl encodes user-agent this way)
+	h2_hpack_dyn_reset_wrapper();
+
+	// literal with incremental indexing (§6.2.1) is decoded AND stored —
+	// our decoder now has a real bounded table, matching what a
+	// compliant client's encoder assumes before it has even processed
+	// our SETTINGS (curl encodes user-agent this way)
 	static const uint8_t w1[] = { 0x41, 0x05, 'h', 'e', 'l', 'l', 'o' };
 	next = h2_hpack_decode_field_wrapper(w1, &name, &name_len, &value,
 	                                     &value_len, &carry);
@@ -392,7 +395,14 @@ static void test_h2_hpack_dynamic_disabled(void) {
 	            name_len, value, value_len, ":authority", "hello");
 	ASSERT_EQ("next at block end", 7, next - w1);
 
-	// incremental indexing with a new name
+	// the entry just inserted is index 62 (newest, 1-based from the
+	// dynamic table's own start)
+	name = h2_hpack_table_lookup_wrapper(62, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("index 62 resolves the entry just inserted", carry, name,
+	            name_len, value, value_len, ":authority", "hello");
+
+	// incremental indexing with a new name — inserted as the newest entry
 	static const uint8_t w2[] = { 0x40, 0x05, ':', 'p', 'a', 't', 'h',
 	                              0x01, 'x' };
 	next = h2_hpack_decode_field_wrapper(w2, &name, &name_len, &value,
@@ -401,19 +411,82 @@ static void test_h2_hpack_dynamic_disabled(void) {
 	            name_len, value, value_len, ":path", "x");
 	ASSERT_EQ("next at block end", 9, next - w2);
 
-	// a dynamic table size update of 0 is accepted as a no-op
+	// now index 62 is the newest (:path/x), 63 is the older (:authority/hello)
+	name = h2_hpack_table_lookup_wrapper(62, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("index 62 is now :path/x (newest)", carry, name, name_len,
+	            value, value_len, ":path", "x");
+	name = h2_hpack_table_lookup_wrapper(63, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field("index 63 is :authority/hello (pushed back)", carry, name,
+	            name_len, value, value_len, ":authority", "hello");
+	name = h2_hpack_table_lookup_wrapper(64, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field_error("index 64 out of range — only 2 entries", name, carry);
+
+	// a dynamic table size update of 0 is accepted as a no-op (§6.3) and
+	// empties the table (§4.4)
 	static const uint8_t w3[] = { 0x20, 0x82 };
 	next = h2_hpack_decode_field_wrapper(w3, &name, &name_len, &value,
 	                                     &value_len, &carry);
 	ASSERT_EQ("size update 0 accepted", 0, carry);
 	ASSERT_EQ("not a field — name is 0", 0, (int64_t)(uintptr_t)name);
 	ASSERT_EQ("next skips the update", 1, next - w3);
+	name = h2_hpack_table_lookup_wrapper(62, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field_error("size update to 0 emptied the table", name, carry);
 
-	// a size update above 0 (4096) exceeds our advertised maximum (0)
-	static const uint8_t w4[] = { 0x3f, 0xe1, 0x1f }; // 31 + 97 + 31*128
-	next = h2_hpack_decode_field_wrapper(w4, &name, &name_len, &value,
+	// a size update restoring 4096 (our advertised maximum) is accepted —
+	// insert again to confirm the table works after being resized back up
+	static const uint8_t w5[] = { 0x3f, 0xe1, 0x1f }; // 31 + 97 + 31*128 = 4096
+	next = h2_hpack_decode_field_wrapper(w5, &name, &name_len, &value,
 	                                     &value_len, &carry);
-	check_field_error("size update 4096 rejected", next, carry);
+	ASSERT_EQ("size update 4096 accepted (equals our max)", 0, carry);
+	static const uint8_t w6[] = { 0x41, 0x03, 'f', 'o', 'o' };
+	next = h2_hpack_decode_field_wrapper(w6, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field("insert after restoring the table works", carry, name,
+	            name_len, value, value_len, ":authority", "foo");
+
+	// a size update above our advertised maximum (4097 > 4096) is rejected
+	static const uint8_t w7[] = { 0x3f, 0xe2, 0x1f }; // 31 + 98 + 31*128 = 4097
+	next = h2_hpack_decode_field_wrapper(w7, &name, &name_len, &value,
+	                                     &value_len, &carry);
+	check_field_error("size update 4097 rejected — exceeds our max", next, carry);
+
+	// an oversized entry (bigger than the whole table) empties it rather
+	// than being stored (§4.4) — not an error
+	h2_hpack_dyn_reset_wrapper();
+	uint8_t huge_value[4100];
+	for (int i = 0; i < 4100; i++) huge_value[i] = 'a';
+	h2_hpack_dyn_insert_wrapper((const uint8_t *)"x", 1, huge_value, 4100);
+	name = h2_hpack_table_lookup_wrapper(62, &name_len, &value, &value_len,
+	                                     &carry);
+	check_field_error("oversized entry not stored — table stays empty", name,
+	                  carry);
+
+	// eviction: fill the table near capacity, then insert one more and
+	// confirm the oldest entry is gone while the newest survives
+	h2_hpack_dyn_reset_wrapper();
+	uint8_t fill_value[100];
+	for (int i = 0; i < 100; i++) fill_value[i] = 'v';
+	// each entry costs 1(name) + 100(value) + 32 = 133 bytes; ~30 entries
+	// fill the 4096-byte table close to capacity
+	for (int i = 0; i < 30; i++) {
+		h2_hpack_dyn_insert_wrapper((const uint8_t *)"n", 1, fill_value, 100);
+	}
+	// one more entry evicts the oldest ones to make room
+	h2_hpack_dyn_insert_wrapper((const uint8_t *)"z", 1, fill_value, 100);
+	name = h2_hpack_table_lookup_wrapper(62, &name_len, &value, &value_len,
+	                                     &carry);
+	int value_ok = (value_len == 100);
+	if (value_ok)
+		for (int i = 0; i < 100; i++)
+			if (value[i] != fill_value[i]) value_ok = 0;
+	if (carry != 0 || name_len != 1 || name[0] != 'z' || !value_ok)
+		_FAIL("newest entry ('z') still resolves after eviction");
+	else
+		_PASS("newest entry ('z') still resolves after eviction");
 }
 
 static void test_h2_hpack_block(void) {
@@ -523,7 +596,7 @@ int main(void) {
 	test_h2_huffman();
 	test_h2_hpack_indexed();
 	test_h2_hpack_literal();
-	test_h2_hpack_dynamic_disabled();
+	test_h2_hpack_dynamic_table();
 	test_h2_hpack_block();
 	test_h2_hpack_block_curl();
 	test_summary();

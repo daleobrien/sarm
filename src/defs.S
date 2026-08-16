@@ -679,7 +679,17 @@
 .equ MAX_CONCURRENT_STREAMS, 32
 .equ H2S_STREAM_ID,  0    // u64 stream id
 .equ H2S_STATE,      8    // u64 one of H2_STREAM_*
-.equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...)
+.equ H2S_FLAGS,      16   // u64 frame flags (END_STREAM, ...), plus the
+                          //   server-internal H2S_FLAG_SERVING above them
+// Set while h2_process_request is writing this stream's response, and
+// cleared when it finishes. Writing a response can block on flow control,
+// and h2_write_body keeps dispatching client frames while it waits — so
+// the "this stream's request is ready to serve" test (state ==
+// HALF_CLOSED_REMOTE) can be true for a stream already being served, and
+// a WINDOW_UPDATE arriving on it would otherwise re-enter the handler and
+// send the response a second time, recursively. Deliberately above the
+// 8-bit wire flags so it can share the field without colliding.
+.equ H2S_FLAG_SERVING, 0x100
 .equ H2S_WINDOW,     24   // u64 stream send window (§5.2; Stage 11) — the
                           //   flow-control credit the client has granted this
                           //   stream; drained by DATA sends, replenished by
@@ -688,20 +698,47 @@
 .equ H2S_SIZE,       32
 
 // ── HPACK (RFC 7541) — Stage 7 ──────────────────────────────────────
-// Minimal HPACK: the RFC 7541 Appendix A static table plus the
-// Appendix B static Huffman code. The dynamic table is disabled — the
-// opening SETTINGS frame advertises SETTINGS_HEADER_TABLE_SIZE = 0
-// (http2.S) and the decoder never stores entries: literal fields with
-// incremental indexing (§6.2.1) are accepted but treated like the
-// non-indexed forms, because an entry added to a zero-size table is
-// evicted immediately. Huffman-coded strings (§5.2) are decoded with
-// the fixed Appendix B table; decoded output goes into
-// h2_hpack_str_buf (h2_hpack.S). Indices beyond the static table, size
-// updates above 0 (§6.3) and padding violations are rejected with
-// H2_ERR_COMPRESSION_ERROR (RFC 9113 §4.3).
+// The RFC 7541 Appendix A static table plus the Appendix B static
+// Huffman code, backed by a real, bounded dynamic table (§2.3.2, §4):
+// the opening SETTINGS frame advertises SETTINGS_HEADER_TABLE_SIZE =
+// H2_HPACK_HEADER_TABLE_SIZE (4096, the RFC 9113 §6.5.2 protocol
+// default) and the decoder actually stores what a compliant encoder
+// inserts. This isn't optional polish — a real client's encoder
+// doesn't learn our preference until it has processed our SETTINGS
+// frame (a round trip), so any requests it fires before then (exactly
+// what a browser does: HEADERS for every same-page resource, back to
+// back, on one connection) are encoded assuming the protocol default
+// of 4096 is available. A decoder that never stores entries can't
+// resolve the indexed references those early requests make to
+// repeated header values (:authority, cookie, user-agent, ...), and
+// HPACK's shared per-connection compression context means one
+// unresolvable index poisons the *whole connection* (RFC 9113 §4.3) —
+// not just the request that triggered it.
+// Huffman-coded strings (§5.2) are decoded with the fixed Appendix B
+// table; decoded output goes into h2_hpack_str_buf (h2_hpack.S).
+// Indices beyond the combined static+dynamic space, size updates above
+// our advertised maximum (§6.3) and padding violations are rejected
+// with H2_ERR_COMPRESSION_ERROR (RFC 9113 §4.3).
 
 .equ H2_HPACK_STATIC_TABLE_SIZE, 61  // RFC 7541 Appendix A
-.equ H2_HPACK_HEADER_TABLE_SIZE,  0  // our decoder's dynamic-table max
+.equ H2_HPACK_HEADER_TABLE_SIZE,  H2_DEFAULT_HEADER_TABLE_SIZE  // our
+    // decoder's dynamic-table max (4096) — also the byte capacity of
+    // the dynamic table's arena (h2_hpack_dyn_bytes), since the raw
+    // name+value bytes stored can never exceed the RFC size total,
+    // which is itself capped at this max.
+
+// one dynamic-table entry (h2_hpack_dyn_entries) — just the lengths;
+// the bytes live in h2_hpack_dyn_bytes at an offset derived by summing
+// the lengths of the older live entries (see dynamic_table/lookup.S)
+.equ H2_HPACK_DYN_ENTRY_NAME_LEN,  0
+.equ H2_HPACK_DYN_ENTRY_VALUE_LEN, 8
+.equ H2_HPACK_DYN_ENTRY_SIZE,      16
+
+// worst case: H2_HPACK_HEADER_TABLE_SIZE / 32 (the smallest possible
+// RFC 7541 §4.1 entry size — empty name and value still cost the fixed
+// 32-byte overhead). Must be a power of 2 — the FIFO index arithmetic
+// (dynamic_table/*.S) wraps it with a mask, not a division.
+.equ H2_HPACK_DYN_CAP_ENTRIES, (H2_HPACK_HEADER_TABLE_SIZE / 32)
 
 // decoded Huffman strings land in this buffer (h2_hpack.S); the HPACK
 // decode of one header block may produce at most this many decoded
@@ -957,3 +994,4 @@
 .equ SHA256_CTX_BUF,     40  // 64 B — partial block (0..63 valid bytes)
 .equ SHA256_CTX_BUFLEN,  104 // u64 — valid bytes in BUF
 .equ SHA256_CTX_SIZE,    112
+
