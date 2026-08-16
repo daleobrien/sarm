@@ -11,6 +11,9 @@
 //     number of entries is a FRAME_SIZE_ERROR
 //   - a SETTINGS with the ACK flag must have an empty payload, else
 //     FRAME_SIZE_ERROR (§6.5)
+//   - a new SETTINGS_INITIAL_WINDOW_SIZE applies retroactively: the send
+//     window of every stream still in the table shifts by the difference
+//     (§6.9.2), not just that of streams opened afterwards
 //
 // Input/Arguments:
 //   x0 — parsed frame header
@@ -81,21 +84,52 @@ h2_handle_settings:
     b .Lh2_settings_next
 
 .Lh2_st_header_table_size:
-    str w7, [x2, #H2C_SETTINGS_HEADER_TABLE_SIZE]
+    mov w9, w7             // zero-extend — the field is 8 bytes wide
+    str x9, [x2, #H2C_SETTINGS_HEADER_TABLE_SIZE]
     b .Lh2_settings_next
 
 .Lh2_st_enable_push:
-    str w7, [x2, #H2C_SETTINGS_ENABLE_PUSH]
+    mov w9, w7             // zero-extend — the field is 8 bytes wide
+    str x9, [x2, #H2C_SETTINGS_ENABLE_PUSH]
     b .Lh2_settings_next
 
 .Lh2_st_max_concurrent_streams:
-    str w7, [x2, #H2C_SETTINGS_MAX_CONCURRENT_STREAMS]
+    mov w9, w7             // zero-extend — the field is 8 bytes wide
+    str x9, [x2, #H2C_SETTINGS_MAX_CONCURRENT_STREAMS]
     b .Lh2_settings_next
 
 .Lh2_st_initial_window_size:
     // §6.5.2 — a value above 2^31-1 is a FLOW_CONTROL_ERROR
     tbnz w7, #31, .Lh2_settings_flow_control_error
-    str w7, [x2, #H2C_SETTINGS_INITIAL_WINDOW_SIZE]
+    mov w9, w7                                       // new value, zero-extended
+    ldr x8, [x2, #H2C_SETTINGS_INITIAL_WINDOW_SIZE]  // value it replaces
+    str x9, [x2, #H2C_SETTINGS_INITIAL_WINDOW_SIZE]
+    // §6.9.2 — the change is retroactive: every stream the connection is
+    // still tracking has its send window shifted by the difference, not
+    // just streams opened from here on. The shift can drive a window
+    // negative (a reduced setting, with octets already in flight), which
+    // is legal — the stream simply sends nothing until WINDOW_UPDATEs
+    // bring it back above zero.
+    subs x8, x9, x8            // delta — signed
+    b.eq .Lh2_settings_next
+    adr_l x10, h2_streams
+    mov x5, #H2_MAX_STREAMS
+.Lh2_st_iws_loop:
+    ldr x9, [x10, #H2S_STREAM_ID]
+    cbz x9, .Lh2_st_iws_next        // free slot
+    ldr x9, [x10, #H2S_STATE]
+    cmp x9, #H2_STREAM_CLOSED
+    b.eq .Lh2_st_iws_next           // finished — no window left to resize
+    ldr x9, [x10, #H2S_WINDOW]
+    add x9, x9, x8
+    mov x3, #H2_MAX_FLOW_WINDOW
+    cmp x9, x3                      // signed — a shifted window may be < 0
+    b.gt .Lh2_settings_flow_control_error
+    str x9, [x10, #H2S_WINDOW]
+.Lh2_st_iws_next:
+    add x10, x10, #H2S_SIZE
+    subs x5, x5, #1
+    b.ne .Lh2_st_iws_loop
     b .Lh2_settings_next
 
 .Lh2_st_max_frame_size:
@@ -105,11 +139,13 @@ h2_handle_settings:
     mov w8, #H2_MAX_FRAME_SIZE
     cmp w7, w8
     b.hi .Lh2_settings_protocol_error
-    str w7, [x2, #H2C_SETTINGS_MAX_FRAME_SIZE]
+    mov w9, w7             // zero-extend — the field is 8 bytes wide
+    str x9, [x2, #H2C_SETTINGS_MAX_FRAME_SIZE]
     b .Lh2_settings_next
 
 .Lh2_st_max_header_list_size:
-    str w7, [x2, #H2C_SETTINGS_MAX_HEADER_LIST_SIZE]
+    mov w9, w7             // zero-extend — the field is 8 bytes wide
+    str x9, [x2, #H2C_SETTINGS_MAX_HEADER_LIST_SIZE]
     b .Lh2_settings_next
 
 .Lh2_settings_next:

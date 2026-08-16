@@ -67,7 +67,12 @@ h2_write_body:
     cbnz x27, .Lh2wb_have_stream
     b .Lh2wb_min_remaining
 .Lh2wb_have_stream:
+    // a stream window can be negative — §6.9.2 shifts it by the change in
+    // SETTINGS_INITIAL_WINDOW_SIZE, which can land below zero when octets
+    // are already in flight. That is no credit at all, not a huge amount.
     ldr x8, [x27, #H2S_WINDOW]
+    cmp x8, #0
+    csel x8, xzr, x8, lt
     cmp x24, x8
     csel x24, x8, x24, hi
 .Lh2wb_min_remaining:

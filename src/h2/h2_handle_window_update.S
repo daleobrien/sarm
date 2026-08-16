@@ -9,9 +9,12 @@
 //   stream id updates that stream's window. A length other than 4 is a
 //   FRAME_SIZE_ERROR; an increment of 0 is a PROTOCOL_ERROR; an update
 //   that would push a window past 2^31-1 is a FLOW_CONTROL_ERROR; and
-//   an update for a stream that isn't in the table (an idle stream) is
-//   a PROTOCOL_ERROR. An update on a CLOSED stream is ignored, not an
+//   an update for a stream that was never opened (an idle stream) is a
+//   PROTOCOL_ERROR. An update on a CLOSED stream is ignored, not an
 //   error — a peer may send WINDOW_UPDATE after END_STREAM (§5.1 closed).
+//   A stream missing from the table counts as closed when its id is at
+//   or below H2C_LAST_STREAM_ID (§5.1.1), since recycling drops the
+//   entries of finished streams.
 //
 // Input/Arguments:
 //   x0 — parsed frame header
@@ -60,9 +63,10 @@ h2_handle_window_update:
     str x3, [x2, #H2C_WINDOW]
     b .Lh2wu_ok
 .Lh2wu_stream:
+    ldr x6, [x2, #H2C_LAST_STREAM_ID]  // high-water mark — find clobbers x2
     mov x0, x4
     bl h2_stream_find
-    cbz x0, .Lh2wu_protocol_error  // idle stream — PROTOCOL_ERROR
+    cbz x0, .Lh2wu_missing
     ldr x6, [x0, #H2S_STATE]
     cmp x6, #H2_STREAM_CLOSED
     b.eq .Lh2wu_ok                  // closed — ignore, not an error (§5.1)
@@ -71,6 +75,15 @@ h2_handle_window_update:
     cmp x3, x7
     b.hi .Lh2wu_flow_error
     str x3, [x0, #H2S_WINDOW]
+    b .Lh2wu_ok
+.Lh2wu_missing:
+    // Not in the table. The table is finite and CLOSED entries get
+    // recycled, so a stream we once served can vanish from it — and an
+    // id at or below the connection's high-water mark (§5.1.1) is
+    // exactly that: closed, so ignore the update (§5.1). Only an id
+    // above the mark was never opened — idle, a PROTOCOL_ERROR (§6.9).
+    cmp x4, x6
+    b.hi .Lh2wu_protocol_error
 .Lh2wu_ok:
     ldr x30, [sp], #16
     cmn xzr, xzr             // success — carry clear

@@ -15,7 +15,7 @@ and do not reuse a connection hard enough to wrap the stream table.
 
 ## 1. `SETTINGS_INITIAL_WINDOW_SIZE` is never applied to already-open streams
 
-**Scenario:** `settings-resize` — **Confirmed**
+**Scenario:** `settings-resize` — **Confirmed — fixed**
 
 RFC 9113 §6.9.2 requires that when the peer changes
 `SETTINGS_INITIAL_WINDOW_SIZE` mid-connection, the send window of *every
@@ -48,9 +48,16 @@ proved from the HAR alone that Safari sends a mid-connection SETTINGS. This is
 the only mechanism found that produces exactly this signature, and the code path
 violates §6.9.2 regardless.
 
+**Fix.** `.Lh2_st_initial_window_size` now walks `h2_streams` and shifts every
+non-CLOSED entry's `H2S_WINDOW` by the difference between the old value and the
+new one, failing the connection with FLOW_CONTROL_ERROR if that would push a
+window past 2^31-1. A reduction can legally drive a window negative, so
+`h2_write_body` clamps a negative stream window to zero credit instead of
+reading it as a huge unsigned number.
+
 ## 2. A `WINDOW_UPDATE` for a recently-closed stream kills the connection
 
-**Scenarios:** `reload`, `late-wu` — **Confirmed**
+**Scenarios:** `reload`, `late-wu` — **Confirmed — fixed**
 
 This is the "won't stream more than a few pages" bug from commit `19a6c11`. A
 browser reuses one connection across navigations, so stream ids climb without
@@ -84,6 +91,14 @@ END_STREAM. Only a genuinely idle stream is a `PROTOCOL_ERROR`.
 `H2C_LAST_STREAM_ID` already holds what is needed to tell the two apart: an id
 at or below the high-water mark is closed, not idle.
 
+**Fix.** Three changes. `h2_stream_create` keeps the *lowest* free slot rather
+than the last one seen, so the table fills forwards and slot order tracks age.
+Recycling then picks the CLOSED entry with the *smallest stream id* — the oldest
+finished stream — rather than the first one in table order. And
+`h2_handle_window_update` no longer treats "absent from the table" as "idle": an
+id at or below `H2C_LAST_STREAM_ID` is a stream that has been recycled away, so
+the update is ignored per §5.1; only an id above the mark is a PROTOCOL_ERROR.
+
 `late-wu` isolates the mechanism — after 40 streams, a late update for stream 1
 is fine (its slot, at the top of the table, has not been reused), while one for
 stream 77 or 79 kills the connection:
@@ -106,10 +121,11 @@ server's dynamic table empty and fails identically, on the same page.
   (`src/sarm/main.S:346` enters the loop with `n = 0`, so leftovers live in the
   TLS stage buffer instead), but live for cleartext h2c, where `src/sarm/child.S`
   passes its buffered bytes through.
-- **`src/h2/h2_handle_settings.S`** — settings are stored with `str w7` into
+- **`src/h2/h2_handle_settings.S`** — settings were stored with `str w7` into
   8-byte fields. Harmless for most, but `H2C_SETTINGS_MAX_HEADER_LIST_SIZE` is
   initialised to a full 64-bit `-1` in `h2_connection_loop`, so a client's value
-  leaves a stale `0xFFFFFFFF` in the upper half.
+  left a stale `0xFFFFFFFF` in the upper half. Fixed at the same time — every
+  setting now stores the zero-extended 64-bit value.
 
 ## About the simulator
 
@@ -121,6 +137,8 @@ Knobs that mattered for bisecting: `--paths` (drop the large asset to remove the
 flow-control stall and its recursion), `--no-indexing` (keep the server's HPACK
 dynamic table empty), `--reloads`, `--streams`, `--conn-window`, `-v`.
 
-It exits non-zero on any incomplete stream, so it can join `make test` once
-these are fixed. It is deliberately not wired into the Makefile yet, since it
-would fail the suite today.
+It exits non-zero on any incomplete stream. With the fixes in place every
+scenario passes, including `reload --reloads 40` (streams up to 479) and
+`late-wu --streams 200`. It is still not wired into `make test`, which would
+need start/stop logic for a server on its own port the way the shell suites
+have.

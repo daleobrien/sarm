@@ -4,8 +4,9 @@
 // Function Name: h2_stream_create
 //
 // Description: Find-or-create a stream entry. Returns the existing entry
-//   for the id, or fills a free slot — or, Stage 12, recycles a CLOSED
-//   entry once the connection outgrows its initial table — with a fresh
+//   for the id, or fills the lowest free slot — or, Stage 12, recycles
+//   the *oldest* CLOSED entry (the one with the smallest stream id) once
+//   the connection outgrows its initial table — with a fresh
 //   stream: state IDLE, no flags, and a send window of the peer's
 //   advertised SETTINGS_INITIAL_WINDOW_SIZE (RFC 9113 §6.9.2 — the
 //   client's initial stream-level credit; the connection loop resets it
@@ -46,23 +47,26 @@ h2_stream_create:
     cmp x7, x2
     b.eq .Lh2_create_exists
     cbnz x7, .Lh2_create_check_closed
-    mov x6, x4             // remember the free slot
+    cbnz x6, .Lh2_create_next   // keep the *lowest* free slot, so the table
+    mov x6, x4                  //   fills forwards and slot order tracks age
     b .Lh2_create_next
 .Lh2_create_check_closed:
     ldr x9, [x4, #H2S_STATE]
     cmp x9, #H2_STREAM_CLOSED
     b.ne .Lh2_create_next
-    cbz x8, .Lh2_create_first_closed
-    b .Lh2_create_next
-.Lh2_create_first_closed:
-    mov x8, x4             // remember the first closed slot
+    cbz x8, .Lh2_create_take_closed   // first CLOSED entry seen
+    ldr x9, [x8, #H2S_STREAM_ID]      // best candidate so far
+    cmp x7, x9
+    b.hs .Lh2_create_next             // not older — keep the current best
+.Lh2_create_take_closed:
+    mov x8, x4             // oldest CLOSED entry seen so far
 .Lh2_create_next:
     add x4, x4, #H2S_SIZE
     subs x5, x5, #1
     b.ne .Lh2_create_loop
     cbz x6, 1f
     b .Lh2_create_init
-1:  // no free slot — recycle the first CLOSED entry, if any
+1:  // no free slot — recycle the oldest CLOSED entry, if any
     cbz x8, .Lh2_create_full
     mov x6, x8
 .Lh2_create_init:
