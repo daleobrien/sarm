@@ -1,4 +1,4 @@
-// Unit tests for src/tls/handshake/server_hello.S (PLAN.MD Phase 13)
+// Unit tests for src/tls/handshake/server_hello.S
 //
 // Two entry points:
 //   - tls_server_hello_write(out) -> length: a pure wire-format writer

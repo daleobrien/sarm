@@ -1,4 +1,4 @@
-// Unit tests for src/crypto/p256_point/dbl.S (PLAN.MD Phase 16.2)
+// Unit tests for src/crypto/p256_point/dbl.S
 //
 // dbl expected values are computed by a plain Python transliteration
 // of the exact same formulas (no special-casing) used in the assembly,

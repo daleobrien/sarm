@@ -753,7 +753,7 @@
 .equ TLS_ALPN_H2_LEN, 2
 
 // SNI (RFC 6066 §3): the one hostname this server currently answers
-// for — no virtual-host infrastructure yet (PLAN.MD Phase 12.5). The
+// for — no virtual-host infrastructure yet. The
 // string itself lives in src/tls/data.S (tls_sni_hostname).
 .equ TLS_SNI_HOSTNAME_LEN, 9  // "localhost"
 

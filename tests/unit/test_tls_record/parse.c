@@ -1,4 +1,4 @@
-// Unit tests for tls_record_parse (PLAN.MD Phase 11 §11.1)
+// Unit tests for tls_record_parse
 #include "common.h"
 
 // ── tests: plaintext parsing (§11.1) ────────────────────────────────

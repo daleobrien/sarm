@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/finished/write.S — serialize the server's
-//   Finished handshake message (RFC 8446 §4.4.4, PLAN.MD Phase 18)
+//   Finished handshake message (RFC 8446 §4.4.4)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

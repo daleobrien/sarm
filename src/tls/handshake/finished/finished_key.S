@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/finished/finished_key.S — the Finished
-//   MAC key (RFC 8446 §4.4.4, PLAN.MD Phase 18)
+//   MAC key (RFC 8446 §4.4.4)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

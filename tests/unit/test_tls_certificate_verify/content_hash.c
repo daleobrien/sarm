@@ -1,6 +1,5 @@
 // Unit tests for tls_certificate_verify_content_hash from
-// src/tls/handshake/certificate_verify/content_hash.S (RFC 8446 §4.4.3,
-// PLAN.MD Phase 17)
+// src/tls/handshake/certificate_verify/content_hash.S (RFC 8446 §4.4.3)
 //
 // Vectors: transcript_hash -> digest, computed in Python as
 // sha256(64*0x20 + "TLS 1.3, server CertificateVerify" + 0x00 +

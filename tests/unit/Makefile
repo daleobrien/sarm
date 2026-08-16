@@ -88,11 +88,11 @@ TEST_TLS_KEY_SCHEDULE := $(OBJ_DIR)/test_tls_key_schedule
 TEST_TLS_ENCRYPTED_EXTENSIONS := $(OBJ_DIR)/test_tls_encrypted_extensions
 TEST_TLS_CERTIFICATE := $(OBJ_DIR)/test_tls_certificate
 # certificate_verify suites — one per src/tls/handshake/certificate_verify/*.S
-# module (PLAN.MD Phase 17); all share the server's real pubkey and DER
+# module; all share the server's real pubkey and DER
 # helpers, but need no common.h (each vector table is self-contained).
 TLS_CERTIFICATE_VERIFY_TESTS := $(patsubst test_tls_certificate_verify/%.c,$(OBJ_DIR)/test_tls_certificate_verify_%,$(wildcard test_tls_certificate_verify/*.c))
-# finished suites — one per src/tls/handshake/finished/*.S module
-# (PLAN.MD Phase 18); vectors are self-contained, no common.h needed.
+# finished suites — one per src/tls/handshake/finished/*.S module;
+# vectors are self-contained, no common.h needed.
 TLS_FINISHED_TESTS := $(patsubst test_tls_finished/%.c,$(OBJ_DIR)/test_tls_finished_%,$(wildcard test_tls_finished/*.c))
 # transcript suites — one per src/tls/transcript/*.S module; all share
 # test_tls_transcript/common.h (KAT vectors, C reference SHA-256, asm wrappers).
@@ -332,7 +332,7 @@ $(OBJ_DIR)/test_gcm_%: test_gcm/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 $(X25519_TESTS): test_x25519.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
-# test_p256.c drives p256_fe_* (PLAN.MD Phase 16.1) against Python-computed
+# test_p256.c drives p256_fe_* against Python-computed
 # reference vectors for the real NIST P-256 prime.
 $(OBJ_DIR)/test_p256_%: test_p256/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
@@ -342,7 +342,7 @@ $(OBJ_DIR)/test_p256_%: test_p256/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 $(OBJ_DIR)/test_p256_scalar_%: test_p256_scalar/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
-# test_p256_point.c drives p256_point_* (PLAN.MD Phase 16.2/16.3/16.4)
+# test_p256_point.c drives p256_point_*
 # against a Python transliteration of the exact same Jacobian formulas
 # (dbl/add) and against cryptography-library-derived public keys
 # (point_mul).
@@ -376,14 +376,14 @@ $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(transport_objs) | $(OBJ_DIR)
 $(TEST_TLS): test_tls.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_client_hello: the ClientHello parser (PLAN.MD Phase 12).
+# test_tls_client_hello: the ClientHello parser.
 # Links the same object set as test_tls — tls_parse_client_hello writes
 # into tls_state (tls_objs/data.S) and the tls_objs wildcard also pulls
 # in record/*.S and transcript/*.S, hence crypto_objs + util_objs.
 $(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_server_hello: the ServerHello generator (PLAN.MD Phase 13).
+# test_tls_server_hello: the ServerHello generator.
 # Same object set as test_tls_client_hello — tls_build_server_hello
 # calls crypto_random_bytes and x25519 from crypto_objs.
 $(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
@@ -396,19 +396,19 @@ $(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(tls_objs) $(crypt
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_encrypted_extensions.c drives tls_encrypted_extensions_write
-# (PLAN.MD Phase 14) plus a seal/open round trip through
+# plus a seal/open round trip through
 # tls_record_encrypt/tls_record_decrypt (tls_objs' record/*.S), which
 # calls aes_gcm_encrypt/decrypt from crypto_objs.
 $(TEST_TLS_ENCRYPTED_EXTENSIONS): test_tls_encrypted_extensions.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_certificate.c drives tls_certificate_write (PLAN.MD Phase
-# 15) against the embedded certs/cert.der (tls_objs' cert_data.S).
+# test_tls_certificate.c drives tls_certificate_write against the embedded
+# certs/cert.der (tls_objs' cert_data.S).
 $(TEST_TLS_CERTIFICATE): test_tls_certificate.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_certificate_verify_*: one suite per
-# src/tls/handshake/certificate_verify/*.S module (PLAN.MD Phase 17) —
+# src/tls/handshake/certificate_verify/*.S module —
 # content_hash (pure), sign_with_k (deterministic, cross-checked
 # against a real ECDSA verify), and write (draws its own nonce, checked
 # structurally + by verifying against the server's real pubkey). Same
@@ -418,13 +418,13 @@ $(OBJ_DIR)/test_tls_certificate_verify_%: test_tls_certificate_verify/%.c $(HARN
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
 # test_tls_finished_*: one suite per src/tls/handshake/finished/*.S
-# module (PLAN.MD Phase 18) — finished_key and verify_data (both thin,
+# module — finished_key and verify_data (both thin,
 # cross-checked wrappers over already-verified primitives) and write
 # (end-to-end, reads tls_server_hs_traffic_secret from tls_state).
 $(OBJ_DIR)/test_tls_finished_%: test_tls_finished/%.c $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_transcript_*: tls + crypto + util (PLAN.MD Phase 9).
+# test_tls_transcript_*: tls + crypto + util.
 # One suite per src/tls/transcript/*.S module (init, add, hash) — each a
 # self-contained binary with its own main(), like the test_tls_record_*
 # suites above. All share test_tls_transcript/common.h (KAT vectors +
@@ -436,7 +436,7 @@ TLS_TRANSCRIPT_COMMON := test_tls_transcript/common.h
 $(OBJ_DIR)/test_tls_transcript_%: test_tls_transcript/%.c $(TLS_TRANSCRIPT_COMMON) $(HARNESS) $(tls_objs) $(crypto_objs) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(tls_objs) $(crypto_objs) $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_record_*: tls + crypto + util (PLAN.MD Phase 11).
+# test_tls_record_*: tls + crypto + util.
 # One suite per src/tls/record/*.S module (parse, write, nonce, encrypt,
 # decrypt, seq) — each a self-contained binary with its own main(), like
 # the test_h2_* suites below. All share test_tls_record/common.h (RFC 8448

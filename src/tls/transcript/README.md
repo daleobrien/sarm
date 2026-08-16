@@ -1,4 +1,4 @@
-# TLS Handshake Transcript Module (PLAN.MD Phase 9)
+# TLS Handshake Transcript Module
 
 ## Overview
 

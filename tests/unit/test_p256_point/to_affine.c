@@ -1,4 +1,4 @@
-// Unit tests for src/crypto/p256_point/to_affine.S (PLAN.MD Phase 16 — Jacobian to affine conversion)
+// Unit tests for src/crypto/p256_point/to_affine.S (Jacobian to affine conversion)
 //
 // This file is a placeholder for to_affine conversion tests.
 // Conversion from Jacobian to affine coordinates needs test vectors.

@@ -1,4 +1,4 @@
-// Unit tests for src/crypto/p256_point/mul.S (PLAN.MD Phase 16.4)
+// Unit tests for src/crypto/p256_point/mul.S
 //
 // point_mul is cross-checked in affine form against public keys
 // derived by `cryptography` (OpenSSL) for the same private scalars --

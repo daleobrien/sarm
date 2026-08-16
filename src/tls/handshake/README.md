@@ -1,4 +1,4 @@
-# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17-18)
+# TLS Handshake Message Module
 
 ## Overview
 
@@ -83,7 +83,7 @@ half stays out of the way of deterministic wire-format testing:
   0x0303`, cipher `TLS_AES_128_GCM_SHA256`, `legacy_compression_method
   = 0`, and exactly two extensions: `supported_versions` (selecting TLS
   1.3) and `key_share` (one X25519 `KeyShareEntry`).
-- `tls_build_server_hello` does the actual work PLAN.MD Phase 13 calls
+- `tls_build_server_hello` does the actual work calls
   for: draws `server_random` and a fresh ephemeral X25519 key pair from
   `crypto_random_bytes` (`src/crypto/random.S`, `/dev/urandom`),
   computes the ECDHE `shared_secret` against the client's `key_share`,
@@ -126,10 +126,9 @@ Serializes the Certificate handshake message (RFC 8446 §4.4.2): the
 server never replies to a CertificateRequest), and a
 `certificate_list` of exactly one `CertificateEntry` — the DER
 certificate embedded at build time, with no per-entry extensions.
-PLAN.MD Phase 15 is explicit that this should **not** be a general
-X.509 parser: the certificate and its ECDSA P-256 private key are
-generated once (`certs/generate.sh`) and embedded into
-`src/tls/cert_data.S` as literal `.byte` data by `certs/embed_cert.sh`
+This should **not** be a general X.509 parser: the certificate and its 
+ECDSA P-256 private key are generated once (`certs/generate.sh`) and embedded 
+into   `src/tls/cert_data.S` as literal `.byte` data by `certs/embed_cert.sh`
 — `tls_certificate_write` just copies `tls_cert_der` onto the wire
 byte-for-byte, and `tls_priv_key` (the raw 32-byte private scalar) sits
 alongside it, unused until Phase 16/17 sign CertificateVerify with it.
@@ -422,9 +421,9 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
   against DER encodings from Python's `cryptography` library
   (`encode_dss_signature`), covering small values, values needing a
   0x00 pad byte, values with several leading zero bytes to strip, and
-  random P-256 scalars
+random P-256 scalars
 - `tests/unit/test_tls_certificate_verify/` — one suite per
-  `certificate_verify/*.S` module (PLAN.MD Phase 17):
+  `certificate_verify/*.S` module:
   - `content_hash.c` — 9 tests: `tls_certificate_verify_content_hash`
     against a from-scratch Python transliteration of RFC 8446 §4.4.3's
     Content construction, plus determinism
@@ -441,7 +440,7 @@ and by an explicit pattern rule in `tests/unit/Makefile`.
     used); a signature is rejected against a transcript hash other
     than the one it was signed over
 - `tests/unit/test_tls_finished/` — one suite per `finished/*.S`
-  module (PLAN.MD Phase 18):
+  module:
   - `finished_key.c` — 9 tests: `tls_finished_key` against vectors
     computed by manually assembling RFC 8446's HkdfLabel struct bytes
     and feeding them to `cryptography`'s `HKDFExpand` — cross-checking

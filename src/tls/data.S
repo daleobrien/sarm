@@ -20,7 +20,7 @@
 //                        (PLAN.MD §9.2)
 //   tls_alpn_h2        — the "h2" ALPN identifier (RFC 7301), 16-aligned
 //   tls_transcript_ctx — the running handshake-transcript SHA-256
-//                        context (PLAN.MD Phase 9), SHA256_CTX layout
+//                        context, SHA256_CTX layout
 //                        plus one tls_transcript_ctx_* label per field
 // ─────────────────────────────────────────────────────────────────────
 

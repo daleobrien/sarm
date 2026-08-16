@@ -1,4 +1,4 @@
-# TLS Record Layer Module (PLAN.MD Phase 11)
+# TLS Record Layer Module
 
 ## Overview
 

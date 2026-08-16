@@ -1,4 +1,4 @@
-// Unit tests for tls_record_nonce (PLAN.MD Phase 11 §5.3)
+// Unit tests for tls_record_nonce
 #include "common.h"
 
 // ── tests: nonce construction (§5.3) ────────────────────────────────

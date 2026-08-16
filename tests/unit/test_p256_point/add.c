@@ -1,4 +1,4 @@
-// Unit tests for src/crypto/p256_point/add.S (PLAN.MD Phase 16.3)
+// Unit tests for src/crypto/p256_point/add.S
 //
 // add expected values are computed by a plain Python transliteration
 // of the exact same formulas (no special-casing) used in the assembly,

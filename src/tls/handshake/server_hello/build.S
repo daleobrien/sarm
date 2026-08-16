@@ -2,7 +2,7 @@
 // Function Name: tls_build_server_hello
 //
 // Description: Generate the ephemeral X25519 key pair and shared
-//   secret (PLAN.MD Phase 13), then write the ServerHello. Requires
+//   secret, then write the ServerHello. Requires
 //   tls_parse_client_hello to have already run (tls_client_key_share
 //   and the session ID echo must be populated).
 //

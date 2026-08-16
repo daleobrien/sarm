@@ -1,4 +1,4 @@
-// Unit tests for tls_parse_client_hello (PLAN.MD Phase 12)
+// Unit tests for tls_parse_client_hello
 //
 // Two sources of ClientHello bytes:
 //   - RFC_CLIENT_HELLO: the real RFC 8448 §3 wire trace. It offers

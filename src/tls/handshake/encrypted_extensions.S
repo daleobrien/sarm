@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/encrypted_extensions.S — EncryptedExtensions
-//   generation (RFC 8446 §4.3.1, PLAN.MD Phase 14)
+//   generation (RFC 8446 §4.3.1)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"

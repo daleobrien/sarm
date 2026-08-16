@@ -1,4 +1,4 @@
-// Unit tests for tls_record_next_*_seq (PLAN.MD Phase 11 §11.4)
+// Unit tests for tls_record_next_*_seq
 #include "common.h"
 
 // ── tests: sequence numbers (§11.4) ─────────────────────────────────

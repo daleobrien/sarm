@@ -1,5 +1,4 @@
-// Unit tests for p256_fe_tobytes (PLAN.MD Phase 16.1 — P-256 field
-// arithmetic)
+// Unit tests for p256_fe_tobytes (P-256 field arithmetic)
 //
 // p256_fe_tobytes is primarily tested as part of the roundtrip test in
 // frombytes.c. This file provides the interface and any dedicated tobytes

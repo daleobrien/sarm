@@ -1,8 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/crypto/random.S — cryptographically secure random bytes
-//   (PLAN.MD Phase 13: ephemeral X25519 keys and server_random need
-//   real entropy, not the deterministic vectors every earlier phase
-//   tested against)
+//   (ephemeral X25519 keys and server_random need real entropy, not the
+//   deterministic vectors every earlier phase tested against)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../defs.S"

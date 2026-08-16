@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/certificate_verify/sign_with_k.S — sign the
 //   CertificateVerify content with a caller-supplied nonce (RFC 8446
-//   §4.4.3, PLAN.MD Phase 17)
+//   §4.4.3)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

@@ -1,6 +1,5 @@
 // Unit tests for tls_certificate_verify_write from
-// src/tls/handshake/certificate_verify/write.S (RFC 8446 §4.4.3,
-// PLAN.MD Phase 17)
+// src/tls/handshake/certificate_verify/write.S (RFC 8446 §4.4.3)
 //
 // tls_certificate_verify_write draws a fresh random nonce internally,
 // so unlike sign_with_k.c this can't be pinned against a fixed

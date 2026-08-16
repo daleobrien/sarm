@@ -1,4 +1,4 @@
-// Unit tests for tls_transcript_init (PLAN.MD Phase 9 §9.1)
+// Unit tests for tls_transcript_init
 #include "common.h"
 
 // ── tests ────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-// Common definitions for TLS record layer tests (PLAN.MD Phase 11)
+// Common definitions for TLS record layer tests
 #pragma once
 
 #include "../test_harness.h"

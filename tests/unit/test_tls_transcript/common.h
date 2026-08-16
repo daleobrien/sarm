@@ -1,4 +1,4 @@
-// Common definitions for TLS handshake transcript tests (PLAN.MD Phase 9)
+// Common definitions for TLS handshake transcript tests
 #pragma once
 
 #include "../test_harness.h"

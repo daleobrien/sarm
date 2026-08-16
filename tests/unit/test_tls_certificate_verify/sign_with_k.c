@@ -1,6 +1,5 @@
 // Unit tests for tls_certificate_verify_sign_with_k from
-// src/tls/handshake/certificate_verify/sign_with_k.S (RFC 8446 §4.4.3,
-// PLAN.MD Phase 17)
+// src/tls/handshake/certificate_verify/sign_with_k.S (RFC 8446 §4.4.3)
 //
 // Vectors: (transcript_hash, k) -> (r,s), computed by a plain Python
 // transliteration of the ECDSA signing equations against this

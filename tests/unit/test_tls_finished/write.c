@@ -1,5 +1,5 @@
 // Unit tests for tls_finished_write from
-// src/tls/handshake/finished/write.S (RFC 8446 §4.4.4, PLAN.MD Phase 18)
+// src/tls/handshake/finished/write.S (RFC 8446 §4.4.4)
 //
 // tls_finished_write reads its BaseKey from tls_state's
 // TLS_SERVER_HS_TRAFFIC_SECRET field (tls_server_hs_traffic_secret) and

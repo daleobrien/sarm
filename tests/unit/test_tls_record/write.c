@@ -1,4 +1,4 @@
-// Unit tests for tls_record_write (PLAN.MD Phase 11 §11.2)
+// Unit tests for tls_record_write
 #include "common.h"
 
 // ── tests: plaintext record generation (§11.2) ──────────────────────

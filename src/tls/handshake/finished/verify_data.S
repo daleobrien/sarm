@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/finished/verify_data.S — the Finished
-//   verify_data (RFC 8446 §4.4.4, PLAN.MD Phase 18)
+//   verify_data (RFC 8446 §4.4.4)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

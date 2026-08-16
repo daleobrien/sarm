@@ -99,8 +99,7 @@ so a future startup switch can select TLS without recompiling.
 
 ## TLS 1.3 (`src/tls/`, constants in `src/defs.S`)
 
-The TLS work (PLAN.MD Phase 2+) is data-only so far. `defs.S` carries
-the wire-format constants — protocol versions, cipher suites, named
+`defs.S` carries the wire-format constants — protocol versions, cipher suites, named
 groups, signature schemes, record/handshake/alert/extension types, the
 handshake state machine — and the `tls_state` field offsets. `src/tls/data.S`
 holds the per-connection state block:

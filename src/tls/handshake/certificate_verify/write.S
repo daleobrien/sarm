@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/certificate_verify/write.S — CertificateVerify
-//   generation (RFC 8446 §4.4.3, PLAN.MD Phase 17)
+//   generation (RFC 8446 §4.4.3)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

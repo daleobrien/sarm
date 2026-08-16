@@ -1,4 +1,4 @@
-// Unit tests for src/tls/handshake/key_schedule.S (PLAN.MD Phase 10,
+// Unit tests for src/tls/handshake/key_schedule.S,
 // implemented alongside Phase 14 which needs the handshake keys).
 //
 // tls_derive_handshake_secrets(transcript_hash) runs the RFC 8446 §7.1

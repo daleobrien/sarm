@@ -1,4 +1,4 @@
-// Unit tests for tls_record_encrypt (PLAN.MD Phase 11 §11.3)
+// Unit tests for tls_record_encrypt
 #include "common.h"
 
 // ── tests: encryption against RFC 8448 (§11.3) ──────────────────────

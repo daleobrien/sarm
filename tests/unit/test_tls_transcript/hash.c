@@ -1,4 +1,4 @@
-// Unit tests for tls_transcript_hash (PLAN.MD Phase 9 §9.2 — snapshot
+// Unit tests for tls_transcript_hash — snapshot
 // semantics and cross-reference correctness)
 #include "common.h"
 

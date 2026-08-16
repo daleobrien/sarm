@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/certificate.S — Certificate generation
-//   (RFC 8446 §4.4.2, PLAN.MD Phase 15)
+//   (RFC 8446 §4.4.2)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"
@@ -14,8 +14,8 @@
 //   reply), and a certificate_list of exactly one CertificateEntry
 //   carrying the DER certificate embedded at build time
 //   (tls_cert_der/tls_cert_der_end, src/tls/cert_data.S — see
-//   certs/embed_cert.sh and PLAN.MD Phase 15's note against a general
-//   X.509 parser: the DER bytes are copied onto the wire verbatim, with
+//   certs/embed_cert.sh.
+//   The DER bytes are copied onto the wire verbatim, with
 //   no per-entry extensions. Pure serializer — no key material or
 //   randomness involved, so it needs no failure mode; like
 //   tls_encrypted_extensions_write, the caller is responsible for

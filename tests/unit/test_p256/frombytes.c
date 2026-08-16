@@ -1,4 +1,4 @@
-// Unit tests for p256_fe_frombytes (PLAN.MD Phase 16.1 — P-256 field
+// Unit tests for p256_fe_frombytes (P-256 field
 // arithmetic)
 //
 // All expected values here are computed independently by a Python

@@ -1,4 +1,4 @@
-// Unit tests for p256_fe_mul (PLAN.MD Phase 16.1 — P-256 field arithmetic)
+// Unit tests for p256_fe_mul (P-256 field arithmetic)
 //
 // All expected values here are computed independently by a Python
 // reference (arbitrary-precision integers, `pow(a, 1, p)`-style

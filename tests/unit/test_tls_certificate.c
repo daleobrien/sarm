@@ -1,4 +1,4 @@
-// Unit tests for src/tls/handshake/certificate.S (PLAN.MD Phase 15)
+// Unit tests for src/tls/handshake/certificate.S
 //
 // tls_certificate_write(out) -> length serializes the Certificate
 // handshake message (RFC 8446 §4.4.2) around the certificate DER bytes
