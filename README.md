@@ -1,7 +1,7 @@
 ![](docs/face.svg)
 
 # *sarm* -- web server in ARM assembly
-This is *sarm* (yuh maw kee), a web server written entirely in ARM64 assembly. sarm is a syscall-only, no libc, single-process (connection-per-loop, no fork) web server written by hand for macOS and Linux (both in-tree, split by `#ifdef __linux__`).
+This is *sarm*, a web server written entirely in ARM64 assembly, originally based upon imtomt/ymawky, but with many changes since. *sarm* is a syscall-only, no linked libaries, single-process (connection-per-loop, no fork, no local file access) web server written for macOS. When building the project, it will pre-compress and embedded the static files along with certificates within the binary.
 
 ## Building
 Requires Xcode Command Line Tools. Install with `xcode-select --install`.
