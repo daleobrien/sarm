@@ -40,6 +40,8 @@ static void test_h2_multiplex_two_streams(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		// response 1 — stream 1, /: HEADERS then DATA "<h1>hello h2</h1>"
 		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
 		if (len < 0 || type != H2_FRAME_HEADERS || sid != 1 ||
@@ -107,6 +109,8 @@ static void test_h2_multiplex_interleave(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		// three responses, each HEADERS + DATA, in stream order
 		static const uint32_t ids[3] = { 1, 3, 5 };
 		static const long lens[3] = { 17, 15, 14 };
@@ -257,6 +261,8 @@ static void test_h2_max_streams_loop(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		// GOAWAY — ENHANCE_YOUR_CALM, last accepted stream 63
 		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
 		if (len != 8 || type != H2_FRAME_GOAWAY || sid != 0) _exit(3);
@@ -311,6 +317,8 @@ static void test_h2_many_sequential(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		int64_t id = 1;
 		for (int i = 0; i < 33; i++) {
 			long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);

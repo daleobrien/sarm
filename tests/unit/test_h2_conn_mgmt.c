@@ -177,6 +177,8 @@ static void test_h2_ping_loop(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		// then the PING ACK — 8 payload bytes, echoed verbatim
 		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
 		if (len != 8 || type != H2_FRAME_PING || sid != 0) _exit(3);
@@ -233,6 +235,8 @@ static void test_h2_goaway_loop(void) {
 		if (read_frame(sv[1], in, sizeof(in), &type, &flags, &sid) != 12)
 			_exit(1);
 		if (type != H2_FRAME_SETTINGS || sid != 0) _exit(2);
+		// §6.5.3 — then the ACK for the SETTINGS we sent in the preface
+		if (expect_settings_ack(sv[1], in, sizeof(in)) != 0) _exit(11);
 		// the server's GOAWAY — NO_ERROR, its own last stream 0
 		long len = read_frame(sv[1], in, sizeof(in), &type, &flags, &sid);
 		if (len != 8 || type != H2_FRAME_GOAWAY || sid != 0) _exit(3);
@@ -292,10 +296,11 @@ static void test_h2_goaway_graceful(void) {
 		out_len += (long)sizeof(block);
 		send_all(sv[1], out, out_len);
 
-		// the server's opening SETTINGS (21 bytes) — read, then skip
+		// the server's opening SETTINGS (21 bytes) and its ACK for ours
+		// (9 bytes, §6.5.3) — read, then skip
 		long n = 0;
-		while (n < 21) {
-			long r = read(sv[1], in + n, (unsigned long)(21 - n));
+		while (n < 30) {
+			long r = read(sv[1], in + n, (unsigned long)(30 - n));
 			if (r <= 0) _exit(1);
 			n += r;
 		}

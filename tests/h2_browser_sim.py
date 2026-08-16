@@ -14,6 +14,11 @@ Scenarios
   page-load    two-phase load: GET /, then the subresources the HTML
                references, acking DATA with WINDOW_UPDATEs (the healthy
                baseline — everything should complete)
+  strict-window
+               enforces flow control instead of crediting it: opens with a
+               large INITIAL_WINDOW_SIZE but polices the 65535-byte default
+               until the server ACKs the SETTINGS (§6.5.3), which is what
+               nghttp2 — and so Safari — actually does
   burst        every request in one flight, before any response is read
   no-credit    like page-load but never sends a WINDOW_UPDATE; shows how
                far a response gets on the initial 65535-byte window
@@ -43,6 +48,7 @@ PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 FRAME_DATA, FRAME_HEADERS, FRAME_SETTINGS = 0x0, 0x1, 0x4
 FRAME_GOAWAY, FRAME_WINDOW_UPDATE = 0x7, 0x8
 FLAG_END_STREAM, FLAG_END_HEADERS = 0x1, 0x4
+FLAG_ACK = 0x1
 
 FRAME_NAMES = {0: "DATA", 1: "HEADERS", 2: "PRIORITY", 3: "RST_STREAM",
                4: "SETTINGS", 5: "PUSH_PROMISE", 6: "PING", 7: "GOAWAY",
@@ -164,6 +170,7 @@ class Connection:
         self.headers_seen = set()
         self.goaway = None
         self.closed = False
+        self.settings_acked = False
 
         opening = PREFACE + settings_frame([(0x3, 100), (0x4, initial_window)])
         if conn_window_update:
@@ -244,6 +251,8 @@ class Connection:
                               window_update(sid, length))
             elif ftype == FRAME_HEADERS:
                 self.headers_seen.add(sid)
+            elif ftype == FRAME_SETTINGS and flags & FLAG_ACK:
+                self.settings_acked = True
             elif ftype == FRAME_GOAWAY:
                 last = int.from_bytes(payload[:4], "big")
                 code = int.from_bytes(payload[4:8], "big")
@@ -436,8 +445,56 @@ def scenario_settings_resize(args):
     return failures
 
 
+def scenario_strict_window(args):
+    """Enforce flow control the way a browser's HTTP/2 stack does.
+
+    RFC 9113 §6.5.3: SETTINGS must be acknowledged, and until the ACK
+    arrives the sender keeps applying its *previous*
+    SETTINGS_INITIAL_WINDOW_SIZE. nghttp2 — which is what Safari and
+    Chrome use — implements that literally: it opens with a large
+    INITIAL_WINDOW_SIZE but polices the 65535-byte default on every
+    stream until the server ACKs, and kills the connection with
+    GOAWAY(FLOW_CONTROL_ERROR) the moment a response exceeds it.
+
+    Every other scenario here hands out WINDOW_UPDATEs while it reads,
+    so an unacknowledged SETTINGS is invisible to them: the server's
+    over-send is credited as fast as it happens. This one credits
+    nothing and just counts, which is the only way the bug shows up."""
+    c = Connection(args.port, initial_window=2097152,
+                   conn_window_update=args.conn_window,
+                   verbose=args.verbose, indexing=not args.no_indexing)
+    print(f"  ALPN: {c.alpn}")
+    print("  opened with INITIAL_WINDOW_SIZE=2097152, enforcing 65535 "
+          "until the ACK")
+    ids = c.get([DOCUMENT] + SUBRESOURCES)
+    c.pump(args.wait, ack_windows=False)
+
+    if c.settings_acked:
+        print(f"  {GRN}ok{CLR} — server acknowledged our SETTINGS (§6.5.3)")
+    else:
+        print(f"  {RED}FAILED{CLR} — no SETTINGS ACK; a browser would still "
+              f"be policing the 65535-byte default")
+
+    # what the peer is entitled to send per stream before the ACK lands
+    allowed = 2097152 if c.settings_acked else 65535
+    failures = c.report(only=ids)
+    for sid in ids:
+        got = c.body.get(sid, 0)
+        if got > allowed:
+            failures += 1
+            print(f"  {RED}FLOW_CONTROL_ERROR{CLR} — stream {sid} "
+                  f"{c.paths[sid]}: {got} bytes on a {allowed}-byte window; "
+                  f"a browser drops the whole connection here")
+    if not failures:
+        print(f"  {GRN}ok{CLR} — every response fit the window the server "
+              f"was actually granted")
+    c.close()
+    return failures
+
+
 SCENARIOS = {
     "page-load": scenario_page_load,
+    "strict-window": scenario_strict_window,
     "settings-resize": scenario_settings_resize,
     "burst": scenario_burst,
     "no-credit": scenario_no_credit,

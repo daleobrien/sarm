@@ -407,14 +407,15 @@ static void test_h2_connection_loop(void) {
 			if (r <= 0) _exit(1);
 			w += r;
 		}
-		// read the full response: SETTINGS (21) + HEADERS (42) + DATA (26)
+		// read the full response: SETTINGS (21) + SETTINGS ACK (9)
+		// + HEADERS (42) + DATA (26)
 		long n = 0;
-		while (n < 89) {
-			long r = read(sv[1], in + n, (unsigned long)(89 - n));
+		while (n < 98) {
+			long r = read(sv[1], in + n, (unsigned long)(98 - n));
 			if (r <= 0) break;
 			n += r;
 		}
-		if (n != 89) _exit(2);
+		if (n != 98) _exit(2);
 		// server SETTINGS: len=12, type=4, stream=0
 		if (in[0] != 0 || in[1] != 0 || in[2] != 12 ||
 		    in[3] != H2_FRAME_SETTINGS || in[4] != 0 ||
@@ -428,24 +429,29 @@ static void test_h2_connection_loop(void) {
 		if (in[15] != 0 || in[16] != H2_SETTINGS_MAX_CONCURRENT_STREAMS ||
 		    in[17] != 0 || in[18] != 0 || in[19] != 0 || in[20] != 0x20)
 			_exit(9);
+		// SETTINGS ACK (§6.5.3): len=0, type=4, flags=ACK, stream=0
+		if (in[21] != 0 || in[22] != 0 || in[23] != 0 ||
+		    in[24] != H2_FRAME_SETTINGS || in[25] != H2_FLAG_ACK ||
+		    in[26] != 0 || in[27] != 0 || in[28] != 0 || in[29] != 0)
+			_exit(10);
 		// HEADERS: len=0x21 (33), type=1, flags=END_HEADERS, stream=1
-		if (in[21] != 0 || in[22] != 0 || in[23] != 0x21 ||
-		    in[24] != H2_FRAME_HEADERS || in[25] != H2_FLAG_END_HEADERS ||
-		    in[26] != 0 || in[27] != 0 || in[28] != 0 || in[29] != 1)
+		if (in[30] != 0 || in[31] != 0 || in[32] != 0x21 ||
+		    in[33] != H2_FRAME_HEADERS || in[34] != H2_FLAG_END_HEADERS ||
+		    in[35] != 0 || in[36] != 0 || in[37] != 0 || in[38] != 1)
 			_exit(5);
 		// HPACK block: 0x88 | 0x0f 0x10 0x18 ct | 0x0f 0x0d 0x02 "17"
-		if (in[30] != 0x88 || in[31] != 0x0f || in[32] != 0x10 ||
-		    in[33] != 0x18 ||
-		    memcmp(in + 34, "text/html; charset=utf-8", 24) != 0 ||
-		    in[58] != 0x0f || in[59] != 0x0d || in[60] != 0x02 ||
-		    in[61] != '1' || in[62] != '7')
+		if (in[39] != 0x88 || in[40] != 0x0f || in[41] != 0x10 ||
+		    in[42] != 0x18 ||
+		    memcmp(in + 43, "text/html; charset=utf-8", 24) != 0 ||
+		    in[67] != 0x0f || in[68] != 0x0d || in[69] != 0x02 ||
+		    in[70] != '1' || in[71] != '7')
 			_exit(6);
 		// DATA: len=17, type=0, flags=END_STREAM, stream=1, body
-		if (in[63] != 0 || in[64] != 0 || in[65] != 17 ||
-		    in[66] != H2_FRAME_DATA || in[67] != H2_FLAG_END_STREAM ||
-		    in[68] != 0 || in[69] != 0 || in[70] != 0 || in[71] != 1)
+		if (in[72] != 0 || in[73] != 0 || in[74] != 17 ||
+		    in[75] != H2_FRAME_DATA || in[76] != H2_FLAG_END_STREAM ||
+		    in[77] != 0 || in[78] != 0 || in[79] != 0 || in[80] != 1)
 			_exit(7);
-		if (memcmp(in + 72, "<h1>hello h2</h1>", 17) != 0)
+		if (memcmp(in + 81, "<h1>hello h2</h1>", 17) != 0)
 			_exit(8);
 		close(sv[1]);
 		_exit(0);
@@ -499,20 +505,21 @@ static void test_h2_connection_loop_partial_preface(void) {
 			w += r;
 		}
 
-		// the same 89-byte response as the unfragmented loop:
-		// SETTINGS (21) + HEADERS (42) + DATA (26, "<h1>hello h2</h1>")
+		// the same 98-byte response as the unfragmented loop: SETTINGS
+		// (21) + SETTINGS ACK (9) + HEADERS (42) + DATA (26)
 		long n = 0;
-		while (n < 89) {
-			long r = read(sv[1], in + n, (unsigned long)(89 - n));
+		while (n < 98) {
+			long r = read(sv[1], in + n, (unsigned long)(98 - n));
 			if (r <= 0) break;
 			n += r;
 		}
-		if (n != 89) _exit(3);
+		if (n != 98) _exit(3);
 		if (in[0] != 0 || in[1] != 0 || in[2] != 12 ||
 		    in[3] != H2_FRAME_SETTINGS || in[4] != 0) _exit(4);
-		if (in[24] != H2_FRAME_HEADERS || in[29] != 1) _exit(5);
-		if (in[66] != H2_FRAME_DATA || in[71] != 1) _exit(6);
-		if (memcmp(in + 72, "<h1>hello h2</h1>", 17) != 0) _exit(7);
+		if (in[24] != H2_FRAME_SETTINGS || in[25] != H2_FLAG_ACK) _exit(8);
+		if (in[33] != H2_FRAME_HEADERS || in[38] != 1) _exit(5);
+		if (in[75] != H2_FRAME_DATA || in[80] != 1) _exit(6);
+		if (memcmp(in + 81, "<h1>hello h2</h1>", 17) != 0) _exit(7);
 		close(sv[1]);
 		_exit(0);
 	}

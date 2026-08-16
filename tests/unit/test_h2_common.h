@@ -1212,6 +1212,19 @@ static long read_frame(int fd, uint8_t *buf, long cap, uint8_t *type_out,
 	return len;
 }
 
+// Read the server's SETTINGS ACK, which follows its own SETTINGS whenever
+// the client's preface flight carried a SETTINGS frame (RFC 9113 §6.5.3).
+// Returns 0 if the next frame really was an empty SETTINGS ACK.
+static int expect_settings_ack(int fd, uint8_t *buf, long cap) {
+	uint8_t type = 0, flags = 0;
+	uint32_t sid = 0;
+	long len = read_frame(fd, buf, cap, &type, &flags, &sid);
+	if (len != 0 || type != H2_FRAME_SETTINGS || sid != 0 ||
+	    (flags & H2_FLAG_ACK) == 0)
+		return -1;
+	return 0;
+}
+
 static void send_all(int fd, const uint8_t *buf, long len) {
 	long w = 0;
 	while (w < len) {

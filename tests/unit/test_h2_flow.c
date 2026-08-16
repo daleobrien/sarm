@@ -291,10 +291,11 @@ static void test_h2_flow_large_file(void) {
 			w += r;
 		}
 
-		// the server's opening SETTINGS (21 bytes) — read, then skip
+		// the server's opening SETTINGS (21 bytes) and its ACK for ours
+		// (9 bytes, §6.5.3) — read, then skip
 		long n = 0;
-		while (n < 21) {
-			long r = read(sv[1], in + n, (unsigned long)(21 - n));
+		while (n < 30) {
+			long r = read(sv[1], in + n, (unsigned long)(30 - n));
 			if (r <= 0) _exit(2);
 			n += r;
 		}
