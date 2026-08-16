@@ -163,10 +163,10 @@ test: $(TESTS)
 		total_passed=$$((total_passed + t_passed)); \
 		total_failed=$$((total_failed + t_failed)); \
 		if [ $$rc -eq 0 ]; then \
-			printf "── test (%-25s ... (%3d tests) \033[0;32m✓\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
+			printf "── test (%-37s ... (%3d tests) \033[0;32m✓\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
 		else \
 			failures=$$((failures + 1)); \
-			printf "── test (%-25s ... (%3d tests) \033[0;31m✗\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
+			printf "── test (%-37s ... (%3d tests) \033[0;31m✗\033[0m\n" "$${suite})" "$$((t_passed + t_failed))"; \
 			logs="$${logs}$$(printf "\n━━━ %s ━━━\n%s\n" "$$name" "$$out")"; \
 		fi; \
 	done; \
