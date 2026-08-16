@@ -21,6 +21,7 @@
 .global response
 .global connection_mode
 .global h2_preface
+.global no_fork
 
 .data
 .align 4 // 16-byte alignment for every string and buffer
@@ -93,3 +94,11 @@ req_start:    .skip 16 // struct timeval for request start
 req_end:      .skip 16 // struct timeval for request end
 .align 4
 response_code: .skip 8 // HTTP status code for log
+
+.align 4
+// no_fork — nonzero when argv[1] was a debug letter rather than a port.
+// The accept loop then serves each connection inline, one at a time,
+// so a debugger stays attached to the process doing the work; child_end
+// reads it to decide whether to exit (a forked child) or loop back to
+// accept (the debug, single-process case).
+no_fork:      .skip 8

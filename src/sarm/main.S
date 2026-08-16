@@ -6,7 +6,8 @@
 // Description: Server entry point and lifecycle. This file also holds
 //   the other lifecycle labels: skip_argv (optional argv[1] handling —
 //   numeric = port override, letter = debug flag), loop (the accept()
-//   loop that hands each connection to child), exit (shutdown banner +
+//   loop, which forks a child per connection and hands it to child or
+//   — for TLS — straight to h2_connection_loop), exit (shutdown banner +
 //   close, falls through into fatal_exit), and fatal_exit (exit(1)).
 //   Prints a banner, creates and configures the listening socket,
 //   sets up SIGCHLD/SIGPIPE handlers, then runs the accept loop.
@@ -129,6 +130,7 @@ _main:
     b.lt 2f
 
     mov x28, #1
+    str_l x28, no_fork
     b skip_argv
 
 2:
@@ -294,6 +296,81 @@ loop:
 
     // store x0 (return of accept) in clientfd
     str_l x0, clientfd
+
+    // ── fork a child to serve this connection ───────────────────────
+    // Every connection gets its own process, so the parent returns to
+    // accept() immediately. This matters far more for HTTP/2 than it
+    // did for HTTP/1: an h2 connection is persistent, so serving it on
+    // the accept loop leaves every other connection stuck in the listen
+    // backlog until this one goes away. Browsers routinely open a second
+    // connection (Safari puts `crossorigin` subresources on their own),
+    // and those requests then hang — the resources never load.
+    // SIGCHLD is already SIG_IGN with SA_NOCLDWAIT above, so the kernel
+    // reaps the children for us; the per-connection globals (clientfd,
+    // h2_conn, h2_streams, buf) become private copies at fork, which is
+    // exactly the isolation the single-connection-at-a-time code assumed.
+    ldr_l x9, no_fork
+    cbnz x9, Lmain_serve        // debug flag — serve inline, no fork
+#ifdef __linux__
+    // arm64 Linux has no fork(); clone(SIGCHLD, NULL, ...) is the same
+    // thing — a NULL child stack means "share the parent's", i.e. COW.
+    SCWINUM SYS_clone
+    mov x0, #SIGCHLD_LINUX      // flags
+    mov x1, #0                  // child stack — NULL
+    mov x2, #0                  // parent_tid
+    mov x3, #0                  // tls
+    mov x4, #0                  // child_tid
+    SCWISVC
+    SCERR
+    b.cs Lmain_fork_failed
+    cbz x0, Lmain_child         // 0 in the child, pid in the parent
+#else
+    SCWINUM SYS_fork
+    SCWISVC
+    SCERR
+    b.cs Lmain_fork_failed
+    // Darwin's raw fork() puts a pid in x0 for *both* processes (the
+    // child gets its parent's); x1 is the discriminator — 1 in the
+    // child, 0 in the parent. libc's wrapper zeroes x0 on that basis.
+    cbnz x1, Lmain_child
+#endif
+    // ── parent — hand the connection over and go back to accept() ──
+    SCWINUM SYS_close
+    ldr_l x0, clientfd
+    SCWISVC
+    SCERR
+    b loop
+
+Lmain_fork_failed:
+    // out of processes — drop this connection rather than serve it on
+    // the accept loop, where it could block every later one
+    SCWINUM SYS_close
+    ldr_l x0, clientfd
+    SCWISVC
+    SCERR
+    b loop
+
+Lmain_child:
+    // the listening socket belongs to the parent — a child holding it
+    // open would keep the port bound after the parent exits
+    SCWINUM SYS_close
+    ldr_l x0, sockfd
+    SCWISVC
+    SCERR
+Lmain_serve:
+    // Arm the receive timeout before anything reads from the socket.
+    // child.S sets this too, but only on the plaintext path — and an
+    // h2-over-TLS connection is persistent, so without it a client that
+    // goes away without a FIN would leave its child blocked in read()
+    // forever. Harmless to set twice; the plaintext path is unchanged.
+    SCWINUM SYS_setsockopt
+    ldr_l x0, clientfd
+    mov x1, #SOL_SOCKET
+    mov x2, #SO_RCVTIMEO
+    adr_l x3, rcv_timeout
+    mov x4, #16 // struct timeval is 16 bytes
+    SCWISVC
+    SCERR
 
     // ── TLS detection (PLAN.MD Phase 20) ────────────────────────────
     // Peek (MSG_PEEK — the byte stays on the socket either way) the

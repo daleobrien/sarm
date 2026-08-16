@@ -27,6 +27,7 @@
 
 .data
 .align 4
+.global rcv_timeout    // main.S arms the same timeout on the TLS path
 rcv_timeout:           // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
