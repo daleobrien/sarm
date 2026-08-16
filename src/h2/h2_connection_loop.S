@@ -41,13 +41,6 @@ h2_connection_loop:
     mov x20, x1             // buffer
     mov x21, x2             // bytes already buffered
 
-    // record the request start for the timing log (child_end logs it)
-    SCWINUM SYS_gettimeofday
-    adr_l x0, req_start
-    mov x1, #0
-    SCWISVC
-    SCERR
-
     // ── fresh per-connection state (RFC 9113 §6.5.2 defaults) ──
     // The server handles connections sequentially, so a new HTTP/2
     // connection must not inherit the previous one's settings, stream

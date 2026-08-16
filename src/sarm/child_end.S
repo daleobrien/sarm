@@ -3,12 +3,11 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: child_end
 //
-// Description: End of connection handling. Records the request end
-//   timestamp in req_end, logs "Took: Nµs\n" via log_timing, closes the
-//   client socket, closes file_des if it's open, and then exits — this
-//   is a forked child, one process per connection, and the parent's
-//   accept loop is what takes the next one. In the no_fork debug mode
-//   there is no child, so it loops back to accept instead.
+// Description: End of connection handling. Closes the client socket,
+//   closes file_des if it's open, and then exits — this is a forked
+//   child, one process per connection, and the parent's accept loop is
+//   what takes the next one. In the no_fork debug mode there is no
+//   child, so it loops back to accept instead.
 //
 // Input/Arguments:
 //   (none)
@@ -17,7 +16,7 @@
 //   (never returns — exits the child, or branches to loop under no_fork)
 //
 // Clobbered Registers:
-//   x0, x1, x8 (syscall scratch; log_timing clobbers its own)
+//   x0, x1, x8 (syscall scratch)
 //
 // Stack Usage:
 //   none
@@ -27,16 +26,6 @@
 .align 2
 .global child_end
 child_end:
-    // record end time for request timing log
-    SCWINUM SYS_gettimeofday
-    adr_l x0, req_end
-    mov x1, #0
-    SCWISVC
-    SCERR
-
-    // compute elapsed and write "Took: Nµs\n" to stdout
-    bl log_timing
-
     // close(clientfd)
     SCWINUM SYS_close
     ldr_l x0, clientfd

@@ -78,14 +78,6 @@ http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
 
 .align 4
-sarm_connecting: .asciz "sarm is connecting... "
-.equ sarm_connecting_len, . - sarm_connecting
-
-.align 4
-sarm_connected: .asciz "connected!\n"
-.equ sarm_connected_len, . - sarm_connected
-
-.align 4
 sarm_shutdown: .asciz "sarm is shutting down :(\n"
 .equ sarm_shutdown_len, . - sarm_shutdown
 .align 4
@@ -150,13 +142,6 @@ _main:
     strh w0, [x1, #2]
 
 skip_argv:
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, sarm_connecting
-    mov x2, sarm_connecting_len
-    SCWISVC
-    SCERR
-
     // socket(AF_INET, SOCK_STREAM, 0)
     SCWINUM SYS_socket
     mov x0, #AF_INET
@@ -195,13 +180,6 @@ skip_argv:
     SCWISVC
     SCERR
     b.cs exit
-
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, sarm_connected
-    mov x2, sarm_connected_len
-    SCWISVC
-    SCERR
 
     // set up SIG_IGN on SIGCHLD, with SA_NOCLDWAIT to tell the kernel to auto
     // reap children. previously zombies were piling up :(
@@ -407,16 +385,6 @@ Lmain_tls_detected:
     ldr_l x0, clientfd
     bl tls_server_handshake
     b.cs Lmain_tls_close        // handshake failed — close, never reaches H2
-
-    // record start time for request timing (child_end's "Took: Nµs"
-    // log expects req_start set — the plaintext path sets it in
-    // child.S right before parsing; TLS has no equivalent single point
-    // until now, since the handshake itself isn't "the request")
-    SCWINUM SYS_gettimeofday
-    adr_l x0, req_start
-    mov x1, #0
-    SCWISVC
-    SCERR
 
     ldr_l x0, clientfd
     adr_l x1, buf

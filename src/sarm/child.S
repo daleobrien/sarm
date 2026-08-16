@@ -7,7 +7,7 @@
 //   the socket, read the request into buf, detect the protocol (HTTP/2
 //   client preface vs HTTP/1) on the first read, and find the header
 //   terminator (read_loop/Lheader_found/Lno_header). The 2: block then
-//   logs the request, records req_start, verifies the HTTP version,
+//   logs the request, verifies the HTTP version,
 //   parses the request, and dispatches GET/HEAD/OPTIONS to the http1
 //   handlers. read_failed maps read errors to a silent close, a 408, or
 //   a 500 via the reply_status trampolines at the bottom of the file.
@@ -170,14 +170,7 @@ read_failed:
     SCWINUM SYS_write
     mov x0, #1
     adr_l x1, buf
-    sub x2, x23, #2 // exclude trailing \r\n to avoid blank line before Took:
-    SCWISVC
-    SCERR
-
-    // record start time for request timing (after log output, before processing)
-    SCWINUM SYS_gettimeofday
-    adr_l x0, req_start
-    mov x1, #0
+    sub x2, x23, #2 // exclude the trailing \r\n, which would log a blank line
     SCWISVC
     SCERR
 

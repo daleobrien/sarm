@@ -58,8 +58,6 @@ static void test_data_alignment(void) {
 	ASSERT_ASM_ALIGNED("embedded_gzip", embedded_gzip, 16);
 	ASSERT_ASM_ALIGNED("embedded_etag", embedded_etag, 16);
 	ASSERT_ASM_ALIGNED("embedded_etag_len", embedded_etag_len, 16);
-	ASSERT_ASM_ALIGNED("req_start", req_start, 16);
-	ASSERT_ASM_ALIGNED("req_end", req_end, 16);
 	ASSERT_ASM_ALIGNED("response_code", response_code, 16);
 }
 

@@ -14,8 +14,6 @@
 .global embedded_gzip
 .global embedded_etag
 .global embedded_etag_len
-.global req_start
-.global req_end
 .global request_ctx
 .global request
 .global response
@@ -88,10 +86,6 @@ embedded_gzip:    .skip 16
 embedded_etag:    .skip 16
 embedded_etag_len:.skip 16
 
-.align 4
-req_start:    .skip 16 // struct timeval for request start
-.align 4
-req_end:      .skip 16 // struct timeval for request end
 .align 4
 response_code: .skip 8 // HTTP status code for log
 

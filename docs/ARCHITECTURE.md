@@ -33,7 +33,7 @@ The assembly is split one function per file, grouped into module folders under `
 | `src/transport/*.S` | The transport seam (PLAN.MD §1.2-§1.3): `transport_read`/`transport_write` — the single read/write choke points of the HTTP/2 engine — plus `transport_mode` (PLAIN default; TLS stub fails closed) |
 | `src/tls/*.S` | TLS 1.3 (PLAN.MD §2+): today only `data.S` — the `tls_state` per-connection struct (wire constants + field offsets in `defs.S`) and the `tls_alpn_h2` ALPN identifier. Handshake/record/key-schedule functions land in later phases |
 | `src/crypto/*.S` | Cryptographic primitives for the planned TLS work (PLAN.MD): `sha256` (ARMv8 SHA-256 extension, streaming `sha256_init`/`update`/`final`), `hmac_sha256` (RFC 4231, built on the streaming SHA-256), `hkdf_extract`/`hkdf_expand` (RFC 5869) + `hkdf_expand_label` (RFC 8446 §7.1, built on HMAC-SHA256), `aes128_encrypt`/`aes128_key_expand` (AES-128 block cipher + key schedule, ARMv8 Crypto Extensions AESE/AESMC) |
-| `src/sarm/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `log_timing`, `verify_http_version` |
+| `src/sarm/*.S` | Server lifecycle: `_main`/`skip_argv`/`loop`/`exit`/`fatal_exit`, connection handler `child`, `child_end`, `verify_http_version` |
 
 ---
 
@@ -61,12 +61,12 @@ loop:
 2. **Read loop**: `read(clientfd, buf+offset, BUF_SIZE-offset)`, cumulative byte count in `x7`. On the **first** read, `h2_probe(buf, x7)` checks whether the buffered bytes are the HTTP/2 client connection preface prefix:
    - **Yes → HTTP/2**: `h2_connection_loop(clientfd, buf, x7)` takes over and serves the whole connection; when it returns, `child_end`.
    - **No → HTTP/1**: `parse_header_end` finds `\r\n\r\n`. Exits on `\r\n\r\n` found, 431 if the buffer fills, 400 if the header never completes, silent close on network errors (`ECONNRESET`, `ECONNABORTED`, `EPIPE`, `ENET*`, `EHOST*`), 408 on `ETIMEDOUT`, 500 otherwise.
-3. **Log to stdout**: prints `\n\n<<<\n` + the header, records `req_start` (gettimeofday).
+3. **Log to stdout**: prints `\n\n<<<\n` + the header.
 4. **`verify_http_version`**: accepts `HTTP/1.1` (must carry a `Host:` field, checked via `get_header_field`) and `HTTP/1.0`; anything else 400, bare `HTTP/` 505.
 5. **`parse_request`**: fills the protocol-neutral `request` struct (see below); failure → 400.
 6. **Method dispatch** on `REQ_METHOD`: `GET` → `get`, `HEAD` → `head`, `OPTIONS` → `options`, `BREW` → 418, anything else → 501.
 
-`child_end` (`src/sarm/child_end.S`) records `req_end`, prints `Took: Nµs` via `log_timing`, closes `clientfd` (and `file_des` if it is not -1), and branches back to `loop`.
+`child_end` (`src/sarm/child_end.S`) closes `clientfd` (and `file_des` if it is not -1), and branches back to `loop`.
 
 ---
 
