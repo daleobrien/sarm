@@ -40,6 +40,10 @@ assets: src/embedded.S
 src/embedded.S: embed_www.sh $(call rwildcard,www,*)
 	sh embed_www.sh
 
+# Regenerate src/tls/cert_data.S whenever any file under certs/ changes
+src/tls/cert_data.S: certs/embed_cert.sh $(call rwildcard,certs,*)
+	sh certs/embed_cert.sh
+
 .PHONY: clean
 clean:
 	rm -f sarm src/embedded.S
