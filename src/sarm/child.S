@@ -32,11 +32,6 @@ rcv_timeout:           // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
 
-.align 4
-arrows_in: .ascii "\n\n<<<\n"
-.equ arrows_in_len, . - arrows_in
-.align 4
-
 .text
 .align 2
 .global child
@@ -116,7 +111,6 @@ read_loop:
 Lheader_found:
     mov x23, x1 // end of header index (one byte after \r\n\r\n)
     mov x24, x7 // total bytes
-    str_l x24, header_len
     b 2f // break from the hell of reading
 
 Lno_header:
@@ -158,22 +152,6 @@ read_failed:
     adr_l x1, buf
     strb wzr, [x1, x24] // x24 -> length of bytes read
 
-    // write \n\n<<<\n to stdout to mark a header we're receiving
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, arrows_in
-    mov x2, arrows_in_len
-    SCWISVC
-    SCERR
-
-    // this just writes the request to stdout
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, buf
-    sub x2, x23, #2 // exclude the trailing \r\n, which would log a blank line
-    SCWISVC
-    SCERR
-
     adr_l x0, buf
     mov x1, x23
     bl verify_http_version
@@ -200,21 +178,14 @@ read_failed:
     b L501
 
 Lget_method:
-    mov x0, GET_ID
-    str_l x0, request_id
-
     adr_l x0, buf
     mov x1, x23
     b get
 
 Lhead_method:
-    mov x0, HEAD_ID
-    str_l x0, request_id
     b head
 
 Loptions_method:
-    mov x0, OPTIONS_ID
-    str_l x0, request_id
     b options
 
 L400:

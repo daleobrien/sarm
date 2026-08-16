@@ -290,33 +290,9 @@
 .equ BREW_ID,    3
 .equ UNKNOWN_ID, 4
 
-// unified resource type constants (embedded vs filesystem)
+// resource type constants
 .equ RES_NONE,     0
 .equ RES_EMBEDDED, 1
-.equ RES_FILE,     2
-
-// ── Request context offsets ────────────────────────────────────
-// Functions take a pointer to request_ctx in x19/x20.
-// Access fields via:  ldr xn, [ctx, #CTX_xxx]
-.equ CTX_HEADER_LEN,      0
-.equ CTX_CLIENT_FD,       8
-.equ CTX_FILENAME_STR,    16
-.equ CTX_FILENAME_LEN,    24
-.equ CTX_QUERY_STR,       32
-.equ CTX_QUERY_LEN,       40
-.equ CTX_DOCROOT_LEN,     48
-.equ CTX_REQUEST_ID,      56
-.equ CTX_RESOURCE_TYPE,   64
-.equ CTX_EMBED_CONTENT,   72
-.equ CTX_EMBED_CT,        80
-.equ CTX_EMBED_CT_LEN,    88
-.equ CTX_EMBED_GZIP,      96
-.equ CTX_EMBED_ETAG,      104
-.equ CTX_EMBED_ETAG_LEN,  112
-.equ CTX_FILE_DES,        120
-.equ CTX_REQUEST_BUF,     128  // points to buf
-
-.equ REQUEST_CTX_SIZE,    136
 
 .equ BUF_SIZE,   16384
 
@@ -459,33 +435,9 @@
 .equ BREW_ID,    3
 .equ UNKNOWN_ID, 4
 
-// unified resource type constants (embedded vs filesystem)
+// resource type constants
 .equ RES_NONE,     0
 .equ RES_EMBEDDED, 1
-.equ RES_FILE,     2
-
-// ── Request context offsets ────────────────────────────────────
-// Functions take a pointer to request_ctx in x19/x20.
-// Access fields via:  ldr xn, [ctx, #CTX_xxx]
-.equ CTX_HEADER_LEN,      0
-.equ CTX_CLIENT_FD,       8
-.equ CTX_FILENAME_STR,    16
-.equ CTX_FILENAME_LEN,    24
-.equ CTX_QUERY_STR,       32
-.equ CTX_QUERY_LEN,       40
-.equ CTX_DOCROOT_LEN,     48
-.equ CTX_REQUEST_ID,      56
-.equ CTX_RESOURCE_TYPE,   64
-.equ CTX_EMBED_CONTENT,   72
-.equ CTX_EMBED_CT,        80
-.equ CTX_EMBED_CT_LEN,    88
-.equ CTX_EMBED_GZIP,      96
-.equ CTX_EMBED_ETAG,      104
-.equ CTX_EMBED_ETAG_LEN,  112
-.equ CTX_FILE_DES,        120
-.equ CTX_REQUEST_BUF,     128  // points to buf
-
-.equ REQUEST_CTX_SIZE,    136
 
 .equ BUF_SIZE,   16384
 

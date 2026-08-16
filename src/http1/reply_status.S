@@ -33,11 +33,6 @@ err_dir: .ascii ERR_DIR
 err_ext: .ascii ".html"
 .equ err_ext_len, . - err_ext
 
-.align 4
-arrows_out: .asciz "\n\n>>>\n"
-.equ arrows_out_len, . - arrows_out
-.align 4
-
 .bss
 .equ err_page_buf_size, 64
 .align 4
@@ -56,9 +51,6 @@ err_page_buf: .skip err_page_buf_size
 // No filesystem access — all content is embedded at build time.
 .global reply_status
 reply_status:
-    // save status code for request timing log
-    str_l x0, response_code
-
     cbz x1, 1f // skip the stack pushing shit if we're just gonna b child_end
 
     stp x29, x30, [sp, #-96]!
@@ -180,22 +172,6 @@ sc_err:
     bl http1_write_response
 
 sc_epilogue:
-    // write the \n\n>>>\n to indicate data we're sending
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, arrows_out
-    mov x2, arrows_out_len
-    SCWISVC
-    SCERR
-
-    // write the header to stdout
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, header_buf
-    ldr_l x2, header_len
-    SCWISVC
-    SCERR
-
     cbnz x27, 3f // if x27 (x1) is nonzero, ret instead of branching to child_end
 2:
     b child_end

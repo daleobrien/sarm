@@ -4,9 +4,7 @@
 .global buf
 .global header_len
 .global clientfd
-.global request_id
 .global resource_type
-.global response_code
 
 .global embedded_content
 .global embedded_ct
@@ -14,7 +12,6 @@
 .global embedded_gzip
 .global embedded_etag
 .global embedded_etag_len
-.global request_ctx
 .global request
 .global response
 .global connection_mode
@@ -64,19 +61,16 @@ request:      .skip REQUEST_SIZE
 .align 4
 response:     .skip RESPONSE_SIZE
 
-// request_ctx — unified per-request state block.
-// Note: the protocol-neutral request fields (path, query, authority,
-// stream_id) live in the separate `request` struct above, filled by
-// parse_request. The old filename_str/filename_len/query_str/query_len/
-// docroot_len globals were removed in Stage 1 (they were the parser
-// driving response generation directly).
-request_ctx:
-// 8-byte values padded to 16-byte slots — every field starts on a 16-byte
-// boundary. The block is only ever touched through the field labels below
-// (the CTX_* offsets in defs.S are stale legacy), so the padding is safe.
+// Per-request state. Note: the protocol-neutral request fields (path,
+// query, authority, stream_id) live in the separate `request` struct
+// above, filled by parse_request. The old filename_str/filename_len/
+// query_str/query_len/docroot_len globals were removed in Stage 1 (they
+// were the parser driving response generation directly).
+//
+// 8-byte values padded to 16-byte slots — every field starts on a
+// 16-byte boundary, and each is only ever reached through its own label.
 header_len:   .skip 16
 clientfd:     .skip 16
-request_id:       .skip 16
 resource_type:    .skip 16
 
 embedded_content: .skip 16
@@ -85,9 +79,6 @@ embedded_ct_len:  .skip 16
 embedded_gzip:    .skip 16
 embedded_etag:    .skip 16
 embedded_etag_len:.skip 16
-
-.align 4
-response_code: .skip 8 // HTTP status code for log
 
 .align 4
 // no_fork — nonzero when argv[1] was a debug letter rather than a port.

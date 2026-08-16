@@ -64,9 +64,6 @@ create_response:
     str x5, [x19, #RESP_BODY]
     str x6, [x19, #RESP_BODY_LENGTH]
 
-    // record the status for the request timing log
-    str_l x1, response_code
-
     // content type: embedded_ct if the resource provides one, else derive
     // it from the request path (filesystem fallback).
     ldr_l x0, embedded_ct

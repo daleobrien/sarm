@@ -47,10 +47,8 @@ static void test_data_alignment(void) {
 	ASSERT_ASM_ALIGNED("buf", buf, 16);
 	ASSERT_ASM_ALIGNED("request", request, 16);
 	ASSERT_ASM_ALIGNED("response", response, 16);
-	ASSERT_ASM_ALIGNED("request_ctx", request_ctx, 16);
 	ASSERT_ASM_ALIGNED("header_len", header_len, 16);
 	ASSERT_ASM_ALIGNED("clientfd", clientfd, 16);
-	ASSERT_ASM_ALIGNED("request_id", request_id, 16);
 	ASSERT_ASM_ALIGNED("resource_type", resource_type, 16);
 	ASSERT_ASM_ALIGNED("embedded_content", embedded_content, 16);
 	ASSERT_ASM_ALIGNED("embedded_ct", embedded_ct, 16);
@@ -58,7 +56,6 @@ static void test_data_alignment(void) {
 	ASSERT_ASM_ALIGNED("embedded_gzip", embedded_gzip, 16);
 	ASSERT_ASM_ALIGNED("embedded_etag", embedded_etag, 16);
 	ASSERT_ASM_ALIGNED("embedded_etag_len", embedded_etag_len, 16);
-	ASSERT_ASM_ALIGNED("response_code", response_code, 16);
 }
 
 static void test_parse_alignment(void) {

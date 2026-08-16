@@ -77,11 +77,6 @@ http_1_0: .ascii "HTTP/1.0"
 http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
 
-.align 4
-sarm_shutdown: .asciz "sarm is shutting down :(\n"
-.equ sarm_shutdown_len, . - sarm_shutdown
-.align 4
-
 .bss
 .align 4
 sockfd:             .skip 8
@@ -401,13 +396,6 @@ Lmain_tls_close:
 
 
 exit:
-    SCWINUM SYS_write
-    mov x0, #1
-    adr_l x1, sarm_shutdown
-    mov x2, sarm_shutdown_len
-    SCWISVC
-    SCERR
-
     // shutdown(sockfd, SHUT_RDRW)
     SCWINUM SYS_shutdown
     ldr_l x0, sockfd

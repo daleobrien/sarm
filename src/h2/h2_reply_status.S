@@ -33,7 +33,6 @@ h2_reply_status:
     mov x19, x0             // status
     mov x20, x1             // fd
     mov x21, x2             // stream id
-    str_l x0, response_code
     str_l xzr, resource_type
     adr_l x0, response
     mov x1, x19
