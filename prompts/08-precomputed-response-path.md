@@ -1,13 +1,15 @@
 # 08 — Precompute more of the response at build time
 
-**Workload-specific.** This exploits what makes `sarm` unusual: it serves a
-small, fixed, known-at-build-time set of files.
+**Workload evidence is mandatory before starting.** This exploits what makes
+`sarm` unusual — it serves a small, fixed, known-at-build-time set of files —
+but that structural opportunity existing is not, by itself, a reason to spend
+time on it.
 
 ## Context
 
-`sarm` already precomputes aggressively — `embed_www.sh` embeds the assets and
-pre-compresses them, `certs/embed_cert.sh` embeds the certificate. The response
-path has not received the same treatment.
+`sarm` already precomputes aggressively — `embed_www.sh` embeds the assets
+and pre-compresses them, `certs/embed_cert.sh` embeds the certificate. The
+response path has not received the same treatment.
 
 Two concrete findings in the current code:
 
@@ -28,13 +30,45 @@ lookup mechanism exists unused alongside it. This has its own brief —
 
 ## Objective
 
-Move per-request work to build time wherever the result is fixed, reducing the
-response path toward: match path → copy precomputed bytes → encrypt → write.
+Investigate:
 
-## Candidate work, in rough value order
+1. Precomputed response headers.
+2. Precomputed HPACK encodings.
+3. Precomputed HTTP/2 frame templates.
+4. Reduced response-buffer copies.
+5. Other deterministic response-path work.
 
-Let prompt 00's profile decide what is actually worth doing — the request path
-may be small next to the handshake.
+**Do not optimize the response path simply because an opportunity exists.**
+The latest workload profile (`docs/PROFILE.MD` / `docs/PROFILE-POST.MD`) must
+demonstrate that response construction is a significant enough share of
+end-to-end cost to justify the complexity — and this is now doubly important
+given that AES-GCM (prompt 03) and P-256/TLS crypto (prompt 04) have already
+been identified as the major costs. Response construction competing against
+those for attention needs its own evidence, not an assumption carried over
+from "the codebase already precomputes things elsewhere."
+
+## Method
+
+Measure the complete `request → response` path before and after any change.
+Break the cost into:
+
+```text
+lookup
+header construction
+HPACK
+frame construction
+copying
+encryption
+write
+```
+
+This breakdown matters specifically because encryption (AES-GCM/GHASH) is
+now known to be a major cost on this same path — a response-path
+optimization that shaves header-construction cost while encryption still
+dominates the total is a small win at best, and the profile should say so
+explicitly rather than let the optimization proceed on vibes.
+
+## Candidate work, in rough value order (confirm order against the profile before starting)
 
 1. **The asset lookup is covered by its own brief** — see
    `prompts/10-embedded-lookup.md`. It is independent of the rest of this
@@ -71,7 +105,8 @@ may be small next to the handshake.
   source as the assets. Extending `embed_www.sh` is preferred over adding a
   second generator that can drift out of sync.
 - **Binary size.** Precomputed frames add read-only data. Report the delta —
-  for a small self-contained server this is a real trade.
+  for a small self-contained server this is a real trade, and the binary-size
+  increase must be justified by the runtime benefit the profile identified.
 - **HPACK dynamic table interactions.** If the encoder uses the dynamic table,
   precomputed encodings must remain valid regardless of connection state.
   Static-table-only encodings are safe; dynamic-table references are not. Check
@@ -82,19 +117,38 @@ may be small next to the handshake.
 
 - `tests/test_files.sh` — asset serving, including every embedded file.
 - `tests/test_protocols.sh` and `tests/h2_browser_sim.py` — real HTTP/2
-  conversations, including HPACK decoding by an independent implementation.
+  conversations, including HPACK decoding by an independent implementation,
+  and explicit HTTP/1.1 coverage since a response-path change must not
+  regress that protocol either.
 - `tests/test_security.sh` — path traversal and malformed request handling must
   be unaffected.
 - Range and HEAD requests specifically, since those are the cases most likely
   to be broken by a precomputed-header fast path.
+- Error responses specifically — confirm they remain correct and are not
+  accidentally routed through the precomputed fast path.
 - Byte-compare responses before and after for every embedded asset. They should
   be identical apart from anything legitimately per-request.
 
-## Acceptance criteria
+## Acceptance
 
-- Every embedded asset serves byte-identical responses to the current
-  implementation, except for legitimately varying fields.
-- Measured reduction in per-request CPU time beyond prompt 02's noise floor,
-  or an explicit finding that the request path is too small to matter for this
-  workload — which is a valid and useful result.
-- Binary size delta reported.
+Only accept the optimization if:
+
+- it produces a measurable improvement in a realistic request workload;
+- it does not regress HTTP/1.1;
+- it does not regress HTTP/2;
+- range requests remain correct;
+- HEAD remains correct;
+- error responses remain correct;
+- dynamic fields remain correct;
+- binary-size increase is justified by runtime benefit.
+
+An improvement confined to a microbenchmark of header construction, with no
+measurable effect on end-to-end request latency once encryption cost is
+accounted for, is not a pass — it must be reported as such.
+
+## Deliverable
+
+Working implementation (if justified) plus a report: the request→response
+cost breakdown before and after, per stage; measured end-to-end improvement
+or an explicit finding that the request path is too small to matter next to
+crypto cost for this workload; and binary size delta.

@@ -1,126 +1,160 @@
-# 05 — Call-boundary overhead on hot inner loops
+# 05 — Re-profile after the algorithmic optimizations
 
-**The decisive experiment.** Its result determines whether prompts 06 and 07
-are worth running at all.
+**Do not carry forward any earlier target.** The previous version of this
+prompt tried to measure X25519 call-boundary overhead and decide whether
+register optimization was worthwhile, on the assumption that the X25519
+ladder's ~4,600 calls/handshake was the next-biggest thing after prompts 03
+and 04. That assumption is not supported by measurement yet — it predates the
+GHASH and P-256-reduction work, which changes the shape of the cost
+breakdown in ways that have to be re-measured, not guessed.
 
-## Context
-
-`docs/REGISTER-PRESSURE.MD` established that this codebase does not spill:
-peak simultaneously-live GPRs is median 6, max 25, against 31 available. The
-classic payoff for reducing register pressure — eliminating spills — is not
-available, because there are no spills.
-
-What remains is **fixed per-call overhead**: AAPCS64 requires that a function
-touching x19–x28 preserve them, so each costs an `stp`/`ldp` pair plus stack
-frame setup, paid once per call regardless of what the function does. Across
-the repo that is 589 save/restore instructions, ~160 of them removable.
-
-Repo-wide that is a rounding error. **But it concentrates spectacularly in one
-place.** The X25519 Montgomery ladder (`src/crypto/x25519/main.S`) makes ~18
-field-operation calls per bit over 255 bits — roughly **4,600 calls per
-handshake**, of which ~1,275 are `x25519_fe_mul`. That function carries ~12
-instructions of prologue/epilogue, so it alone spends on the order of
-**15,000 instructions per handshake** purely preserving registers.
-
-That reframes the question. It is not "can we tidy up register allocation
-repo-wide" but "what does the call boundary cost on the hottest inner loop in
-the program".
-
-## The bigger idea: these functions do not need the ABI
-
-`x25519_fe_mul`, `x25519_fe_sqr`, `x25519_fe_add`, `x25519_fe_sub` are
-**internal helpers**, called only from the ladder. Nothing external depends on
-their calling convention. AAPCS64 is a contract with the outside world, and
-these functions have no outside world.
-
-Three escalating options, cheapest first:
-
-1. **Register reallocation** — move values into caller-saved registers where
-   pressure permits, dropping some save/restore pairs. `x25519_fe_mul` has peak
-   pressure 25, so it cannot shed all ten callee-saved registers, but it can
-   shed some. Partial win, fully mechanical.
-2. **A private calling convention** — since the callers are known, agree a
-   fixed register assignment across the ladder and its helpers and drop
-   preservation entirely. Removes prologue and epilogue completely.
-3. **Inlining the field operations into the ladder** — removes the `bl`/`ret`
-   and the prologue/epilogue both. Largest win, largest code-size cost, and the
-   hardest to keep readable.
-
-Option 2 or 3 is likely worth far more than option 1. Note that any of them
-requires the callers to be updated in lockstep, and that these symbols may also
-be referenced by the unit tests — check before changing their convention.
+The earlier reasoning that made `p256_bn_mul` a plausible register-removal
+target is also invalid: `p256_bn_mul` (`src/crypto/p256/bn_mul.S:38`) is a
+hot leaf function with no frame to remove — there is no prologue/epilogue
+overhead to strip from it. Being hot is not sufficient justification for a
+register-pressure pass; being hot *and* paying avoidable call-boundary or
+save/restore cost is.
 
 ## Objective
 
-Determine empirically what call-boundary overhead costs on the X25519 ladder,
-and decide on evidence whether automating register transformations (prompts 06
-and 07) is justified.
+Determine the next highest-value optimization target after prompts 03 and 04
+have landed, using fresh measurement.
 
-## Method
+**Do not assume it is register pressure. Do not assume it is X25519. Do not
+assume it is P-256 multiplication.** Any of those may turn out to be correct,
+but the way to establish that is to re-run the workload profile now that
+GHASH and the P-256 reduction have changed, not to reuse prompt 00's original
+ranking, which was measured against a Barrett-reduction, single-block-GHASH
+binary that no longer exists.
 
-1. **Confirm the target with data.** Use prompt 00's profile. If the handshake
-   does not use X25519 in practice, pick the hottest inner-loop function it
-   *does* use and say so. Do not proceed on the assumption above without
-   checking it.
-2. **Benchmark `x25519` end-to-end** and `x25519_fe_mul` per call (prompt 02).
-3. **Establish the ceiling analytically first.** Count the preservation
-   instructions per call from `objdump`, multiply by measured call count, and
-   express it as a fraction of total handshake instructions. If the ceiling is
-   below the noise floor, stop here and report that — it is a complete and
-   valuable answer, obtained cheaply.
-4. **Apply option 1 by hand** to `x25519_fe_mul`. Measure.
-5. **If option 1 measures, try option 2** on the ladder's helpers. Measure.
-6. **Report.**
+## Required process
 
-## Why this is worth doing before prompts 06 and 07
+After the accepted GHASH (prompt 03) and P-256 reduction (prompt 04) changes
+are merged:
 
-The entire search-and-automate architecture rests on the benchmark being able
-to *see* these wins. If removing preservation instructions sits below the noise
-floor, an automated optimizer cannot distinguish a real improvement from
-jitter, and it will either reject everything or accept noise — a random walk
-with a correctness gate.
+1. Rebuild the complete server.
+2. Re-run the workload profile using the same method as prompt 00
+   (`tests/h2_browser_sim.py`-based end-to-end harness, `xctrace` sampling
+   cross-checked against a second method, ≥5 rounds, stated noise floor).
+3. Measure complete TLS connection cost (handshake-dominated,
+   transfer-dominated, request-dominated scenarios, as in prompt 00).
+4. Measure AES-GCM throughput (should now show GHASH's reduced share; report
+   whether AES encryption, previously ~9%, has become relatively larger simply
+   because GHASH shrank, and whether that new balance justifies revisiting the
+   AES chain).
+5. Measure P-256 operations (`p256_reduce`, `p256_fe_mul`, `p256_point_mul`,
+   ECDSA, ECDH) — confirm how much of the original 73%
+   reduction-vs-multiplication split moved, and re-evaluate whether
+   `p256_point_mul`'s double-and-add now represents enough of the remaining
+   cost to justify a fixed-base comb (deferred from prompt 04).
+6. Measure X25519 operations, including whether it is even the group actually
+   negotiated in practice — check `src/tls/handshake/client_hello.S` and the
+   key-schedule path for which groups are offered and chosen, the same way
+   prompt 04's predecessor should have before proposing X25519 work.
+7. Measure SHA-256/HKDF (transcript and key schedule cost).
+8. Measure HTTP/2 request/response processing (HPACK decode, framing).
+9. Measure embedded asset lookup.
+10. Measure response construction.
 
-This prompt buys that information for roughly a day's work. Prompts 06 and 07
-are weeks. **A negative result here is a success**: it saves the weeks and
-redirects effort to prompts 03, 04 and 08.
+## Deliverable: ranked bottleneck table
 
-Note the amortization trap that makes this genuinely uncertain. In
-`h2_huffman_decode` the removable overhead is 23.5% of the *static* instruction
-count, but the function is a bit-at-a-time decode loop running ~8 iterations
-per input byte — so the prologue is well under 2% of *executed* instructions.
-Static share is not time share. `x25519_fe_mul` is the interesting case
-precisely because it is called in a tight outer loop rather than containing one.
+Produce `docs/PROFILE-POST.MD` (or an update to `docs/PROFILE.MD`) containing
+a ranked table. For every candidate calculate:
+
+```text
+percentage of end-to-end workload
+current runtime
+theoretical maximum improvement
+implementation complexity
+risk
+expected binary-size impact
+```
+
+Include, at minimum: GHASH (post-optimization), AES encryption, P-256
+reduction (post-optimization), P-256 point multiplication, X25519, SHA-256/
+HKDF, HPACK/H2 framing, register save/restore overhead on whichever function
+is now the busiest caller, embedded lookup, response construction.
+
+## Register optimization decision
+
+**Only recommend a register-focused optimization if:**
+
+```text
+estimated removable work  >  benchmark noise floor
+```
+
+**and** the target is actually on a hot path in the fresh profile — not the
+prompt-00 profile, not a static instruction-count ranking.
+
+Specifically reject these as automatic targets, regardless of what any
+earlier prompt assumed:
+
+- `p256_bn_mul` merely because it is hot — it is a leaf with no frame.
+- The standalone `ghash` symbol merely because it exists — it is not on the
+  execution path; `.Lgcm_ghash_run` is (see prompt 03).
+- Leaf functions with no save/restore overhead in general.
+- Functions whose theoretical register improvement cannot affect measured
+  runtime — i.e. removable static instructions that execute rarely enough
+  that the change would sit below the noise floor (the `h2_huffman_decode`
+  amortization trap from the original register-overhead analysis: 23.5% of
+  *static* instructions removable, but under 2% of *executed* instructions,
+  because the loop body dominates).
+
+If X25519's call-boundary overhead (the original ~4,600 calls/handshake,
+~1,275 of them `x25519_fe_mul`) is still supported by the fresh profile as a
+meaningful share of handshake time, it remains a legitimate candidate — but
+it must earn that place in the new table, not be assumed into it.
+
+## Method for the register-overhead question specifically
+
+If the fresh profile does surface a call-heavy inner loop (X25519's ladder or
+otherwise) as a plausible target:
+
+1. **Establish the ceiling analytically first.** Count preservation
+   instructions per call from `objdump`, multiply by the freshly measured
+   call count, express it as a fraction of total handshake instructions. If
+   the ceiling is below the noise floor, stop and report that — a complete,
+   valuable, cheap answer.
+2. Benchmark the candidate function end-to-end and per-call (prompt 02
+   substrate, extended if needed).
+3. Apply register reallocation by hand to the candidate. Measure.
+4. If that measures, consider a private calling convention or inlining for
+   its tight-loop helpers, in escalating order of implementation cost.
+   Note that any of these requires updating callers in lockstep, and that
+   the target symbols may be referenced directly by unit tests — check
+   before changing their convention.
 
 ## Constraints
 
 - **All invariants in `prompts/README.md` apply**, especially constant time:
-  X25519 and P-256 must remain free of secret-dependent branches and
-  addressing. Register reallocation does not change timing behaviour; option 3
-  inlining must not introduce data-dependent control flow.
-- **Prompt 01 must be complete first.** Without the fixed CFG parser, macro
-  expansion and NZCV liveness, the analysis backing any of these changes is
-  unsound — and the four functions that initially looked like removable leaf
-  cases were miscompilations waiting to happen.
-- If you change a helper's calling convention, **update its documented
+  any curve code touched must remain free of secret-dependent branches and
+  addressing.
+- **Prompt 01 must be complete first** (it already is, as a prerequisite for
+  03/04) — the fixed CFG parser, macro expansion, and NZCV liveness are what
+  make any register-pressure claim in this prompt trustworthy.
+- If a calling convention changes, **update its documented
   `// Clobbered Registers:` header** and check whether `tests/unit/` links
   against it directly.
-- Verify structurally: the disassembly should differ only in register numbers
-  and the removed prologue/epilogue. A structural diff catches an entire class
-  of errors without executing anything.
+- Verify structurally: disassembly should differ only in register numbers and
+  removed prologue/epilogue for a pure register-reallocation change.
 
 ## Acceptance criteria
 
-- A number: what call-boundary overhead costs per handshake, measured, with the
-  noise floor stated alongside it.
-- All crypto tests pass, including differential and RFC vectors.
-- A clear recommendation: **run prompts 06 and 07, or do not**, with the
-  evidence for it.
+- A fresh, dated workload profile, not a reuse of prompt 00's numbers.
+- A ranked bottleneck table with the six columns above for every candidate.
+- If register optimization is recommended: a number for removable work per
+  handshake, measured, with the noise floor stated alongside it, and
+  confirmation the target is hot in the *current* profile.
+- If register optimization is not recommended: an explicit statement of that,
+  with the evidence. **"Register optimization is not currently worthwhile" is
+  a valid and successful conclusion for this prompt** — the process follows
+  the workload rather than forcing a planned optimization into the project.
+- All crypto tests pass, including differential and known-answer vectors, for
+  anything touched while investigating.
 
 ## Deliverable
 
-A report in `docs/` covering: analytic ceiling, measured result for each option
-attempted, instruction counts before and after, stack usage before and after,
-and the recommendation. Update `docs/REGISTER-PRESSURE.MD` with the finding —
-particularly if it contradicts that document's static ranking, which put
-`h2_huffman_decode` first on static grounds without accounting for call
-frequency.
+`docs/PROFILE-POST.MD`: scenario results, cost breakdown, ranked bottleneck
+table with the six columns, and a single recommended next-prompt target (which
+may be "none — register optimization is not justified; recommend closing out
+the series" or a pointer to a genuinely new prompt this data justifies).

@@ -1,7 +1,9 @@
-# 02 — Build a benchmark substrate that can resolve a change
+# 02 — Build a benchmark substrate that can resolve the real bottlenecks
 
-**Prerequisite for prompts 03–07.** Without this, no optimization can be
-accepted on evidence, and the harness will accept noise.
+**Prerequisite for prompts 03–04.** Without this, no optimization can be
+accepted on evidence, and the harness will accept noise. Its target list is
+set by the workload profile (`docs/PROFILE.MD`), not by which functions old
+plans happened to mention.
 
 ## Context
 
@@ -22,9 +24,62 @@ benchmark barely exists.
 
 ## Objective
 
-Give every function targeted by prompts 03–07 a microbenchmark that can
-resolve the change being attempted, and make it impossible for the harness to
-accept a candidate on a measurement that cannot.
+Give every function prompts 03–04 will actually touch a microbenchmark that
+can resolve the change being attempted, and make it impossible for the
+harness to accept a candidate on a measurement that cannot.
+
+**Do not build a benchmark merely because an earlier version of this plan
+mentioned the function.** Build the ones the workload profile justifies.
+
+## Required benchmarks
+
+### AES-GCM
+
+The workload profile shows GHASH accounts for ~79% of AES-GCM cost and
+`aes128_encrypt` for ~9%. The benchmark set must reflect that, and must be
+able to attribute cost correctly rather than assuming the encryption chain
+dominates:
+
+- `aes_gcm_encrypt` — complete AES-GCM, across realistic record sizes (16 B to
+  16 KB, the TLS record limit).
+- **The actual GHASH implementation used by `aes_gcm_encrypt`** — that is
+  `.Lgcm_ghash_run` (`src/crypto/gcm/data.S:131`), exercised through the real
+  call path, not the standalone `ghash` symbol (`src/crypto/gcm/ghash.S:38`),
+  which `aes_gcm_encrypt` never calls. A benchmark of the standalone `ghash`
+  function tells you nothing about server behavior — do not build one and
+  treat its result as representative.
+- GHASH per 16-byte block, isolated from AES, so multi-block GHASH work
+  (prompt 03) can be measured independently of AES throughput work.
+
+The benchmark set must **distinguish AES-only work, GHASH work, and complete
+AES-GCM work** as three separate numbers. This is the only way to confirm
+prompt 03's changes actually target the ~79% component rather than the ~9%
+one.
+
+### P-256
+
+- `p256_reduce` (`src/crypto/p256/sqr_mul.S:37`) — isolated, since this is the
+  prompt 04 target.
+- `p256_fe_mul` (`src/crypto/p256/sqr_mul.S:188`) — so reduction cost can be
+  separated from multiplication cost. `p256_fe_mul` is schoolbook multiply
+  (`p256_bn_mul`) followed by `p256_reduce`; the benchmark must let you compute
+  what fraction of `p256_fe_mul`'s time is reduction versus multiplication,
+  both before and after prompt 04's change.
+- `p256_bn_mul` (`src/crypto/p256/bn_mul.S:38`) — isolated, per-call. This is
+  needed to isolate multiplication cost from reduction cost, not as a register
+  optimization target (`p256_bn_mul` is a hot leaf function with no frame —
+  see prompt 05).
+- `p256_point_mul`, ECDSA signing, and complete P-256 handshake operations
+  where practical, so the end-to-end effect of the reduction change is
+  measurable, not just the microbenchmark effect.
+
+## Do not benchmark yet
+
+**Do not select a general-purpose register-optimization benchmark target in
+this prompt.** The previous plan picked `x25519_fe_mul`/the X25519 ladder
+before measuring whether register overhead was worth chasing at all. That
+target must be selected in prompt 05, after the algorithmic work in 03/04 and
+a fresh workload profile — not here, and not by assumption.
 
 ## Method
 
@@ -35,21 +90,19 @@ protocol: a C driver links the function's own `.S`, times it, and emits
 `{"function": ..., "runtime_ns": ...}`. `scripts/benchmarks/Makefile` extends
 naturally — one object rule plus one link rule per function.
 
-Write benchmarks for the functions prompt 00 ranked as hot. At minimum:
+For the GHASH benchmark specifically, the driver must call into
+`.Lgcm_ghash_run` through the same entry conditions `aes_gcm_encrypt` sets up
+(H' in v19, the running accumulator in v20, the nibble/zero constants in
+v16–v18) — read `src/crypto/gcm/data.S:107-130` for the documented calling
+convention of that region before writing the driver. Faking a different
+calling convention would measure a different, unrepresentative code path.
 
-- `aes128_encrypt` and `aes_gcm_encrypt` — across realistic record sizes
-  (16 B to 16 KB, the TLS record limit), since prompt 03 changes throughput.
-- `p256_point_mul`, `p256_ecdsa_sign_with_k` — per-operation, since prompt 04
-  changes the algorithm.
-- `sha256_compress`, `ghash` — per block.
-- Whichever function prompt 05 selects for the register experiment.
+Requirements for each benchmark:
 
-Requirements for each:
-
-- Inner loop of ≥10⁵ iterations; **best-of-N** over ≥7 rounds (memcpy's
-  driver already does this — follow it).
-- Inputs that defeat constant folding and are representative in size.
+- Inner loop of ≥10⁵ iterations where practical; **best-of-N** over ≥7 rounds
+  (memcpy's driver already does this — follow it).
 - A warmup pass before timing.
+- Representative inputs that defeat constant folding.
 - Emit JSON on stdout, nothing else.
 
 ### 2. Establish the noise floor
@@ -60,6 +113,10 @@ An improvement smaller than it is not an improvement.
 
 Record it in the benchmark's own output or a companion file so the harness can
 enforce it rather than relying on the operator to remember.
+
+A benchmark that cannot distinguish the expected improvement must **fail
+closed** — refuse to report a pass/fail verdict — rather than silently
+accepting a result inside the noise band.
 
 ### 3. Fix the harness's acceptance path
 
@@ -89,8 +146,8 @@ say plainly that the data is unavailable.
 
 ## Deliverables
 
-- `scripts/benchmarks/bench_<function>.c` for each hot function, plus Makefile
-  rules.
+- `scripts/benchmarks/bench_<function>.c` for each function listed above, plus
+  Makefile rules.
 - A documented noise floor per benchmark.
 - Harness changes so acceptance requires a real benchmark and a
   beyond-noise improvement.
@@ -102,6 +159,11 @@ say plainly that the data is unavailable.
   moving on.
 - Re-running a benchmark on an unchanged binary never reports an improvement
   that would be accepted.
+- The AES-GCM benchmark set can report AES-only, GHASH-only, and complete
+  AES-GCM numbers separately, and the GHASH number is measured through
+  `.Lgcm_ghash_run`, not the standalone `ghash` symbol.
+- The P-256 benchmark set can isolate `p256_reduce` cost from `p256_bn_mul`
+  cost within `p256_fe_mul`.
 - `scripts/arm-optimize.py --function memcpy --mutate-only` still runs
   end-to-end, proving the harness was not broken by the changes.
 

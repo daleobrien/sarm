@@ -1,7 +1,12 @@
 # 10 — Resolve the embedded-file lookup
 
-A small, self-contained task with an unusually clear brief: a complete lookup
-mechanism was built end to end and never connected.
+**Explicitly low priority.** A small, self-contained task with an unusually
+clear brief — a complete lookup mechanism was built end to end and never
+connected — but the repository currently has only a very small number of
+embedded assets, so the objective is to **determine whether lookup
+optimization has a measurable effect on the real request workload before
+introducing a more complicated lookup algorithm**, not to assume the more
+sophisticated mechanism is worth finishing.
 
 ## Context
 
@@ -80,22 +85,58 @@ Verify each before acting; all are in `src/file/lookup_embedded.S`.
 - **`bl streqn` is a function call inside the scan loop**, invoked for every
   length match.
 
-## Options to evaluate
+## Method
 
-1. **Keep the linear scan, cleaned up.** Fix the defects above. Likely
-   competitive at n = 6 and the simplest thing that works.
+Benchmark `lookup_embedded` with:
+
+- the current six-entry workload;
+- representative request paths;
+- repeated requests;
+- realistic HTTP/2 request workloads.
+
+Measure its contribution to total request latency before deciding anything
+about the algorithm.
+
+### First fix obvious inefficiencies
+
+Where safe, and independent of the hash/binary-search decision below, fix the
+low-risk defects listed above:
+
+1. Remove unjustified save/restore registers (x21, x24).
+2. Remove branches to the immediately following instruction.
+3. Maintain an advancing table pointer instead of recalculating `index * 80`.
+4. Avoid the unnecessary `bl streqn` call inside the lookup loop where a
+   cheaper comparison suffices.
+
+These are low-risk transformations and should be considered independently of
+whether the lookup algorithm itself changes.
+
+### Hash/binary-search decision
+
+**Do not automatically connect the existing FNV-1a hash table.** At six
+entries, the extra data and hashing work may cost more than the scan it
+replaces.
+
+Compare, using the real asset set:
+
+1. **Linear scan, cleaned up.** Fix the defects above. Likely competitive at
+   n = 6 and the simplest thing that works.
 2. **Linear scan over the packed hash table.** Hash the request path once with
    `fnv1a_64`, then scan `embedded_hash_table`'s 96 contiguous bytes comparing
    64-bit integers — no string comparison, no call, two cache lines, no
-   data-dependent branching. Probably the fastest option at this size, and it
-   uses the infrastructure that already exists.
+   data-dependent branching.
 3. **Binary search over `embedded_hash_table`.** The documented intent.
    Evaluate it, but expect branch mispredictions to erase the theoretical
    advantage at n = 6.
-4. **Delete the unused mechanism.** If measurement says the linear scan wins,
-   removing `embedded_hash_table`, the hash field and the unused `fnv1a_64`
-   is a legitimate outcome — it shrinks the binary and removes a misleading
-   half-built path. Do not keep dead infrastructure "in case".
+
+**If the difference is below the noise floor, keep the simplest
+implementation. That is a successful outcome.**
+
+If measurement says the linear scan wins outright, **deleting the unused
+mechanism** — `embedded_hash_table`, the hash field, and the unused
+`fnv1a_64` call site — is a legitimate outcome — it shrinks the binary and
+removes a misleading half-built path. Do not keep dead infrastructure "in
+case".
 
 Whichever you choose, exactly one mechanism should survive, and the comments
 in both `lookup_embedded.S` and `embed_www.sh` must describe it accurately.
@@ -142,6 +183,11 @@ ordering or assumptions those rely on.
 - A measurement, or an explicit statement that the difference is below the
   noise floor from prompt 02 and the choice was made on simplicity and safety
   instead. Either is acceptable; silence is not.
+- The final implementation matches every embedded asset correctly, returns
+  not-found correctly, and preserves path semantics.
+- **If lookup represents less than a meaningful fraction of request latency,
+  document that result and stop** — do not add algorithmic complexity to
+  chase a win the profile does not support.
 
 ## Constraints
 

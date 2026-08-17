@@ -4,35 +4,53 @@ A sequence of self-contained task prompts for making `sarm` run faster. Each
 file is a complete brief for one AI coding agent session: context, objective,
 constraints, method, deliverables, acceptance criteria.
 
-## The workload these are written for
+## This is a feedback loop, not a fixed roadmap
+
+**`00-workload-profile.md` is the source of truth for optimization
+priorities.** Subsequent prompts must not assume that a particular function
+or subsystem is hot merely because it looks expensive, appears in a static
+ranking, or was a target in an earlier version of this plan. After any major
+algorithmic optimization, **re-run the workload profile** and use the new
+measurements to select the next target — that re-profiling step is itself a
+numbered prompt (05), and the discipline of repeating it is made permanent by
+prompt 09.
+
+Two things make this practical rather than aspirational: prompt 01
+establishes analysis tooling trustworthy enough to reason about a candidate
+change, and prompt 02 establishes benchmarks credible enough to judge one.
+Prompt 06 turns the optimization harness itself into a pluggable-strategy
+architecture so that *which* metric a candidate is judged against — GHASH
+throughput, handshake latency, end-to-end request time — is declared per
+target rather than fixed in advance. The workload results tell us that
+target selection has to happen after every major optimization, not once at
+the start.
+
+## The workload as currently measured
 
 `sarm` serves **a small, fixed set of embedded static files over HTTP/2 with
 TLS 1.3**. Assets are compiled into the binary and pre-compressed at build
 time. There is no filesystem I/O and no runtime compression.
 
-That shape determines where time goes, and it is not where the assembly's
-*size* suggests:
+`docs/PROFILE.MD` (prompt 00's output) is the authoritative breakdown. As of
+that profile:
 
-| Cost | Paid | Dominated by |
+| Workload | Current finding | Optimization direction |
 |---|---|---|
-| TLS 1.3 handshake | once per connection | P-256 scalar mult, ECDSA sign, X25519 |
-| Response encryption | per byte served | AES-GCM (`aes128_encrypt` + `ghash`) |
-| Transcript / key schedule | per connection | SHA-256, HKDF |
-| Request parsing | per request | HPACK decode, H2 framing |
-| Register save/restore | per call | prologue/epilogue traffic |
+| TLS handshake | P-256 / X25519 crypto dominate | Profile-driven |
+| AES-GCM | GHASH ≈ 79% of cost | Prompt 03 |
+| AES block encryption | ≈ 9% of AES-GCM cost | Secondary |
+| P-256 field multiply | `p256_reduce` ≈ 73% of `p256_fe_mul` | Prompt 04 |
+| `p256_bn_mul` | Hot, but a leaf with no frame | Do not target for register overhead |
+| standalone `ghash` symbol | Not on the AES-GCM call path (`.Lgcm_ghash_run` is) | Do not optimize |
+| Register save/restore overhead | Not yet demonstrated as a major bottleneck | Re-evaluate after 03/04 (prompt 05) |
+| Response path | Cost relative to crypto not yet established | Prompt 08, evidence-gated |
+| Embedded asset lookup | Six-entry table | Prompt 10, only if measurable |
 
-Two structural findings drive the ordering below, both verified in the source:
-
-- `aes_gcm_encrypt` calls `aes128_encrypt` **once per 16-byte block**
-  (`src/crypto/gcm/encrypt.S:100-112`), serializing the AESE dependency chain.
-- `p256_point_mul` uses **naive double-and-add** over 256 bits
-  (`src/crypto/p256_point/mul.S`), with no precomputed tables.
-
-Both are order-of-magnitude opportunities. The register-pressure work
-documented in `docs/REGISTER-PRESSURE.MD` is worth roughly 160 instructions
-repo-wide — real, but a rounding error next to the two above. The series is
-ordered accordingly, and prompt 00 exists to confirm that ordering with
-measurement before anything is changed.
+Treat every row as a snapshot, not a permanent fact. `docs/PROFILE.MD`
+predates the GHASH and P-256-reduction work; `docs/PROFILE-POST.MD` (prompt
+05) supersedes it once that work lands, and the chain continues from there
+(prompt 09). If a prompt's context section cites a percentage, check it
+against the latest profile before trusting it for a new decision.
 
 ## Order
 
@@ -42,23 +60,26 @@ without them.
 | # | Prompt | Purpose |
 |---|---|---|
 | 00 | `00-workload-profile.md` | Measure where time actually goes. Gates everything else. |
-| 01 | `01-analysis-tooling-correctness.md` | Fix the analyzer/ABI-checker defects. Safety prerequisite. |
-| 02 | `02-benchmark-substrate.md` | Per-function benchmarks that can resolve a change. |
-| 03 | `03-aes-gcm-throughput.md` | Multi-block AES-GCM. Largest per-byte win. |
-| 04 | `04-p256-scalar-multiplication.md` | Precomputed comb tables. Largest per-connection win. |
-| 05 | `05-register-overhead-experiment.md` | Is prologue/epilogue removal measurable? Decides 06/07. |
-| 06 | `06-optimizer-strategy-framework.md` | Generalize the harness to pluggable strategies. |
-| 07 | `07-register-transformations.md` | Automate the register transformation family. |
-| 08 | `08-precomputed-response-path.md` | Precompute more of the response at build time. |
-| 09 | `09-regression-protection.md` | Make every accepted win reproducible and permanent. |
-| 10 | `10-embedded-lookup.md` | Resolve the half-built asset lookup. Small, independent. |
+| 01 | `01-analysis-tooling-correctness.md` | Fix the analyzer/ABI-checker defects; extend to local-label regions like `.Lgcm_ghash_run`. Safety prerequisite. |
+| 02 | `02-benchmark-substrate.md` | Benchmarks for the functions the profile actually names, distinguishing microbenchmark from workload effect. |
+| 03 | `03-aes-gcm-throughput.md` | GHASH restructuring — the measured ~79% of AES-GCM cost. |
+| 04 | `04-asymmetric-crypto-algorithms.md` | Solinas-style P-256 reduction, replacing Barrett — the measured ~73% of field multiply cost. |
+| 05 | `05-register-overhead-experiment.md` | Re-profile after 03/04. Determine the next target on evidence, not assumption. |
+| 06 | `06-optimizer-strategy-framework.md` | Generalize the harness into workload-declared, pluggable strategies. |
+| 07 | `07-register-transformations.md` | Automate register transformations — only for whatever prompt 05 (or a later re-profile) shows is actually hot. |
+| 08 | `08-precomputed-response-path.md` | Precompute more of the response at build time — evidence-gated against crypto cost. |
+| 09 | `09-regression-protection.md` | Make every accepted win reproducible, and make re-profiling a standing discipline. |
+| 10 | `10-embedded-lookup.md` | Resolve the half-built asset lookup. Small, independent, explicitly low priority. |
 
 Prompt 10 is independent of the rest and can run at any point after 00 — it is
 a good first task for validating the workflow, since it is small, well-bounded
 and has a clear right answer.
 
-Prompts 06 and 07 are **conditional**: run them only if 05 shows the overhead
-is measurable. If it is not, say so and stop — that is a valid outcome.
+Prompts 06 and 07 are **conditional on measurement, not on sequence position**:
+07 runs only if the *current* profile (from 05, or a later re-profile) shows
+a hot function with a genuine register-pressure opportunity. "Register
+optimization is not currently worthwhile" is a valid outcome of 05 or 07 —
+it means the series stops there, not that something went wrong.
 
 ## Invariants every prompt inherits
 
