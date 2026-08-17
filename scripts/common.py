@@ -62,7 +62,23 @@ def run_command(
     shell = isinstance(command, str)
     if not shell:
         shell = needs_shell(command)
-        argv: Sequence[str] | str = list(command)
+        if shell:
+            # subprocess.run(argv_list, shell=True) is a trap on POSIX: it
+            # runs only argv[0] as the shell command and passes the rest as
+            # $0/$1/... positional parameters, which are silently dropped
+            # unless the string references them. A command list built as
+            # ["make ... foo", "&&", "./foo"] (the shape every caller in
+            # this harness uses -- see arm-optimize.py's default_benchmark)
+            # would therefore run only the make step and never the
+            # benchmark binary, with its empty stdout falling back to
+            # wall-clock timing of the make invocation alone. Join into one
+            # shell command string instead, exactly as a human would type
+            # it -- these list elements are already shell fragments
+            # ("make -s -C ... bench_x") or bare operators ("&&"), not
+            # arguments needing individual quoting.
+            argv: Sequence[str] | str = " ".join(command)
+        else:
+            argv = list(command)
     else:
         argv = command
 

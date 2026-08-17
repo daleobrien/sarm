@@ -37,6 +37,7 @@ source is restored at the end unless --apply is given.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -118,27 +119,52 @@ def default_tests(
 def default_benchmark(
     workdir: Path, function: str
 ) -> list[str] | str | None:
-    """Choose a dedicated benchmark, else time the unit test as a proxy."""
+    """The dedicated microbenchmark, or None.
+
+    There used to be a fallback here that timed the function's unit test
+    binary under wall clock as a cheap proxy. Measured resolution: 0.02 s
+    at 0.01 s granularity, dominated by process startup -- it cannot
+    resolve a change to a function that runs in nanoseconds, but the
+    optimizer would accept a candidate on it anyway
+    (prompts/02-benchmark-substrate.md). Failing closed here -- refusing
+    to run without a real benchmark -- is better than silently accepting
+    noise as an improvement. Add scripts/benchmarks/bench_<function>.c to
+    unlock a function for optimization.
+    """
     if benchmark_source(workdir, function):
         return [
             f"make -s -C scripts/benchmarks bench_{function}",
             "&&",
-            f"./scripts/benchmarks/bench_{function}",
+            f"./scripts/benchmarks/_bench_bin/bench_{function}",
         ]
+    return None
 
-    if unit_test_source(workdir, function) is None:
-        return None
 
-    # No dedicated microbenchmark exists. Running the function's unit test
-    # repeatedly gives the optimizer a cheap wall-clock signal. The
-    # correctness pass above builds this binary immediately before each
-    # benchmark, so the make invocation is normally a no-op.
-    return (
-        f"make -s -C tests/unit build && "
-        f"for i in 1 2 3 4 5 6 7 8 9 10; do "
-        f"./tests/unit/_obj/test_{function} >/dev/null 2>&1 || exit 1; "
-        f"done"
+def noise_floor_source(workdir: Path, function: str) -> Path | None:
+    """The dedicated ``bench_<function>.noise.json`` when present."""
+    path = (
+        workdir / "scripts" / "benchmarks" / f"bench_{function}.noise.json"
     )
+    return path if path.exists() else None
+
+
+def default_noise_floor(workdir: Path, function: str) -> float | None:
+    """The calibrated noise floor (percent) for ``function``'s benchmark.
+
+    Produced by ``scripts/benchmarks/measure_noise_floor.py``. A benchmark
+    with no calibrated noise floor cannot tell a real improvement from
+    measurement noise, so ``Optimizer`` refuses to run against it rather
+    than silently accepting anything faster than the current best
+    (prompts/02-benchmark-substrate.md, "fail closed").
+    """
+    source = noise_floor_source(workdir, function)
+    if source is None:
+        return None
+    try:
+        data = json.loads(source.read_text())
+        return float(data["noise_floor_pct"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def default_differential() -> list[str]:
@@ -172,8 +198,15 @@ def main() -> None:
                              "make -C tests/unit test")
     parser.add_argument("--benchmark", nargs="+", default=None,
                         help="benchmark command emitting JSON runtime_ns; "
-                             "default: bench_<function>, else repeated "
-                             "test_<function> as a wall-clock proxy")
+                             "default: bench_<function> (required -- there "
+                             "is no wall-clock fallback)")
+    parser.add_argument("--noise-floor", type=float, default=None,
+                        help="round-to-round noise floor (%%) for the "
+                             "benchmark; default: read from "
+                             "bench_<function>.noise.json (see "
+                             "scripts/benchmarks/measure_noise_floor.py). "
+                             "A candidate must beat best by more than this "
+                             "to be accepted")
     parser.add_argument("--differential", nargs="?", const="default", default=None,
                         help="run differential testing after tests pass; "
                              "default: scripts/differential.py --cases 400")
@@ -269,8 +302,25 @@ def main() -> None:
     if benchmark_cmd is None:
         parser.error(
             f"no benchmark available for {args.function!r}; pass --benchmark, "
-            "or add scripts/benchmarks/bench_<function>.c"
+            "or add scripts/benchmarks/bench_<function>.c "
+            "(prompts/02-benchmark-substrate.md -- there is no wall-clock "
+            "fallback; a candidate can never be accepted on one)"
         )
+
+    noise_floor_pct = args.noise_floor
+    if noise_floor_pct is None:
+        noise_floor_pct = default_noise_floor(workdir, args.function)
+    if noise_floor_pct is None:
+        parser.error(
+            f"no calibrated noise floor for {args.function!r}; pass "
+            "--noise-floor <pct>, or run "
+            "scripts/benchmarks/measure_noise_floor.py first to write "
+            f"scripts/benchmarks/bench_{args.function}.noise.json "
+            "(prompts/02-benchmark-substrate.md -- a benchmark that cannot "
+            "distinguish the expected improvement must fail closed, not "
+            "silently accept a result inside the noise band)"
+        )
+
     differential_cmd = None
     if args.differential:
         if args.differential == "default":
@@ -289,6 +339,7 @@ def main() -> None:
         judge=judge,
         tests_cmds=tests_cmds,
         benchmark_cmd=benchmark_cmd,
+        noise_floor_pct=noise_floor_pct,
         rounds=args.rounds,
         abi_check=args.abi_check,
         differential_cmd=differential_cmd,

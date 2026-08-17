@@ -1,0 +1,11 @@
+{
+  "function": "p256_fe_mul",
+  "noise_floor_pct": 3.6613,
+  "rounds": 40,
+  "median_ns": 110.48575,
+  "p10_ns": 108.95104999999998,
+  "p90_ns": 112.99629999999999,
+  "min_ns": 106.9665,
+  "max_ns": 113.6455,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

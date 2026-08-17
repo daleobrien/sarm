@@ -27,7 +27,7 @@
 //
 // Build and run:
 //   make -C scripts/benchmarks bench_primitives
-//   ./scripts/benchmarks/bench_primitives          # JSON on stdout
+//   ./scripts/benchmarks/_bench_bin/bench_primitives          # JSON on stdout
 
 #include <stdint.h>
 #include <stdio.h>

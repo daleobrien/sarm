@@ -20,7 +20,13 @@ DISASSEMBLY OF THE CURRENT BUILD (actual generated machine code):
 {disassembly}
 ```
 
-CURRENT BENCHMARK (median of several rounds):
+STATIC INSTRUCTION COUNT (objdump on the assembled object -- exact,
+zero-noise; substitutes for llvm-mca's throughput model where that is
+unavailable, but says nothing about scheduling or latency on its own):
+{instruction_count}
+
+CURRENT BENCHMARK (median of several rounds, gated against a calibrated
+noise floor -- see benchmark for the noise-floor percentage):
 {benchmark}
 
 PERF COUNTERS (evidence, not just runtime):

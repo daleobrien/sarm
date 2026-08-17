@@ -1,0 +1,11 @@
+{
+  "function": "gcm_ghash_run",
+  "noise_floor_pct": 1.2178,
+  "rounds": 25,
+  "median_ns": 7.965,
+  "p10_ns": 7.961000000000001,
+  "p90_ns": 8.058,
+  "min_ns": 7.959,
+  "max_ns": 8.06,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

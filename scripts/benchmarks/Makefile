@@ -6,8 +6,12 @@
 #
 #   {"function": "memcpy", "runtime_ns": 12.34, "sizes": {...}}
 #
+# Built binaries land in _bench_bin/ (gitignored, like the _bench_obj/
+# intermediates) rather than this source directory, so `git status` stays
+# clean and nothing here needs a one-off .gitignore line per benchmark.
+#
 # Usage:
-#   make bench_memcpy && ./bench_memcpy
+#   make bench_memcpy && ./_bench_bin/bench_memcpy
 #   make clean
 
 AS      := cc
@@ -19,10 +23,14 @@ LDFLAGS := -arch arm64
 _bench_obj:
 	mkdir -p _bench_obj
 
+_bench_bin:
+	mkdir -p _bench_bin
+
 _bench_obj/memcpy.o: ../../src/util/memcpy.S | _bench_obj
 	$(AS) $(ASFLAGS) -c $< -o $@
 
-bench_memcpy: bench_memcpy.c _bench_obj/memcpy.o
+bench_memcpy: _bench_bin/bench_memcpy
+_bench_bin/bench_memcpy: bench_memcpy.c _bench_obj/memcpy.o | _bench_bin
 	$(CC) $(CFLAGS) bench_memcpy.c _bench_obj/memcpy.o $(LDFLAGS) -o $@
 
 # bench_primitives spans most of src/, so instead of naming each .S it
@@ -44,9 +52,95 @@ _bench_obj/sarm/%.o: $(SRC)/%.S
 _bench_obj/libsarm.a: $(PRIM_OBJS)
 	ar rcs $@ $(PRIM_OBJS)
 
-bench_primitives: bench_primitives.c _bench_obj/libsarm.a
+bench_primitives: _bench_bin/bench_primitives
+_bench_bin/bench_primitives: bench_primitives.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_primitives.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
 
-.PHONY: clean
+# ── AES-GCM / GHASH benchmark trio (prompts/02-benchmark-substrate.md) ──
+# Distinguishes AES-only, GHASH-only (through the real .Lgcm_ghash_run call
+# path) and complete AES-GCM cost as three separate numbers.
+
+_bench_obj/aes128_key_expand.o: ../../src/crypto/aes128/key_expand.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/aes128_encrypt.o: ../../src/crypto/aes128/encrypt.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/gcm_encrypt.o: ../../src/crypto/gcm/encrypt.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/gcm_decrypt.o: ../../src/crypto/gcm/decrypt.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/gcm_ghash.o: ../../src/crypto/gcm/ghash.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/gcm_ghash_run_probe.o: gcm_ghash_run_probe.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+bench_aes128_encrypt: _bench_bin/bench_aes128_encrypt
+_bench_bin/bench_aes128_encrypt: bench_aes128_encrypt.c _bench_obj/aes128_key_expand.o _bench_obj/aes128_encrypt.o | _bench_bin
+	$(CC) $(CFLAGS) bench_aes128_encrypt.c _bench_obj/aes128_key_expand.o \
+	    _bench_obj/aes128_encrypt.o $(LDFLAGS) -o $@
+
+bench_aes_gcm_encrypt: _bench_bin/bench_aes_gcm_encrypt
+_bench_bin/bench_aes_gcm_encrypt: bench_aes_gcm_encrypt.c _bench_obj/gcm_encrypt.o _bench_obj/gcm_decrypt.o _bench_obj/aes128_key_expand.o _bench_obj/aes128_encrypt.o | _bench_bin
+	$(CC) $(CFLAGS) bench_aes_gcm_encrypt.c _bench_obj/gcm_encrypt.o \
+	    _bench_obj/gcm_decrypt.o _bench_obj/aes128_key_expand.o \
+	    _bench_obj/aes128_encrypt.o $(LDFLAGS) -o $@
+
+bench_gcm_ghash_run: _bench_bin/bench_gcm_ghash_run
+_bench_bin/bench_gcm_ghash_run: bench_gcm_ghash_run.c _bench_obj/gcm_ghash_run_probe.o _bench_obj/gcm_ghash.o | _bench_bin
+	$(CC) $(CFLAGS) bench_gcm_ghash_run.c _bench_obj/gcm_ghash_run_probe.o \
+	    _bench_obj/gcm_ghash.o $(LDFLAGS) -o $@
+
+# ── P-256 benchmark suite (prompts/02-benchmark-substrate.md) ──
+# Isolates p256_reduce (the prompt 04 target) from p256_bn_mul, so
+# reduction cost can be separated from multiplication cost inside
+# p256_fe_mul, plus point_mul/ECDSA/ECDH so the reduction change's
+# end-to-end effect is measurable, not just the microbenchmark effect.
+
+_bench_obj/p256_bn_mul.o: ../../src/crypto/p256/bn_mul.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/p256_sqr_mul.o: ../../src/crypto/p256/sqr_mul.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/p256_data.o: ../../src/crypto/p256/data.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/p256_reduce_probe.o: p256_reduce_probe.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+bench_p256_reduce: _bench_bin/bench_p256_reduce
+_bench_bin/bench_p256_reduce: bench_p256_reduce.c _bench_obj/p256_reduce_probe.o _bench_obj/p256_bn_mul.o _bench_obj/p256_sqr_mul.o _bench_obj/p256_data.o | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_reduce.c _bench_obj/p256_reduce_probe.o \
+	    _bench_obj/p256_bn_mul.o _bench_obj/p256_sqr_mul.o \
+	    _bench_obj/p256_data.o $(LDFLAGS) -o $@
+
+bench_p256_fe_mul: _bench_bin/bench_p256_fe_mul
+_bench_bin/bench_p256_fe_mul: bench_p256_fe_mul.c _bench_obj/p256_reduce_probe.o _bench_obj/p256_bn_mul.o _bench_obj/p256_sqr_mul.o _bench_obj/p256_data.o | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_fe_mul.c _bench_obj/p256_reduce_probe.o \
+	    _bench_obj/p256_bn_mul.o _bench_obj/p256_sqr_mul.o \
+	    _bench_obj/p256_data.o $(LDFLAGS) -o $@
+
+bench_p256_bn_mul: _bench_bin/bench_p256_bn_mul
+_bench_bin/bench_p256_bn_mul: bench_p256_bn_mul.c _bench_obj/p256_bn_mul.o | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_bn_mul.c _bench_obj/p256_bn_mul.o $(LDFLAGS) -o $@
+
+# point_mul/ECDSA reach the full P-256 field/point/scalar chain, so these
+# link the whole-src archive rather than naming each object.
+bench_p256_point_mul: _bench_bin/bench_p256_point_mul
+_bench_bin/bench_p256_point_mul: bench_p256_point_mul.c _bench_obj/libsarm.a | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_point_mul.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
+
+bench_p256_ecdsa_sign_with_k: _bench_bin/bench_p256_ecdsa_sign_with_k
+_bench_bin/bench_p256_ecdsa_sign_with_k: bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
+
+.PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
+    bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
+    bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
+    bench_p256_ecdsa_sign_with_k
 clean:
-	rm -rf _bench_obj bench_memcpy bench_primitives
+	rm -rf _bench_obj _bench_bin

@@ -1,0 +1,11 @@
+{
+  "function": "p256_ecdsa_sign_with_k",
+  "noise_floor_pct": 3.2975,
+  "rounds": 20,
+  "median_ns": 907735.0,
+  "p10_ns": 900018.9996999999,
+  "p90_ns": 929951.9996999999,
+  "min_ns": 895613.333,
+  "max_ns": 934783.333,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

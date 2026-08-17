@@ -1,0 +1,11 @@
+{
+  "function": "memcpy",
+  "noise_floor_pct": 1.5243,
+  "rounds": 30,
+  "median_ns": 207.68200000000002,
+  "p10_ns": 207.6202,
+  "p90_ns": 210.786,
+  "min_ns": 207.583,
+  "max_ns": 238.905,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

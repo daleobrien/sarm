@@ -1,0 +1,11 @@
+{
+  "function": "aes_gcm_encrypt",
+  "noise_floor_pct": 0.0821,
+  "rounds": 25,
+  "median_ns": 2360.217,
+  "p10_ns": 2359.5425999999998,
+  "p90_ns": 2361.4808000000003,
+  "min_ns": 2359.44,
+  "max_ns": 2368.034,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

@@ -25,6 +25,7 @@ Artifact layout (mirrors the doc's "Directory structure"):
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import shutil
@@ -66,6 +67,7 @@ class Optimizer:
         judge: LLM | None = None,
         tests_cmds: list | None = None,
         benchmark_cmd=None,
+        noise_floor_pct: float | None = None,
         rounds: int = 5,
         abi_check: bool = True,
         differential_cmd=None,
@@ -85,6 +87,7 @@ class Optimizer:
         self.judge = judge
         self.tests_cmds = tests_cmds or ["make -C tests/unit test"]
         self.benchmark_cmd = benchmark_cmd
+        self.noise_floor_pct = noise_floor_pct
         self.rounds = max(1, rounds)
         self.abi_check = abi_check
         self.differential_cmd = differential_cmd
@@ -207,17 +210,59 @@ class Optimizer:
         return obj if result.success else None
 
     def gather_evidence(self, function_text: str) -> dict:
-        """Disassembly + mca for the current source; perf if available."""
-        evidence: dict = {"disassembly": None, "mca": None, "perf": None}
+        """Disassembly + objdump instruction count for the current source;
+        mca/perf if available (they are not, on macOS -- see
+        prompts/02-benchmark-substrate.md, "Replace the missing evidence").
+        """
+        evidence: dict = {
+            "disassembly": None, "mca": None, "perf": None,
+            "instructions": None,
+        }
         obj = self.compile_object("current")
         if obj and self.disassembler.available():
             dis = self.disassembler.disassemble(obj)
             evidence["disassembly"] = self.disassembler.extract_function(
                 dis or "", self.function
             )
+            if evidence["disassembly"]:
+                evidence["instructions"] = self._instruction_count(
+                    evidence["disassembly"]
+                )
         if self.mca.available():
             evidence["mca"] = self.mca.analyze(function_text)
         return evidence
+
+    @staticmethod
+    def _instruction_count(dis: str) -> int:
+        """Static instruction count from objdump output: exact, zero-noise
+        (prompts/02-benchmark-substrate.md) -- what a plain instruction
+        count buys when perf/llvm-mca aren't available to say anything
+        about scheduling or throughput.
+        """
+        lines = Disassembler.normalize(dis).splitlines()
+        return sum(
+            1 for line in lines
+            if line and not line.rstrip().endswith(":")
+        )
+
+    def _disassembly_diff(self, base_dis: str | None,
+                          cand_dis: str | None) -> str:
+        """Structural diff between two disassemblies, addresses/bytes
+        stripped so only real machine-code changes show
+        (prompts/02-benchmark-substrate.md, "structural disassembly diff
+        between baseline and candidate").
+        """
+        if not base_dis or not cand_dis:
+            return "(disassembly diff unavailable -- is objdump installed?)"
+        base = Disassembler.normalize(base_dis).splitlines()
+        cand = Disassembler.normalize(cand_dis).splitlines()
+        diff = "\n".join(
+            difflib.unified_diff(
+                base, cand, fromfile="best-so-far", tofile="candidate",
+                lineterm="",
+            )
+        )
+        return diff or "(no instruction-level change)"
 
     def benchmark(self) -> BenchmarkResult | None:
         if not self.benchmark_cmd:
@@ -282,6 +327,20 @@ class Optimizer:
         print(f"Source   : {self.source}")
         print(f"Workdir  : {self.workdir}")
         print(f"Out      : {self.outdir}")
+        print()
+
+        # A benchmark that cannot distinguish the expected improvement from
+        # noise must fail closed rather than let a candidate inside the
+        # noise band become the new best (prompts/02-benchmark-substrate.md).
+        if self.benchmark_cmd and self.noise_floor_pct is None:
+            raise RuntimeError(
+                "no noise floor calibrated for this benchmark -- refusing "
+                "to judge candidates against it. Run "
+                "scripts/benchmarks/measure_noise_floor.py, or pass "
+                "--noise-floor explicitly."
+            )
+        print(f"Noise floor: {self.noise_floor_pct:.3f}% "
+              "(candidates must beat best by more than this)")
         print()
 
         # ---------------------------------------------------------- baseline
@@ -443,15 +502,27 @@ class Optimizer:
                 runtime = runtime_bench.runtime_ns
                 improvement = (best - runtime) / best * 100.0
                 print(f"  Runtime: {runtime:.2f} ns "
-                      f"(improvement vs best: {improvement:+.3f}%)")
+                      f"(improvement vs best: {improvement:+.3f}%, "
+                      f"noise floor: {self.noise_floor_pct:.3f}%)")
+
+                # A candidate inside the noise band is not a demonstrated
+                # improvement (prompts/02-benchmark-substrate.md): require
+                # beating best by more than both the noise floor and any
+                # explicit --min-improvement, not a bare `runtime < best`.
+                required_improvement = max(
+                    self.min_improvement, self.noise_floor_pct
+                )
+                # Compiled once and reused for both the judge's diff and
+                # the archived disassembly below.
+                cand_dis = self._current_disassembly()
 
                 # Optional LLM judge.
-                keep = runtime < best * (1.0 - self.min_improvement / 100.0)
+                keep = runtime < best * (1.0 - required_improvement / 100.0)
                 judge_reason = None
                 if keep and self.judge and self.judge.available():
                     verdict = self._ask_judge(
                         label, explanation, evidence, tests, runtime_bench,
-                        improvement,
+                        improvement, cand_dis,
                     )
                     if verdict is not None:
                         keep, judge_reason = verdict
@@ -466,7 +537,6 @@ class Optimizer:
                         f"({runtime:.2f} ns) -- {explanation}"
                     )
                     # Archive: full source + function + fresh disassembly.
-                    cand_dis = self._current_disassembly()
                     self.save_candidate(
                         label, new_source, candidate_src, "accepted",
                         cand_dis,
@@ -524,6 +594,7 @@ class Optimizer:
 
     def _build_context(self, function_text, bench: BenchmarkResult,
                        evidence: dict) -> dict:
+        instructions = evidence.get("instructions")
         return {
             "function": self.function,
             "signature": self.signature(self.source.read_text()),
@@ -531,26 +602,38 @@ class Optimizer:
             "source": function_text,
             "disassembly": evidence["disassembly"]
             or "(disassembly unavailable -- is objdump installed?)",
-            "benchmark": f"runtime {bench.runtime_ns:.2f} ns (median of "
-                         f"{bench.rounds} rounds)",
-            "perf": bench.evidence()
-            + (
-                "\n(perf stat unavailable on this platform)"
-                if not self.perf.available()
-                else ""
+            "instruction_count": (
+                f"{instructions} instructions (objdump on the assembled "
+                "object -- exact, zero-noise; not a throughput or "
+                "scheduling estimate, just a count)"
+                if instructions is not None
+                else "(unavailable -- is objdump installed?)"
             ),
+            "benchmark": f"runtime {bench.runtime_ns:.2f} ns (median of "
+                         f"{bench.rounds} rounds, noise floor "
+                         f"{self.noise_floor_pct:.3f}%)",
+            # No `perf` on macOS (docs/ANALYSIS-TOOLING.MD, "Tooling
+            # reality on this machine") -- say so plainly rather than
+            # fabricate counter data (prompts/02-benchmark-substrate.md).
+            "perf": "(perf stat unavailable on this platform -- no `perf` "
+                    "command; the objdump instruction count and "
+                    "disassembly above substitute for it)"
+            if not self.perf.available()
+            else bench.evidence(),
             "mca": evidence["mca"].summary()
             if evidence["mca"]
-            else "(llvm-mca unavailable -- install llvm tools for this data)",
+            else "(llvm-mca unavailable on this platform -- not installed; "
+                 "the objdump instruction count above substitutes for it)",
             "target": self.target,
         }
 
     def _ask_judge(self, label, explanation, evidence, tests, bench,
-                   improvement) -> tuple[bool, str] | None:
+                   improvement, candidate_dis=None) -> tuple[bool, str] | None:
         prompt = load_prompt("review.txt").format(
             function=self.function,
             explanation=explanation,
-            diff="(diff artifacts written under .arm-optimize)",
+            diff=self._disassembly_diff(evidence.get("disassembly"),
+                                        candidate_dis),
             tests_result="PASS" if tests.success else "FAIL",
             benchmark=bench.evidence(),
             improvement_percent=f"{improvement:+.3f}%",
