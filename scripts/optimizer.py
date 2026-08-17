@@ -373,7 +373,12 @@ class Optimizer:
 
                 # ABI static check first: never even compile a broken ABI.
                 if self.abi_check:
-                    abi_warnings = check_function(candidate_src)
+                    # Pass the function being replaced: NZCV is a return value
+                    # for the carry-ABI functions here, and only a comparison
+                    # against the original can show that a candidate moved a
+                    # flag-setting instruction into a live flag range.
+                    abi_warnings = check_function(candidate_src,
+                                                  original=current_source)
                     abi_errors = [w for w in abi_warnings if w.severity == "error"]
                     if abi_errors:
                         for w in abi_errors:

@@ -18,23 +18,34 @@ register -- the callee (or the kernel) may destroy x0-x18. A callee-saved
 register holding a value that is never live across such a point is pure
 save/restore overhead and is the transformation opportunity.
 
-Two things must be modelled correctly or every number below is wrong:
+Three things must be modelled correctly or every number below is wrong:
 
-* **Macros.** ``src/defs.S`` defines ``adr_l``/``ldr_l``/``str_l``/``cb``
-  and the syscall helpers; 82 files use them ~500 times. ``ldr_l`` writes a
-  hidden scratch register (x9 by default) and ``SCWISVC`` expands to
-  ``svc``. Without expansion, liveness misses those writes and syscall
-  sites look like straight-line code.
+* **Local labels.** All 393 ``.L...`` labels in ``src/`` are branch targets.
+  Miss them and back edges vanish, no loop is ever detected, and liveness
+  is computed over straight-line code that does not exist. This is handled
+  in ``asmparse``, which ``abi.py`` shares.
+* **Macros.** ``src/defs.S`` defines 13 macros used ~500 times across 82
+  files, and subsystems define more. ``ldr_l`` writes a hidden scratch
+  register (x9 by default) and ``SCWISVC`` expands to ``svc``. Without
+  expansion, liveness misses those writes and syscall sites look like
+  straight-line code.
 * **Call clobbers.** ``bl``/``blr``/``svc`` destroy the caller-saved GPRs.
   Without that, values look safe in x0-x18 across a call and the analyzer
   would report callee-saved registers as removable when they are load
   bearing.
 
+**The unit of analysis is a region, not a ``.global`` symbol.** Any label
+reached by ``bl`` is analysable in its own right. This matters: AES-GCM
+never calls the exported ``ghash`` symbol -- ``encrypt.S`` and ``decrypt.S``
+both ``bl .Lgcm_ghash_run``, a file-local label in ``gcm/data.S``. Ranking
+by call sites keeps a dead ``.global`` from being mistaken for the hot path.
+
 Usage::
 
-    python3 scripts/regpressure.py                    # ranked report
-    python3 scripts/regpressure.py --function ghash   # one function
-    python3 scripts/regpressure.py --json             # machine-readable
+    python3 scripts/regpressure.py                          # ranked report
+    python3 scripts/regpressure.py --function .Lgcm_ghash_run
+    python3 scripts/regpressure.py --callers .Lgcm_ghash_run
+    python3 scripts/regpressure.py --json                   # machine-readable
 """
 
 from __future__ import annotations
@@ -47,198 +58,43 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
 from abi import (  # noqa: E402
     COND_BRANCH,
     LOAD_MNEMONICS,
+    LOAD_PAIR,
     NO_DEST,
     STORE_MNEMONICS,
+    STORE_PAIR,
+    analyse_flags,
+    back_edges,
+    build_cfg,
+    defines_flags,
+    uses_flags,
+)
+from asmparse import (  # noqa: E402
+    ROOT,
     Instruction,
+    Region,
+    SourceIndex,
+    index_source,
+    parse_instructions,
+    expand_macros,
     strip_comment,
 )
-
-ROOT = HERE.parent
 
 # AAPCS64: x0-x17 are caller-saved (x18 is the platform register, reserved
 # on Darwin). A value live across a call must be in x19-x28.
 CALLER_SAVED = {f"x{i}" for i in range(0, 18)}
 CALLEE_SAVED = {f"x{i}" for i in range(19, 29)}
+# SIMD: v0-v7 and v16-v31 are caller-saved; v8-v15 are callee-saved, and only
+# their low 64 bits at that.
+CALLER_SAVED_SIMD = ({f"v{i}" for i in range(0, 8)}
+                     | {f"v{i}" for i in range(16, 32)})
 
-# Files that are data tables or shared headers, not functions.
-SKIP_FILES = {
-    "config.S", "defs.S", "embedded.S", "cert_data.S", "h2_huffman_table.S",
-}
-
-GLOBAL_RE = re.compile(r"(?m)^[ \t]*\.globa?l[ \t]+([A-Za-z0-9_.]+)")
 REG_RE = re.compile(r"\b(x\d+|w\d+|v\d+|d\d+|q\d+|s\d+|b\d+|h\d+|sp|xzr|wzr)\b")
-
-
-# ----------------------------------------------------------------------
-# Macro expansion
-# ----------------------------------------------------------------------
-
-@dataclass
-class Macro:
-    name: str
-    params: list[tuple[str, str | None]]  # (name, default)
-    body: list[str]
-
-
-def parse_macros(defs_text: str, *, linux: bool = False) -> dict[str, Macro]:
-    """Parse ``.macro`` definitions from defs.S for one platform.
-
-    defs.S defines each syscall/relocation helper twice inside an
-    ``#ifdef __linux__`` / ``#else``; we keep only the active branch, since
-    the two differ in ways that matter (Linux puts the syscall number in
-    x8, Darwin in x16).
-    """
-    macros: dict[str, Macro] = {}
-    active = True
-    branch: list[bool] = []
-    current: Macro | None = None
-
-    for raw in defs_text.splitlines():
-        line = raw.strip()
-
-        if line.startswith("#ifdef __linux__"):
-            branch.append(linux)
-            active = all(branch)
-            continue
-        if line.startswith("#else") and branch:
-            branch[-1] = not branch[-1]
-            active = all(branch)
-            continue
-        if line.startswith("#endif") and branch:
-            branch.pop()
-            active = all(branch)
-            continue
-
-        if current is not None:
-            if line.startswith(".endm"):
-                if active:
-                    macros[current.name] = current
-                current = None
-            else:
-                current.body.append(raw)
-            continue
-
-        if line.startswith(".macro"):
-            decl = line[len(".macro"):].strip()
-            # ".macro adr_l, reg, sym" and ".macro ldr_l reg, sym, scratch=x9"
-            head, _, rest = decl.partition(" ")
-            name = head.rstrip(",")
-            params: list[tuple[str, str | None]] = []
-            for part in rest.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                pname, eq, default = part.partition("=")
-                params.append((pname.strip(), default.strip() if eq else None))
-            current = Macro(name=name, params=params, body=[])
-
-    return macros
-
-
-def expand_macros(text: str, macros: dict[str, Macro], depth: int = 4) -> str:
-    """Recursively expand macro invocations in a function body."""
-    for _ in range(depth):
-        out: list[str] = []
-        changed = False
-        for raw in text.splitlines():
-            stripped = strip_comment(raw)
-            if not stripped:
-                out.append(raw)
-                continue
-            head, _, argtext = stripped.partition(" ")
-            macro = macros.get(head.rstrip(","))
-            if macro is None:
-                out.append(raw)
-                continue
-
-            args = [a.strip() for a in argtext.split(",") if a.strip()]
-            bindings: dict[str, str] = {}
-            for i, (pname, default) in enumerate(macro.params):
-                if i < len(args):
-                    bindings[pname] = args[i]
-                elif default is not None:
-                    bindings[pname] = default
-                else:
-                    bindings[pname] = ""
-
-            for body_line in macro.body:
-                expanded = body_line
-                # Longest parameter names first so \src does not eat \scratch.
-                for pname in sorted(bindings, key=len, reverse=True):
-                    expanded = expanded.replace("\\" + pname, bindings[pname])
-                out.append(expanded)
-            changed = True
-
-        text = "\n".join(out)
-        if not changed:
-            break
-    return text
-
-
-# ----------------------------------------------------------------------
-# Parsing
-# ----------------------------------------------------------------------
-#
-# This does not reuse ``abi.parse_instructions``: that function drops every
-# line beginning with "." before it looks for a label, so the 393 ``.L...``
-# local labels in src/ are never recorded. Branch targets to them resolve
-# to nothing, back edges disappear and no loop is ever detected -- which
-# makes liveness (and abi.py's own "restored on every path" reasoning)
-# unsound for most functions here. Labels are matched before directives.
-
-LABEL_RE = re.compile(r"^(\.?[A-Za-z0-9_.$]+):\s*(.*)$")
-
-
-def parse_instructions(source: str) -> tuple[list[Instruction], dict[str, int]]:
-    """Parse a function body into instructions and a label -> index map."""
-    instructions: list[Instruction] = []
-    labels: dict[str, int] = {}
-
-    for lineno, raw in enumerate(source.splitlines(), start=1):
-        line = strip_comment(raw)
-        if not line:
-            continue
-        # Labels first -- ".Lfoo:" is a label, ".align 2" is a directive.
-        match = LABEL_RE.match(line)
-        if match and not re.match(r"^\.(align|text|data|globa?l|equ|byte|word|"
-                                  r"quad|section|macro|endm|asciz|ascii|space|"
-                                  r"fill|zero|rept|endr|set|type|size)\b", line):
-            labels[match.group(1)] = len(instructions)
-            line = match.group(2).strip()
-            if not line:
-                continue
-        if line.startswith("#") or line.startswith("."):
-            continue
-        parts = line.split(None, 1)
-        mnemonic = parts[0]
-        operands = []
-        if len(parts) > 1:
-            operands = [op.strip() for op in parts[1].split(",")]
-        instructions.append(Instruction(lineno, raw, mnemonic, operands))
-
-    return instructions, labels
-
-
-def resolve_target(target: str, labels: dict[str, int], current: int) -> int | None:
-    """Resolve a branch target, including numeric local labels (2b / 3f)."""
-    target = target.strip()
-    if target[:-1].isdigit() and target[-1:] in ("b", "f"):
-        name, direction = target[:-1], target[-1]
-        best = None
-        for key, value in labels.items():
-            if key != name:
-                continue
-            if direction == "b" and value <= current:
-                best = value if best is None else max(best, value)
-            elif direction == "f" and value > current:
-                best = value if best is None else min(best, value)
-        return best
-    return labels.get(target)
 
 
 # ----------------------------------------------------------------------
@@ -262,7 +118,25 @@ def regs_in(text: str) -> set[str]:
     return {norm(m.group(1)) for m in REG_RE.finditer(text)}
 
 
-def def_use(insn) -> tuple[set[str], set[str], bool]:
+_WRITEBACK_RE = re.compile(r"\[\s*(\w+)\s*(?:,[^\]]*)?\]\s*!|\[\s*(\w+)\s*\]\s*,")
+
+
+def _writeback_regs(operands: list[str]) -> set[str]:
+    """Base registers updated by pre-/post-indexed addressing.
+
+    ``ld1 {v0.16b}, [x27], #16`` writes x27 as well as v0; missing that makes
+    the pointer look loop-invariant.
+    """
+    out: set[str] = set()
+    for operand in operands:
+        for match in _WRITEBACK_RE.finditer(operand):
+            base = match.group(1) or match.group(2)
+            if base:
+                out |= regs_in(base)
+    return out
+
+
+def def_use(insn: Instruction) -> tuple[set[str], set[str], bool]:
     """Return (defs, uses, is_call_site) for one instruction.
 
     ``abi.py`` deliberately lumps all operand registers together -- that is
@@ -275,77 +149,79 @@ def def_use(insn) -> tuple[set[str], set[str], bool]:
     uses: set[str] = set()
     call = False
 
+    def done() -> tuple[set[str], set[str], bool]:
+        for discard in ("xzr", "wzr", "sp"):
+            defs.discard(discard)
+            uses.discard(discard)
+        return defs, uses, call
+
     if mnemonic in ("bl", "blr", "svc"):
-        # A call or syscall destroys the caller-saved GPRs. Modelling the
-        # clobber as a *definition* is what makes a value live across the
-        # call show up as requiring a callee-saved register.
+        # A call or syscall destroys the caller-saved GPRs (and the
+        # caller-saved SIMD registers). Modelling the clobber as a
+        # *definition* is what makes a value live across the call show up as
+        # requiring a callee-saved register.
         call = True
-        defs |= CALLER_SAVED | {"x30"}
+        defs |= CALLER_SAVED | CALLER_SAVED_SIMD | {"x30"}
         if mnemonic == "blr" and operands:
             uses |= regs_in(operands[0])
-        return defs, uses, call
+        return done()
 
     if mnemonic == "ret":
         uses |= {"x30", "x0"} if not operands else regs_in(operands[0]) | {"x0"}
-        return defs, uses, call
+        return done()
 
     if mnemonic == "br":
         if operands:
             uses |= regs_in(operands[0])
-        return defs, uses, call
+        return done()
 
     if mnemonic in COND_BRANCH:
         if mnemonic in ("cbz", "cbnz", "tbz", "tbnz") and operands:
             uses |= regs_in(operands[0])
-        return defs, uses, call
+        return done()
 
     if mnemonic in LOAD_MNEMONICS:
-        n_dest = 2 if mnemonic in ("ldp", "ldnp", "ldxp", "ldaxp") else 1
+        n_dest = 2 if mnemonic in LOAD_PAIR else 1
         if operands and operands[0].startswith("{"):
             defs |= regs_in(operands[0])
             for operand in operands[1:]:
                 uses |= regs_in(operand)
-            return defs, uses, call
-        for operand in operands[:n_dest]:
-            defs |= regs_in(operand)
-        for operand in operands[n_dest:]:
-            uses |= regs_in(operand)
-        return defs, uses, call
+        else:
+            for operand in operands[:n_dest]:
+                defs |= regs_in(operand)
+            for operand in operands[n_dest:]:
+                uses |= regs_in(operand)
+        defs |= _writeback_regs(operands)
+        return done()
 
     if mnemonic in STORE_MNEMONICS:
-        n_src = 2 if mnemonic in ("stp", "stnp") else 1
-        for operand in operands[:n_src]:
+        for operand in operands:
             uses |= regs_in(operand)
-        for operand in operands[n_src:]:
-            uses |= regs_in(operand)
-        return defs, uses, call
+        defs |= _writeback_regs(operands)
+        return done()
 
     if mnemonic in NO_DEST:
         for operand in operands:
             uses |= regs_in(operand)
-        return defs, uses, call
+        return done()
 
     if mnemonic in ("movz", "movn", "adr", "adrp"):
         if operands:
             defs |= regs_in(operands[0])
-        return defs, uses, call
+        return done()
 
     if mnemonic == "movk":
         if operands:
             defs |= regs_in(operands[0])
             uses |= regs_in(operands[0])
-        return defs, uses, call
+        return done()
 
     # Default ALU/SIMD shape: first operand is the destination.
     if operands:
         defs |= regs_in(operands[0])
         for operand in operands[1:]:
             uses |= regs_in(operand)
-
-    for discard in ("xzr", "wzr", "sp"):
-        defs.discard(discard)
-        uses.discard(discard)
-    return defs, uses, call
+    return done()
 
 
 # ----------------------------------------------------------------------
@@ -359,6 +235,7 @@ class FunctionInfo:
     insns: int = 0
     peak: int = 0
     peak_loop: int = 0
+    loops: int = 0
     callee_used: list[str] = field(default_factory=list)
     callee_justified: list[str] = field(default_factory=list)
     save_restore: int = 0
@@ -368,14 +245,41 @@ class FunctionInfo:
     movs: int = 0
     calls: int = 0
     uses_flags_abi: bool = False
+    flags_live_at_ret: bool = False
+    flag_writers: int = 0
+    flag_readers: int = 0
+    # Region identity -- a .global symbol nothing calls is not the hot path.
+    is_global: bool = True
+    is_local_label: bool = False
+    enclosing: str | None = None
+    call_sites: int = 0
+    caller_names: list[str] = field(default_factory=list)
+    address_taken: bool = False
+    # Registers this region leaves clobbered for its caller.
+    clobbers_direct: set[str] = field(default_factory=set)
+    clobbers: set[str] = field(default_factory=set)
+    preserved: set[str] = field(default_factory=set)
+    callees: list[str] = field(default_factory=list)
 
     @property
     def unjustified(self) -> list[str]:
-        """Callee-saved registers never holding a value live across a call."""
-        return sorted(set(self.callee_used) - set(self.callee_justified))
+        """Callee-saved registers this region pays to preserve but need not.
+
+        Restricted to registers the region actually spills and reloads. A
+        private region like ``.Lgcm_ghash_run`` *reads* x27 and x28 -- they
+        are its input contract, set up by its callers -- without saving them;
+        there is no prologue to recover there, and reporting one would point
+        a transformation at code that does not exist.
+        """
+        candidates = set(self.callee_used) & self.preserved
+        return sorted(candidates - set(self.callee_justified),
+                      key=lambda r: int(r[1:]))
 
     def opportunity(self) -> tuple[str, str]:
         """(rank, reason) -- why this function is or is not interesting."""
+        if self.is_global and self.call_sites == 0 and self.is_reachable_dead():
+            return ("NONE", "no call site anywhere in src/ -- not on any hot "
+                            "path this server executes")
         if self.unjustified and self.save_restore:
             return ("HIGH",
                     f"{len(self.unjustified)} callee-saved reg(s) "
@@ -393,44 +297,36 @@ class FunctionInfo:
                            "all justified by live-across-call values")
         return ("NONE", "register usage already tight")
 
+    def is_reachable_dead(self) -> bool:
+        """Exported, but nothing in this tree calls it.
 
-def analyse(name: str, path: Path, body: str,
-            macros: dict[str, Macro]) -> FunctionInfo | None:
-    expanded = expand_macros(body, macros)
+        Not proof it is dead -- ``_main`` and the exported entry points are
+        called by the loader or by tests -- but it is the signal that stops a
+        ``.global`` from shadowing the local label that does the real work.
+        """
+        return self.name not in ENTRY_POINTS and not self.address_taken
+
+
+# Symbols reached from outside src/: the process entry point and the C test
+# harness. Everything else with zero in-tree call sites is not on a hot path.
+ENTRY_POINTS = {"_start", "_main", "main"}
+
+
+def analyse(region: Region, index: SourceIndex) -> FunctionInfo | None:
+    body = index.analysis_body(region)
+    expanded = expand_macros(body, index.macros)
     insns, labels = parse_instructions(expanded)
     if not insns:
         return None
 
     n = len(insns)
     du = [def_use(i) for i in insns]
-
-    # --- instruction-level CFG ---------------------------------------
-    succ: list[list[int]] = [[] for _ in range(n)]
-    for i, insn in enumerate(insns):
-        mnemonic = insn.mnemonic
-        if mnemonic in ("ret", "br"):
-            continue
-        if mnemonic == "b":
-            target = (resolve_target(insn.operands[0], labels, i)
-                      if insn.operands else None)
-            if target is not None:
-                succ[i].append(target)
-            continue
-        if mnemonic in COND_BRANCH:
-            if i + 1 < n:
-                succ[i].append(i + 1)
-            if insn.operands:
-                target = resolve_target(insn.operands[-1], labels, i)
-                if target is not None:
-                    succ[i].append(target)
-            continue
-        if i + 1 < n:
-            succ[i].append(i + 1)
+    succ = build_cfg(insns, labels)
 
     # --- backward liveness to fixpoint --------------------------------
     live_in: list[set[str]] = [set() for _ in range(n)]
     live_out: list[set[str]] = [set() for _ in range(n)]
-    for _ in range(500):
+    for _ in range(n + 2):
         changed = False
         for i in range(n - 1, -1, -1):
             out: set[str] = set()
@@ -445,30 +341,40 @@ def analyse(name: str, path: Path, body: str,
             break
 
     # --- loops (back edges) -------------------------------------------
+    edges = back_edges(succ)
     loop_insns: set[int] = set()
-    for i in range(n):
-        for s in succ[i]:
-            if s <= i:
-                loop_insns |= set(range(s, i + 1))
+    for source, target in edges:
+        loop_insns |= set(range(target, source + 1))
 
     def gprs(regs: set[str]) -> set[str]:
         return {r for r in regs if re.fullmatch(r"x\d+", r or "")}
 
-    info = FunctionInfo(name=name, file=str(path.relative_to(ROOT)), insns=n)
+    info = FunctionInfo(name=region.name, file=region.rel, insns=n)
+    info.is_global = region.is_global
+    info.is_local_label = region.is_local_label
+    info.enclosing = region.enclosing
+    info.call_sites = index.call_sites(region.name)
+    info.caller_names = sorted(name for name, _f in
+                               index.callers.get(region.name, []))
+    info.address_taken = index.referenced(region.name)
+    info.callees = sorted(index.calls.get(region.name, set()))
+    info.loops = len(edges)
     info.peak = max((len(gprs(live_out[i])) for i in range(n)), default=0)
     info.peak_loop = max((len(gprs(live_out[i])) for i in loop_insns), default=0)
 
-    used: set[str] = set()
-    for defs, uses, _ in du:
-        used |= defs | uses
     # A call's modelled clobber must not count as "this function uses x5".
     explicit: set[str] = set()
-    for i, insn in enumerate(insns):
+    written: set[str] = set()
+    for i in range(n):
         if du[i][2]:
             continue
         explicit |= du[i][0] | du[i][1]
+        written |= du[i][0]
     info.callee_used = sorted(gprs(explicit) & CALLEE_SAVED,
                               key=lambda r: int(r[1:]))
+    if any(d[2] for d in du):
+        written |= {"x30"}
+    info.clobbers_direct = written
 
     # Callee-saved registers actually justified: live across a call site.
     justified: set[str] = set()
@@ -477,6 +383,13 @@ def analyse(name: str, path: Path, body: str,
             justified |= gprs(live_out[i]) & CALLEE_SAVED
     info.callee_justified = sorted(justified, key=lambda r: int(r[1:]))
     info.calls = sum(1 for d in du if d[2])
+
+    # --- NZCV ---------------------------------------------------------
+    info.uses_flags_abi = region.carry_abi()
+    flags = analyse_flags(insns, succ, info.uses_flags_abi)
+    info.flags_live_at_ret = flags.live_at_ret()
+    info.flag_writers = sum(1 for i in insns if defines_flags(i))
+    info.flag_readers = sum(1 for i in insns if uses_flags(i))
 
     # --- stack frame and preservation traffic -------------------------
     for insn in insns:
@@ -492,6 +405,7 @@ def analyse(name: str, path: Path, body: str,
                 and re.search(r"\b(x(19|2[0-8])|x29|x30|d([89]|1[0-5]))\b", text)):
             info.save_restore += 1
 
+    info.preserved = _preserved_registers(insns)
     info.loads = sum(1 for i in insns if i.mnemonic in LOAD_MNEMONICS)
     info.stores = sum(1 for i in insns if i.mnemonic in STORE_MNEMONICS)
     info.movs = sum(
@@ -499,34 +413,77 @@ def analyse(name: str, path: Path, body: str,
         if i.mnemonic == "mov" and len(i.operands) == 2
         and re.fullmatch(r"[xw]\d+", i.operands[1].strip() or "-")
     )
-    info.uses_flags_abi = bool(
-        re.search(r"carry (set|clear)", body, re.I)
-    )
     return info
 
 
-def split_functions(text: str) -> list[tuple[str, str]]:
-    """Split a source file into (name, text) from each .global to the next."""
-    marks = [(m.start(), m.group(1)) for m in GLOBAL_RE.finditer(text)]
-    out = []
-    for idx, (pos, name) in enumerate(marks):
-        end = marks[idx + 1][0] if idx + 1 < len(marks) else len(text)
-        out.append((name, text[pos:end]))
-    return out
+def _preserved_registers(insns: list[Instruction]) -> set[str]:
+    """Registers this region both spills to the stack and reloads.
 
-
-def collect(root: Path, linux: bool = False) -> list[FunctionInfo]:
-    macros = parse_macros((root / "src" / "defs.S").read_text(), linux=linux)
-    rows: list[FunctionInfo] = []
-    for path in sorted((root / "src").rglob("*.S")):
-        if path.name in SKIP_FILES:
+    Used to subtract the prologue/epilogue from the clobber set: a register
+    that is saved and restored is not clobbered as far as the caller can tell.
+    """
+    saved: set[str] = set()
+    restored: set[str] = set()
+    for insn in insns:
+        text = strip_comment(insn.text)
+        if "sp" not in text:
             continue
-        text = path.read_text(errors="replace")
-        for name, body in split_functions(text):
-            info = analyse(name, path, body, macros)
-            if info is not None:
-                rows.append(info)
-    return rows
+        if insn.mnemonic in STORE_MNEMONICS:
+            n_src = 2 if insn.mnemonic in STORE_PAIR else 1
+            for operand in insn.operands[:n_src]:
+                saved |= regs_in(operand)
+        elif insn.mnemonic in LOAD_MNEMONICS:
+            n_dest = 2 if insn.mnemonic in LOAD_PAIR else 1
+            for operand in insn.operands[:n_dest]:
+                restored |= regs_in(operand)
+    return saved & restored
+
+
+def resolve_clobbers(rows: dict[str, FunctionInfo], index: SourceIndex) -> None:
+    """Propagate clobber sets along call edges to a fixpoint.
+
+    A ``// Clobbered Registers:`` header is a caller-facing contract, so what
+    it must describe is everything the call destroys -- including what the
+    callees destroy. ``p256_fe_mul`` writes barely a dozen registers itself,
+    but calling ``p256_bn_mul`` and ``p256_reduce`` costs the caller x0-x17.
+    An unresolvable callee (an extern, or an indirect ``blr``) is treated as
+    clobbering the whole caller-saved set, which is the safe direction.
+    """
+    for info in rows.values():
+        info.clobbers = set(info.clobbers_direct)
+    for _ in range(len(rows) + 2):
+        changed = False
+        for name, info in rows.items():
+            new = set(info.clobbers_direct)
+            edges = (index.calls.get(name, set())
+                     | index.tail_calls.get(name, set()))
+            for callee in edges:
+                target = rows.get(callee)
+                if target is None:
+                    new |= CALLER_SAVED | CALLER_SAVED_SIMD | {"x30"}
+                else:
+                    new |= target.clobbers - target.preserved
+            new -= info.preserved
+            if new != info.clobbers:
+                info.clobbers = new
+                changed = True
+        if not changed:
+            break
+
+
+def collect(root: Path | None = None,
+            linux: bool | None = None) -> tuple[list[FunctionInfo], SourceIndex]:
+    index = index_source(root, linux=linux)
+    rows: dict[str, FunctionInfo] = {}
+    ordered: list[FunctionInfo] = []
+    for region in index.regions:
+        info = analyse(region, index)
+        if info is None:
+            continue
+        ordered.append(info)
+        rows.setdefault(region.name, info)
+    resolve_clobbers(rows, index)
+    return ordered, index
 
 
 # ----------------------------------------------------------------------
@@ -542,50 +499,126 @@ def report(rows: list[FunctionInfo]) -> None:
         key=lambda r: (RANK_ORDER[r.opportunity()[0]], -r.save_restore, -r.peak),
     )
     header = (f"{'Rank':<7}{'Function':<34}{'Peak':>5}{'Loop':>5}{'Save':>5}"
-              f"{'Just':>5}{'S/R':>5}{'Stack':>7}  Opportunity")
+              f"{'Just':>5}{'S/R':>5}{'Call':>5}{'Stack':>7}  Opportunity")
     print(header)
-    print("-" * 120)
+    print("-" * 128)
     for r in rows:
         rank, reason = r.opportunity()
         if rank == "NONE":
             continue
         print(f"{rank:<7}{r.name:<34}{r.peak:>5}{r.peak_loop:>5}"
               f"{len(r.callee_used):>5}{len(r.callee_justified):>5}"
-              f"{r.save_restore:>5}{r.frame:>6}B  {reason}")
+              f"{r.save_restore:>5}{r.call_sites:>5}{r.frame:>6}B  {reason}")
 
     print()
-    print("=" * 120)
+    print("=" * 128)
     print("AGGREGATE")
-    print("=" * 120)
+    print("=" * 128)
     total_sr = sum(r.save_restore for r in rows)
     unjust = [r for r in rows if r.unjustified]
-    print(f"functions analysed                        : {len(rows)}")
+    local = [r for r in rows if not r.is_global]
+    print(f"regions analysed                          : {len(rows)}")
+    print(f"  ...reached only via a local .L label    : {len(local)}")
     print(f"peak GPR pressure (max / median)          : "
           f"{max(r.peak for r in rows)} / "
           f"{sorted(r.peak for r in rows)[len(rows) // 2]}")
     print(f"functions with peak >= 24 (spill risk)    : "
           f"{sum(1 for r in rows if r.peak >= 24)}")
+    print(f"regions containing a loop                 : "
+          f"{sum(1 for r in rows if r.loops)}")
     print(f"total save/restore instructions           : {total_sr}")
     print(f"functions preserving callee-saved GPRs    : "
           f"{sum(1 for r in rows if r.callee_used)}")
     print(f"  ...with a register never live across a call: {len(unjust)}")
-    print(f"functions using the carry-flag return ABI : "
+    print(f"regions using the carry-flag return ABI   : "
           f"{sum(1 for r in rows if r.uses_flags_abi)}")
+    print(f"  ...with NZCV live at ret                : "
+          f"{sum(1 for r in rows if r.flags_live_at_ret)}")
+    print(f"exported symbols with no in-tree caller   : "
+          f"{sum(1 for r in rows if r.is_global and r.call_sites == 0)}")
+    print(f"  ...and whose address is never taken     : "
+          f"{sum(1 for r in rows if r.is_global and r.call_sites == 0 and r.is_reachable_dead())}")
     print(f"register-to-register movs                 : "
           f"{sum(r.movs for r in rows)}")
 
 
+def detail(r: FunctionInfo, index: SourceIndex) -> None:
+    rank, reason = r.opportunity()
+    kind = ("exported symbol" if r.is_global
+            else f"private region (local label{', nested in ' + r.enclosing if r.enclosing else ''})")
+    print(f"{r.name}  ({r.file})")
+    print(f"  kind                    : {kind}")
+    print(f"  call sites in src/      : {r.call_sites}"
+          + (f"  ({', '.join(r.caller_names)})" if r.caller_names else ""))
+    print(f"  instructions            : {r.insns}")
+    print(f"  loops (back edges)      : {r.loops}")
+    print(f"  peak live GPRs          : {r.peak}  (in loops: {r.peak_loop})")
+    print(f"  callee-saved used       : {', '.join(r.callee_used) or 'none'}")
+    print(f"  ...justified across call: {', '.join(r.callee_justified) or 'none'}")
+    print(f"  ...unjustified          : {', '.join(r.unjustified) or 'none'}")
+    print(f"  save/restore insns      : {r.save_restore}")
+    print(f"  stack frame             : {r.frame} bytes")
+    print(f"  loads / stores          : {r.loads} / {r.stores}")
+    print(f"  reg-to-reg movs         : {r.movs}")
+    print(f"  call sites out          : {r.calls}"
+          + (f"  ({', '.join(r.callees)})" if r.callees else ""))
+    print(f"  carry-flag return ABI   : {'yes' if r.uses_flags_abi else 'no'}")
+    print(f"  NZCV live at ret        : {'yes' if r.flags_live_at_ret else 'no'}")
+    print(f"  NZCV writers / readers  : {r.flag_writers} / {r.flag_readers}")
+    print(f"  clobbers (transitive)   : {fmt_regs(r.clobbers)}")
+    print(f"  preserved (saved+restored): {fmt_regs(r.preserved) or 'none'}")
+    print(f"  opportunity             : {rank} -- {reason}")
+
+
+def fmt_regs(regs: set[str]) -> str:
+    """Collapse a register set into ranges: {x0..x5, x9} -> 'x0-x5, x9'."""
+    out: list[str] = []
+    for prefix in ("x", "v"):
+        nums = sorted(int(r[1:]) for r in regs
+                      if re.fullmatch(prefix + r"\d+", r))
+        start = prev = None
+        for num in nums + [None]:
+            if start is None:
+                start = prev = num
+                continue
+            if num is not None and num == prev + 1:
+                prev = num
+                continue
+            out.append(f"{prefix}{start}" if start == prev
+                       else f"{prefix}{start}-{prefix}{prev}")
+            start = prev = num
+    return ", ".join(out)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--function", help="report a single function in detail")
+    parser.add_argument("--function", help="report a single region in detail")
+    parser.add_argument("--callers",
+                        help="report a region together with its real callers")
     parser.add_argument("--json", action="store_true", help="machine-readable")
     parser.add_argument("--linux", action="store_true",
-                        help="expand the Linux syscall macros (default: Darwin)")
+                        help="expand the Linux syscall macros (default: host)")
     args = parser.parse_args()
 
-    rows = collect(args.root, linux=args.linux)
+    rows, index = collect(args.root, linux=True if args.linux else None)
+
+    if args.callers:
+        target = next((r for r in rows if r.name == args.callers), None)
+        if target is None:
+            raise SystemExit(f"region {args.callers!r} not found")
+        detail(target, index)
+        print()
+        print(f"--- real caller context ({len(target.caller_names)} caller(s)) ---")
+        for name in target.caller_names:
+            caller = next((r for r in rows if r.name == name), None)
+            if caller is None:
+                continue
+            print()
+            detail(caller, index)
+        return
 
     if args.function:
         rows = [r for r in rows if r.name == args.function]
@@ -595,6 +628,10 @@ def main() -> None:
     if args.json:
         print(json.dumps([{
             "function": r.name, "file": r.file, "instructions": r.insns,
+            "global": r.is_global, "local_label": r.is_local_label,
+            "enclosing": r.enclosing,
+            "call_sites": r.call_sites, "callers": r.caller_names,
+            "loops": r.loops,
             "peak_pressure": r.peak, "peak_pressure_loop": r.peak_loop,
             "callee_saved_used": r.callee_used,
             "callee_saved_justified": r.callee_justified,
@@ -602,27 +639,16 @@ def main() -> None:
             "save_restore_insns": r.save_restore, "stack_bytes": r.frame,
             "loads": r.loads, "stores": r.stores, "movs": r.movs,
             "calls": r.calls, "carry_flag_abi": r.uses_flags_abi,
+            "flags_live_at_ret": r.flags_live_at_ret,
+            "clobbers": fmt_regs(r.clobbers),
+            "preserved": fmt_regs(r.preserved),
             "opportunity": r.opportunity()[0],
             "reason": r.opportunity()[1],
         } for r in rows], indent=2))
         return
 
     if args.function:
-        r = rows[0]
-        rank, reason = r.opportunity()
-        print(f"{r.name}  ({r.file})")
-        print(f"  instructions            : {r.insns}")
-        print(f"  peak live GPRs          : {r.peak}  (in loops: {r.peak_loop})")
-        print(f"  callee-saved used       : {', '.join(r.callee_used) or 'none'}")
-        print(f"  ...justified across call: {', '.join(r.callee_justified) or 'none'}")
-        print(f"  ...unjustified          : {', '.join(r.unjustified) or 'none'}")
-        print(f"  save/restore insns      : {r.save_restore}")
-        print(f"  stack frame             : {r.frame} bytes")
-        print(f"  loads / stores          : {r.loads} / {r.stores}")
-        print(f"  reg-to-reg movs         : {r.movs}")
-        print(f"  call sites              : {r.calls}")
-        print(f"  carry-flag return ABI   : {'yes' if r.uses_flags_abi else 'no'}")
-        print(f"  opportunity             : {rank} -- {reason}")
+        detail(rows[0], index)
         return
 
     report(rows)
