@@ -207,7 +207,7 @@ x25519_fe_sqr:
 //   none (void) - out is written to [x0]; out may alias in
 //
 // Clobbered Registers:
-//   x3-x18, NZCV (x19, x28 are saved/restored)
+//   x3-x7, x9-x17, NZCV (x19, x28 are saved/restored)
 //
 // Stack Usage:
 //   32 bytes (x19, x28)

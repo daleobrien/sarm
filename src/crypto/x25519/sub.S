@@ -240,7 +240,7 @@ x25519_fe_sub:
 //   none (void) - out is written to [x0]; out may alias a or b
 //
 // Clobbered Registers:
-//   x3-x18, NZCV (x19-x28 are saved/restored)
+//   x3-x17, NZCV (x19-x28 are saved/restored)
 //
 // Stack Usage:
 //   96 bytes (x19-x28)

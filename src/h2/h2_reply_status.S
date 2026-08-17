@@ -16,7 +16,7 @@
 //   (none — write failures are ignored; the caller closes the stream)
 //
 // Clobbered Registers:
-//   x0-x6, x9-x14, x19-x22 (saved/restored), x30
+//   x0-x6, x9, x19-x22 (saved/restored)
 //
 // Stack Usage:
 //   48 bytes: stp x19, x20, [sp, #-48]!; stp x21, x22, [sp, #16];

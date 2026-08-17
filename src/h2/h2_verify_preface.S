@@ -20,7 +20,7 @@
 //     errno                  read() failed (ECONNRESET, ETIMEDOUT, ...)
 //
 // Clobbered Registers:
-//   x0-x8, x9 (via str_l), x19, x20, x21, x29, x30
+//   x0-x3, x9 (via str_l), x16, x21
 //
 // Stack Usage:
 //   32 bytes: stp x29, x30, [sp, #-32]!

@@ -21,7 +21,7 @@
 //   none (void) - the context is updated in place
 //
 // Clobbered Registers:
-//   x3, x4, x5, x6, w7, plus everything `sha256` clobbers
+//   x0, x3, x4, x5, x6, w7, plus everything `sha256` clobbers
 //   (x1-x4, v0-v7, v16, v18, v19, NZCV)
 //
 // Stack Usage:

@@ -349,7 +349,7 @@ x25519_fe_sqr_times:
 //   none (void) - out is written to [x0]; out may alias in
 //
 // Clobbered Registers:
-//   x0-x18, NZCV
+//   x1-x7, x9-x17
 //
 // Stack Usage:
 //   none (x25519_fe_sqr_times allocates 32 bytes)

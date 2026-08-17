@@ -31,7 +31,7 @@
 //   x2 - 16-byte ciphertext stored to [x2]; no register return value
 //
 // Clobbered Registers:
-//   x0,x1,x2,v0..v11
+//   x1, v0..v11
 //
 // Stack Usage:
 //   0 bytes — leaf function, no stack frame

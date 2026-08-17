@@ -23,7 +23,7 @@
 //          crypto_random_bytes)
 //
 // Clobbered Registers:
-//   x0-x15, x19, x30 (x19, x30 saved/restored), NZCV
+//   x0-x17, NZCV (x19, x30 saved/restored)
 //
 // Stack Usage:
 //   48 bytes: x19, x30, and a 32-byte ephemeral scalar buffer

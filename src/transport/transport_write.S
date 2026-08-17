@@ -28,7 +28,7 @@
 //   x0 -> errno / TLS_RECORD_ERR_* on failure (carry set)
 //
 // Clobbered Registers:
-//   x0-x12, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v7,
+//   x0-x12, x16, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v11,
 //   v16-v21, NZCV — a superset covering both paths (raw_write_all only
 //   touches x0-x2/x9/x25/x26; the TLS path additionally uses
 //   everything tls_app_data_write clobbers)

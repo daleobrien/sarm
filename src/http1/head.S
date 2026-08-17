@@ -14,7 +14,7 @@
 //   none
 //
 // Clobbered Registers:
-//   x0–x7, x9–x15, x19
+//   x0–x6, x9, x19, x30
 //
 // Stack Usage:
 //   none

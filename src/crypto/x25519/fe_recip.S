@@ -312,7 +312,7 @@ x25519_fe_recip:
 //   none (void) - the 32-byte result is written to [x0]
 //
 // Clobbered Registers:
-//   x0-x28, x30, NZCV (x19-x28 and x30 are saved/restored)
+//   x0-x17, x19-x28, x30, NZCV (x19-x28 and x30 are saved/restored)
 //
 // Stack Usage:
 //   528 bytes: 32-byte clamped scalar, 10 field elements (nqx, nqz,

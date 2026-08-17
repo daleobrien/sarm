@@ -16,7 +16,7 @@
 //   (never returns — exits the child, or branches to loop under no_fork)
 //
 // Clobbered Registers:
-//   x0, x1, x8 (syscall scratch)
+//   x0, x9, x16 (syscall scratch)
 //
 // Stack Usage:
 //   none

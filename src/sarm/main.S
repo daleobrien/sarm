@@ -20,7 +20,7 @@
 //   (never returns — exits via fatal_exit)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x4, x9, x28, sp (transient syscall/stack use)
+//   x0, x1, x2, x3, x4, x5, x9, x16, x28, x30, sp (transient syscall/stack use)
 //
 // Stack Usage:
 //   none (sp scratch only for the sigaction struct blocks)

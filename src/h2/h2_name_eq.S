@@ -18,7 +18,7 @@
 //   x0 — 1 if equal, 0 otherwise
 //
 // Clobbered Registers:
-//   x0-x6
+//   x0, x4-x6
 //
 // Stack Usage:
 //   none

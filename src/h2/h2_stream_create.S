@@ -26,7 +26,7 @@
 //     idle streams
 //
 // Clobbered Registers:
-//   x0-x9
+//   x0, x2-x9
 //
 // Stack Usage:
 //   none

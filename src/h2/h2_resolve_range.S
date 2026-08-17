@@ -18,7 +18,7 @@
 //   x0 — resolved start, x1 — resolved end, x2 — status (200/206/416)
 //
 // Clobbered Registers:
-//   x0-x5
+//   x0-x3
 //
 // Stack Usage:
 //   none

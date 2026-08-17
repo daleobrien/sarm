@@ -17,7 +17,7 @@
 //   x0 — errno (EPIPE, ECONNRESET, ...) on failure (carry set)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x8, x16 (syscall registers; see write_all)
+//   x1, x2
 //
 // Stack Usage:
 //   none

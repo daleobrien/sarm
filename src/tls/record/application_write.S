@@ -36,8 +36,7 @@
 //     content is, so in practice only _LENGTH can fire here)
 //
 // Clobbered Registers:
-//   x0-x12, x19-x24, x30 (x19-x22, x30 saved/restored), v0-v7,
-//   v16-v21, NZCV
+//   x0-x12, v0-v11, v16-v21, NZCV (x19-x22, x30 saved/restored)
 //
 // Stack Usage:
 //   48 bytes: x19-x22, x30 (padded)

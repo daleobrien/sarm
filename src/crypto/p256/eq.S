@@ -19,7 +19,7 @@
 //   x0 — 1 if equal, 0 otherwise
 //
 // Clobbered Registers:
-//   x2-x5
+//   x2-x4
 // ─────────────────────────────────────────────────────────────────────
 .align 2
 .global p256_fe_eq

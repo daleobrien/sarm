@@ -24,7 +24,7 @@
 //   carry set (failure):   x0 — TLS_RECORD_ERR_TYPE / _LENGTH / _EMPTY
 //
 // Clobbered Registers:
-//   x0-x4, x19, x20 (saved/restored), x30 (saved/restored), NZCV
+//   x0-x4, NZCV (x19, x20, x30 saved/restored)
 //
 // Stack Usage:
 //   32 bytes - x19 (out) + x20 (frag_len) + x30

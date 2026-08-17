@@ -18,7 +18,7 @@
 //   reply_status trampoline on failure)
 //
 // Clobbered Registers:
-//   x0, x1, x3, x4, x9, x20, x21 (x20/x21 saved and restored)
+//   x0, x1, x2, x3, x4, x9, x20, x21 (x20/x21 saved and restored)
 //
 // Stack Usage:
 //   32 bytes: stp x29, x30, [sp, #-32]!; stp x20, x21, [sp, #16]

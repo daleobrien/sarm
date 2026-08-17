@@ -31,7 +31,7 @@
 //   none (void) - 32 verify_data bytes written to [x2]
 //
 // Clobbered Registers:
-//   x0-x7, x19-x27 (saved/restored), x30 (saved/restored) —
+//   x0-x7, x9-x11, x19-x27 (saved/restored), x30 (saved/restored) —
 //   everything hmac_sha256 clobbers
 //
 // Stack Usage:

@@ -268,7 +268,7 @@ x25519_fe_scalar_product:
 //   none (void) - [x0] and [x1] hold the (possibly swapped) values
 //
 // Clobbered Registers:
-//   x3-x15, NZCV
+//   x3-x7, x9-x15, NZCV
 //
 // Stack Usage:
 //   none - leaf function, no stack frame allocated

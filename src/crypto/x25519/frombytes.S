@@ -232,7 +232,7 @@ x25519_fe_frombytes:
 //   none (void) - the 32 bytes are written to [x0]
 //
 // Clobbered Registers:
-//   x2-x12, NZCV
+//   x2-x12
 //
 // Stack Usage:
 //   none - leaf function, no stack frame allocated

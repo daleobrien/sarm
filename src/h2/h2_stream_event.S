@@ -22,7 +22,7 @@
 //     (carry set)
 //
 // Clobbered Registers:
-//   x0-x4, x9
+//   x0, x2-x4, x9
 //
 // Stack Usage:
 //   none

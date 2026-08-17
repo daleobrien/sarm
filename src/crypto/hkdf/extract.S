@@ -17,7 +17,7 @@
 //   none (void) - 32 PRK bytes written to [x4].
 //
 // Clobbered Registers:
-//   x0-x7, x19-x27, x30, v0-v7, v16, v18, v19, NZCV — everything
+//   x0-x7, v0-v7, v16, v18, v19, NZCV — everything
 //   hmac_sha256 clobbers
 //
 // Stack Usage:

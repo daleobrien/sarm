@@ -42,8 +42,7 @@
 //          every retry produced r == 0 / s == 0)
 //
 // Clobbered Registers:
-//   x0-x12, x19-x21 (saved/restored), x30 (saved/restored), v0, v1,
-//   NZCV
+//   x0-x3, x9-x12, NZCV (x19-x21, x30 saved/restored)
 //
 // Stack Usage:
 //   128 bytes: x19-x21 + x30 (rounded to 32), a 32-byte nonce slot,

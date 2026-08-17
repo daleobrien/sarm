@@ -44,7 +44,7 @@
 //   none (void) - 176 schedule bytes written to [x1]
 //
 // Clobbered Registers:
-//   x0-x4, w5-w8, w10, w11, v0-v4, NZCV
+//   x2-x4, w5-w8, w10, w11, v0-v4, NZCV
 //
 // Stack Usage:
 //   0 bytes — leaf function, no stack frame

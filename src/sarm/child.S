@@ -19,7 +19,7 @@
 //   (never returns — branches to child_end or a reply_status trampoline)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x4, x7, x22, x23, x24, x25
+//   x0, x1, x2, x3, x4, x7, x9, x16, x22, x23, x24, x25, x30
 //
 // Stack Usage:
 //   none

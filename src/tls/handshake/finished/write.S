@@ -33,7 +33,7 @@
 //   x0 — total message length (36)
 //
 // Clobbered Registers:
-//   x0-x2, x9, x19, x20 (saved/restored), x30 (saved/restored) —
+//   x0-x2, x9 (x19, x20, x30 saved/restored) —
 //   everything tls_finished_key / tls_finished_verify_data clobber
 //
 // Stack Usage:

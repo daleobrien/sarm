@@ -1,7 +1,10 @@
 # Analysis Tooling — Correctness Report
 
-Prompt `prompts/01-analysis-tooling-correctness.md`. This changes analysis
-tooling only; **no `.S` file was modified.**
+Prompt `prompts/01-analysis-tooling-correctness.md`. This fixed the analysis
+tooling itself (no `.S` code changed for that part — see below), then used
+the fixed tooling to correct every stale `// Clobbered Registers:` header it
+found. That second pass touched 87 `.S` files, comment lines only: no
+instruction was added, removed, or reordered.
 
 ## What changed
 
@@ -96,7 +99,7 @@ the `ret`, and a flag-clobbering instruction sunk between a `cmp` and its
 
 ---
 
-## Two further soundness bugs found while fixing the above
+## Four further soundness bugs found while fixing the above
 
 **A load is not always a restore.** `effect()` treated every load of a
 callee-saved register as a restore, whatever address it read. So
@@ -114,6 +117,22 @@ reported "could not verify SP restoration". Unreachable blocks are now `None`
 and contribute nothing to a join. This bug was latent only because defect 1
 meant there were no loops to hit it.
 
+**Writeback detection in `regpressure.py` never fired.** `_writeback_regs`
+matched a trailing `],` on the operand string to catch post-indexed
+addressing (`[x27], #16`), but operands arrive already comma-split — the
+comma that pattern needed is consumed by the split before the regex ever
+runs. A post-indexed base register was silently missing from the write set,
+which makes a pointer that is genuinely advanced in a loop look
+loop-invariant. Fixed by matching a bare `[xN]` operand that isn't the last
+one in the (already-split) list, which is exactly the shape a post-index
+form takes once split.
+
+**`svc` is not `bl`.** The same function credited every call-like
+instruction — `bl`, `blr`, *and* `svc` — with writing x30, because it tested
+"did this instruction write to any caller-saved-for-calls register" rather
+than checking the instruction itself. A bare syscall never touches the link
+register; only `bl`/`blr` do. Fixed to check the mnemonic directly.
+
 ## Real ABI violations in `src/` (reported, not fixed — no `.S` edits)
 
 Running the corrected checker over all 173 regions leaves **7 errors in 2
@@ -121,9 +140,11 @@ functions** (one per `ret`):
 
 1. **`aes128_encrypt`** (`src/crypto/aes128/encrypt.S:41`) writes **v8, v9,
    v10, v11** and never restores them. v8-v15 are callee-saved. This
-   propagates: `aes_gcm_encrypt`, `aes_gcm_decrypt`, `tls_record_encrypt` and
-   `tls_record_decrypt` all show v8-v11 clobbered while their headers claim
-   only v0-v7.
+   propagates: `aes_gcm_encrypt`, `aes_gcm_decrypt`, `tls_record_encrypt`,
+   `tls_record_decrypt` and the rest of the chain up to `transport_write`
+   inherit the same v8-v11 clobber. The headers now say so (see the
+   validation section below) — the header fixes make the leak accurately
+   *documented*, not fixed; the code still violates AAPCS64.
 2. **`h2_verify_preface`** (`src/h2/h2_verify_preface.S:32`) writes **x21**
    (`mov x21, #0`) but saves only x29/x30 and x19/x20.
 
@@ -211,7 +232,7 @@ reachable, so those handlers are not suppressed from the ranking.
 | callee-saved used → justified | x19, x20 → both | x19, x20 → x19 only | none |
 | NZCV writers / readers | 23 / 27 | 2 / 0 | 8 / 7 |
 | clobbers (transitive) | x0-x17 | x0-x17 | x5-x17 |
-| documented header | x0-x17 ✓ | x0-x17 ✓ | x0-x17 (x0-x4 read-only) |
+| documented header | x0-x17 ✓ | x0-x17 ✓ | x5-x17 ✓ (was x0-x17, x0-x4 read-only) |
 
 `p256_reduce` was previously invisible: it is file-local and sits *above* the
 first `.global` in its file, and the old `.global`-to-`.global` split never
@@ -242,9 +263,11 @@ direct and a transitive clobber set and judged on the closer one (106 direct,
 44 transitive). Documented return registers are not counted as undocumented
 clobbers.
 
+The first run, against the headers as they stood, found:
+
 | Verdict | Count |
 |---|---|
-| AGREE | **58** |
+| AGREE | 58 |
 | OVERSTATES (header names a register never written) | 57 |
 | BOTH | 20 |
 | UNDERSTATES (header omits a register that *is* written) | 13 |
@@ -256,23 +279,56 @@ clobbers.
 unreachable-is-not-clean). Both were found *by* this comparison and are fixed;
 every disagreement remaining after that fix was traced to documentation.
 
-**Stale or incomplete documentation: 90.** Three systematic patterns:
+**Stale or incomplete documentation: 90 headers**, all rewritten to the
+analyzer's output. Three systematic patterns:
 
-- *OVERSTATES (57), mostly input registers.* The headers list argument
-  registers as clobbered even when the function only reads them:
-  `aes128_encrypt` lists `x0,x1,x2` (all read-only), `p256_bn_mul` lists
-  `x0-x17` where x0-x4 are inputs. Harmless to a caller. `x18` appears in
-  several headers and is never touched by anything.
-- *UNDERSTATES (13), the direction that can hurt.* Five are the v8-v11 leak
-  from `aes128_encrypt`. Several omit **x16**, the macOS syscall-number
-  register written by `SCWINUM` (`child`, `_main`, `h2_send_settings`,
-  `transport_read`). `child` and `_main` omit x30 while calling `bl`.
-  `verify_http_version` omits x2. `tls_finished_verify_data` omits x9-x11.
-- *NZCV annotations.* 4 headers claim NZCV for functions with **zero** flag
+- *OVERSTATES (57), mostly input registers.* The headers listed argument
+  registers as clobbered even when the function only read them:
+  `aes128_encrypt` listed `x0,x1,x2` (all read-only), `p256_bn_mul` listed
+  `x0-x17` where x0-x4 are inputs. Harmless to a caller, but now trimmed —
+  `p256_bn_mul` reads `x5-x17`. `x18` appeared in several headers and is
+  never touched by anything; removed throughout.
+- *UNDERSTATES (13), the direction that can hurt.* The v8-v11 leak from
+  `aes128_encrypt` propagates through the whole call chain — `aes_gcm_encrypt`,
+  `aes_gcm_decrypt`, `tls_record_encrypt`, `tls_record_decrypt`,
+  `tls_server_handshake`, `application_read`, `application_write`,
+  `transport_read` and `transport_write` all now list `v0-v11` instead of
+  `v0-v7`. Headers that omitted **x16**, the macOS syscall-number register
+  written by `SCWINUM`, now include it (`child`, `_main`, `h2_send_settings`,
+  `transport_read`). `child` and `_main` now list x30 alongside their `bl`.
+  `verify_http_version` now lists x2. `tls_finished_verify_data` now lists
+  x9-x11.
+- *NZCV annotations.* 4 headers claimed NZCV for functions with **zero** flag
   writers (`x25519_fe_add`, `x25519_fe_sqr`, `x25519_fe_sub`,
   `x25519_fe_tobytes`) — their `carry51` macros use only `lsr`/`add`/`and`.
-  89 functions write flags without the annotation, which is the majority
-  convention rather than a defect and is reported separately.
+  The annotation is now gone from all four. 89 functions write flags without
+  the annotation, which is the majority convention rather than a defect and
+  is left alone.
+
+### After the fix
+
+Re-running `validate_clobbers.py` against the corrected headers:
+
+| Verdict | Count |
+|---|---|
+| AGREE | **146** |
+| OVERSTATES | 2 |
+| BOTH | 0 |
+| UNDERSTATES | 0 |
+| UNPARSED | 2 |
+| NZCV claimed but never written | 0 |
+
+The 2 remaining OVERSTATES are not stale documentation, they're deliberate
+conservatism: `parse_request`'s header promises `x19-x28` preserved as one
+uniform claim across every path, even though `x28` happens not to be written
+on any path through the current body. `transport_write`'s header is an
+explicit superset spanning two call paths ("raw_write_all only touches
+x0-x2/x9/x25/x26; the TLS path additionally uses everything
+tls_app_data_write clobbers"), wider than either path alone. The 2 UNPARSED
+headers (`h2_read_exact`, `write_all`) point at `transport_read` /
+`transport_write` by name (`"see transport_write"`) rather than listing
+registers, which the checker correctly declines to score rather than
+guessing.
 
 **Deliberate asymmetry.** `regpressure` models `svc` as destroying the whole
 caller-saved set, because that is what the kernel is permitted to do and
@@ -305,5 +361,5 @@ exported symbols with no in-tree caller     n/a         19
 python3 scripts/regpressure.py                       # ranked report
 python3 scripts/regpressure.py --callers .Lgcm_ghash_run
 python3 scripts/abi.py --source src/crypto/p256/sqr_mul.S --function p256_reduce --flags
-python3 scripts/validate_clobbers.py --verdict UNDERSTATES
+python3 scripts/validate_clobbers.py --verdict OVERSTATES
 ```

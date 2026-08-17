@@ -19,7 +19,7 @@
 //   none (void) - 32 digest bytes written to [x1]
 //
 // Clobbered Registers:
-//   x3, x5, v0, v1, plus everything `sha256` clobbers
+//   x0, x3, x5, v0, v1, plus everything `sha256` clobbers
 //   (x1-x4, v0-v7, v16, v18, v19, NZCV)
 //
 // Stack Usage:

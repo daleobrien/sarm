@@ -28,7 +28,7 @@
 //   failed (caller replies 400)
 //
 // Clobbered Registers:
-//   x0-x15; preserves x19-x28 (x19-x27 saved and restored)
+//   x0-x3, x5-x7; preserves x19-x28 (x19-x27 saved and restored)
 //
 // Stack Usage:
 //   80 bytes: stp x29, x30, [sp, #-80]!

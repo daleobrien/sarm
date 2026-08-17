@@ -31,7 +31,7 @@
 //   failure (carry set): x0 = 0 (malformed or oversized path)
 //
 // Clobbered Registers:
-//   x0-x9, x19-x24, x29, x30 (x19-x24 saved and restored)
+//   x0-x9, x19-x24 (saved and restored)
 //
 // Stack Usage:
 //   64 bytes: stp x29, x30, [sp, #-64]!

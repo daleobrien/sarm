@@ -17,7 +17,7 @@
 //   carry set = error (no Range header, or a malformed one)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x19-x26, x29, x30 (x19-x26 saved and restored)
+//   x0, x1, x2, x3, x19-x26 (saved and restored)
 //
 // Stack Usage:
 //   80 bytes: stp x29, x30, [sp, #-80]!

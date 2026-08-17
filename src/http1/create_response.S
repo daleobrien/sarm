@@ -23,7 +23,7 @@
 //   x0 — response struct pointer (unchanged)
 //
 // Clobbered Registers:
-//   x0–x6, x9–x14 (x19 saved and restored)
+//   x0–x1, x9 (x19 saved and restored)
 //
 // Stack Usage:
 //   32 bytes: stp x29, x30, [sp, #-32]! + str x19, [sp, #16]

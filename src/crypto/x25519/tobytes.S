@@ -249,7 +249,7 @@ x25519_fe_tobytes:
 //   none (void) - out is written to [x0]; out may alias a or b
 //
 // Clobbered Registers:
-//   x3-x12, NZCV
+//   x3-x12
 //
 // Stack Usage:
 //   none - leaf function, no stack frame allocated

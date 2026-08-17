@@ -118,21 +118,30 @@ def regs_in(text: str) -> set[str]:
     return {norm(m.group(1)) for m in REG_RE.finditer(text)}
 
 
-_WRITEBACK_RE = re.compile(r"\[\s*(\w+)\s*(?:,[^\]]*)?\]\s*!|\[\s*(\w+)\s*\]\s*,")
+_WRITEBACK_RE = re.compile(r"\[\s*(\w+)\s*(?:,[^\]]*)?\]\s*!")
+_BARE_BRACKET_RE = re.compile(r"^\[\s*(\w+)\s*\]$")
 
 
 def _writeback_regs(operands: list[str]) -> set[str]:
     """Base registers updated by pre-/post-indexed addressing.
 
     ``ld1 {v0.16b}, [x27], #16`` writes x27 as well as v0; missing that makes
-    the pointer look loop-invariant.
+    the pointer look loop-invariant. Operands arrive already comma-split
+    (``split_operands`` splits outside ``[]``/``{}``), so the post-index
+    form shows up as a bare ``[x27]`` operand followed by a separate ``#16``
+    operand -- there is no trailing comma left on the string for a
+    single-operand regex to match. A bracket-only operand that is not the
+    last one is exactly that form; a plain ``[x27]`` with nothing after it
+    is just non-writeback addressing.
     """
     out: set[str] = set()
     for operand in operands:
         for match in _WRITEBACK_RE.finditer(operand):
-            base = match.group(1) or match.group(2)
-            if base:
-                out |= regs_in(base)
+            out |= regs_in(match.group(1))
+    for operand in operands[:-1]:
+        match = _BARE_BRACKET_RE.match(operand.strip())
+        if match:
+            out |= regs_in(match.group(1))
     return out
 
 
@@ -372,7 +381,10 @@ def analyse(region: Region, index: SourceIndex) -> FunctionInfo | None:
         written |= du[i][0]
     info.callee_used = sorted(gprs(explicit) & CALLEE_SAVED,
                               key=lambda r: int(r[1:]))
-    if any(d[2] for d in du):
+    # svc is modelled as a call for CALLER_SAVED-clobber purposes (the
+    # kernel is permitted to destroy those), but unlike bl/blr it does not
+    # write the link register -- a bare syscall never touches x30.
+    if any(insn.mnemonic in ("bl", "blr") for insn in insns):
         written |= {"x30"}
     info.clobbers_direct = written
 

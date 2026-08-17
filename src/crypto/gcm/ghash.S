@@ -24,7 +24,7 @@
 //   none (void) - 16 result bytes written to [x5]
 //
 // Clobbered Registers:
-//   x0-x15, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
+//   x9-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
 //   v16-v21, NZCV
 //
 // Stack Usage:

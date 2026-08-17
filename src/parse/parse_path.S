@@ -21,7 +21,7 @@
 //   (x2/x3 also carry the query pointer/length — see the Lparse_end block)
 //
 // Clobbered Registers:
-//   x0-x5, x20-x25, x29, x30 (x20-x25 saved and restored)
+//   x2-x5, x20-x25 (saved and restored)
 //
 // Stack Usage:
 //   80 bytes: stp x29, x30, [sp, #-64]! plus a 16-byte

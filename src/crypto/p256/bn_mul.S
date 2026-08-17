@@ -27,7 +27,7 @@
 //   out[0..na+nb-1] holds the full product, little-endian limbs.
 //
 // Clobbered Registers:
-//   x0-x17 (leaf-internal scratch; caller must save anything it needs
+//   x5-x17 (leaf-internal scratch; caller must save anything it needs
 //   across a call)
 //
 // Stack Usage:

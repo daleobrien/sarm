@@ -16,7 +16,7 @@
 //   x0 — dst fe pointer, x1 — src fe pointer, x2 — cond
 //
 // Clobbered Registers:
-//   x3-x6
+//   x3-x4
 // ─────────────────────────────────────────────────────────────────────
 .align 2
 .global p256_fe_cmov

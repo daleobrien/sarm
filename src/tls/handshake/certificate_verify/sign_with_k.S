@@ -33,8 +33,8 @@
 //        the caller should draw a fresh k and retry)
 //
 // Clobbered Registers:
-//   x0-x5, x19-x22 (saved/restored), x30 (saved/restored), v0, v1,
-//   NZCV — everything content_hash/p256_ecdsa_sign_with_k clobber
+//   x0-x4, NZCV (x19-x22, x30 saved/restored) — everything
+//   content_hash/p256_ecdsa_sign_with_k clobber
 //
 // Stack Usage:
 //   80 bytes: x19-x22 + x30 (40 bytes, rounded to 48), plus a 32-byte

@@ -30,7 +30,7 @@ urandom_path: .asciz "/dev/urandom"
 //                           an unexpected EOF
 //
 // Clobbered Registers:
-//   x0-x9, x19-x22 (saved/restored), x30 (saved/restored), NZCV
+//   x0-x2, x16, x19-x22 (saved/restored), x30 (saved/restored), NZCV
 //
 // Stack Usage:
 //   48 bytes: x19-x22, x30

@@ -15,7 +15,7 @@
 //   x1 — file type (w1 can be S_IFREG or S_IFDIR)
 //
 // Clobbered Registers:
-//   x0–x6, x9, x10 (x19/x20 saved and restored)
+//   x0–x1, x9, x10 (x19/x20 saved and restored)
 //
 // Stack Usage:
 //   32 bytes: stp x29, x30, [sp, #-32]! + stp x19, x20, [sp, #16]

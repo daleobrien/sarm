@@ -68,7 +68,7 @@
 //     socket cleanup — the caller closes the fd either way.
 //
 // Clobbered Registers:
-//   x0-x15, x19-x26, x30 (x19-x26, x30 saved/restored), v0-v7,
+//   x0-x17, x19-x26, x30 (x19-x26, x30 saved/restored), v0-v11,
 //   v16-v21, NZCV — everything every callee above clobbers. x19-x26
 //   are safe to use as this function's own long-lived scratch across
 //   every call it makes: none of the above either touch them without

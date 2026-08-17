@@ -32,7 +32,7 @@
 //   table per §4.4, which is not an error condition)
 //
 // Clobbered Registers:
-//   x0-x14, x30 (x19-x27, x30 saved/restored)
+//   x0-x4, x9-x13 (x19-x27, x30 saved/restored)
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; stp x21, x22, [sp, #16];

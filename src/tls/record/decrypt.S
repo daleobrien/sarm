@@ -43,7 +43,7 @@
 //     x0 — TLS_RECORD_ERR_SHORT / _LENGTH / _BOUNDS / _MAC / _INNER
 //
 // Clobbered Registers:
-//   x0-x12, x19-x24 (saved/restored), x30 (saved/restored), v0-v7,
+//   x0-x12, x19-x24 (saved/restored), x30 (saved/restored), v0-v11,
 //   v16-v21, NZCV
 //
 // Stack Usage:

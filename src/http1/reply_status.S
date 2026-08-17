@@ -17,8 +17,8 @@
 //   nothing
 //
 // Clobbered Registers:
-//   x0–x7, x9–x15 (scratch); x19–x27 saved and restored when the stack
-//   frame is set up (x1 != 0)
+//   x0–x6, x9–x10 (scratch); (x19–x27 saved and restored) when the
+//   stack frame is set up (x1 != 0)
 //
 // Stack Usage:
 //   96 bytes when x1 != 0 (stp x29, x30, [sp, #-96]! ...), none when

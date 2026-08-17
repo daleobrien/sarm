@@ -20,7 +20,7 @@
 //   none (void) - 16 Z bytes written to [x2]
 //
 // Clobbered Registers:
-//   x0-x2, x9, x10, x30, v0-v7, v16-v18, v21, NZCV
+//   x9, x10, v0-v7, v16-v18, v21, NZCV
 //
 // Stack Usage:
 //   16 bytes (x30)

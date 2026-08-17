@@ -25,7 +25,7 @@
 //   x0 — 0 on success, error code on failure; carry set on error
 //
 // Clobbered Registers:
-//   x0-x6, x9, x30 (saved/restored)
+//   x0, x2-x7, x9, x30 (saved/restored)
 //
 // Stack Usage:
 //   16 bytes: str x30, [sp, #-16]!

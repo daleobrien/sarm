@@ -74,8 +74,8 @@ khs_empty_hash:
 //   filled in (src/tls/data.S).
 //
 // Clobbered Registers:
-//   x0-x27, x30 (x19, x20, x30 saved/restored), v0-v7, v16, v18, v19,
-//   NZCV — everything hkdf_extract / hkdf_expand_label clobber
+//   x0-x11, x13, v0-v7, v16, v18, v19, NZCV (x19, x20, x30
+//   saved/restored) — everything hkdf_extract / hkdf_expand_label clobber
 //
 // Stack Usage:
 //   192 bytes: x19, x20, x30 (32, padded), then five 32-byte scratch

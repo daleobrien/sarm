@@ -19,7 +19,7 @@
 //   carry set = field not found
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x19, x20, x21, x23, x24, x29, x30
+//   x0, x1, x2, x3
 //   (x19/x20/x21/x23/x24 saved and restored)
 //
 // Stack Usage:

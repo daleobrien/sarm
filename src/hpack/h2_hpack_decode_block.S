@@ -24,7 +24,7 @@
 //   x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
-//   x0-x9, x19-x22, x30 (x19-x22/x30 saved and restored)
+//   x0, x7, x9 (x19-x22, x30 saved and restored)
 //
 // Stack Usage:
 //   48 bytes: stp x19, x30, [sp, #-48]!, stp x20, x21, [sp, #16],

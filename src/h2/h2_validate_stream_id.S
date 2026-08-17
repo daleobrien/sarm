@@ -22,7 +22,7 @@
 //   x0 = H2_ERR_PROTOCOL_ERROR on failure (carry set)
 //
 // Clobbered Registers:
-//   x0-x5, x9, x30 (saved/restored)
+//   x0, x2-x5, x9, x30 (saved/restored)
 //
 // Stack Usage:
 //   16 bytes: str x30, [sp, #-16]!

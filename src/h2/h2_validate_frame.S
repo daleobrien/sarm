@@ -17,7 +17,7 @@
 //   carry set on failure
 //
 // Clobbered Registers:
-//   x2, x3, x4
+//   x0, x2, x3
 //
 // Stack Usage:
 //   none

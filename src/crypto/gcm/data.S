@@ -123,7 +123,7 @@
 //   v20 - the updated accumulator
 //
 // Clobbered Registers:
-//   x9-x12, x30, v0-v7 (x19-x28 and v16-v21 are preserved)
+//   x9-x12, x27, v0-v7 (x19-x26, x28 and v16-v21 are preserved)
 //
 // Stack Usage:
 //   32 bytes - 16 for the zero-padded partial block, 8 for x30, 8 slack

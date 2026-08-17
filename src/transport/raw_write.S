@@ -23,7 +23,7 @@
 //   carry clear = success, carry set = error (x0 = errno)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x9, x25, x26 (x25/x26 saved and restored)
+//   x0-x2, x16 (x25, x26 saved and restored)
 //
 // Stack Usage:
 //   16 bytes: stp x25, x26, [sp, #-16]!

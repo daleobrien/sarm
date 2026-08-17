@@ -13,7 +13,7 @@
 //   (none — write failures are ignored)
 //
 // Clobbered Registers:
-//   x0-x4, x30 (saved/restored)
+//   x1-x4, x30 (saved/restored)
 //
 // Stack Usage:
 //   16 bytes: str x30, [sp, #-16]!; plus 32 bytes of stack frame

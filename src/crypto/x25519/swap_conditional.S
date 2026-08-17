@@ -242,7 +242,7 @@ x25519_swap_conditional:
 //   none (void) - out is written to [x0]; out must not alias z
 //
 // Clobbered Registers:
-//   x0-x18, x19, x20, x30, NZCV
+//   x0-x17, NZCV
 //
 // Stack Usage:
 //   192 bytes: 4 scratch field elements (a, t0, b, c) + saved x19,

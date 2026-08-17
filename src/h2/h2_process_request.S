@@ -27,7 +27,7 @@
 //   x0 — 0 on success (carry clear); errno on failure (carry set)
 //
 // Clobbered Registers:
-//   x0-x9, x19-x26 (saved/restored), x30
+//   x0-x6, x9-x10, x19-x26 (saved/restored)
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; str x30, [sp, #64]

@@ -23,7 +23,7 @@
 //   (none — returns when the connection ends; the caller closes the fd)
 //
 // Clobbered Registers:
-//   x0-x8, x19-x23 (saved/restored), x30
+//   x0-x3, x9-x10, x19-x23 (saved/restored)
 //
 // Stack Usage:
 //   64 bytes: stp x19, x20, [sp, #-64]!; stp x21, x22, [sp, #16];

@@ -29,7 +29,7 @@
 //     H2_ERR_INTERNAL_ERROR if the header block doesn't fit the buffer
 //
 // Clobbered Registers:
-//   x0-x8, x19-x24 (saved/restored), x30
+//   x0-x5, x9-x11, x13, x19-x24 (saved/restored)
 //
 // Stack Usage:
 //   64 bytes: stp x19, x20, [sp, #-64]!; stp x21, x22, [sp, #16];
@@ -256,7 +256,7 @@ h2_write_headers:
 // branches in h2_write_headers.
 //
 // Clobbered Registers:
-//   x0-x5, x30 (saved/restored)
+//   x0-x5, x23, x30 (saved/restored)
 .Lh2wh_append_str:
     str x30, [sp, #-16]!
     cmp x2, #127

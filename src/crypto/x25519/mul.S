@@ -377,7 +377,7 @@ x25519_fe_mul:
 //   none (void) - out is written to [x0]; out may alias in
 //
 // Clobbered Registers:
-//   x0-x18, NZCV (x19 is saved/restored)
+//   x1-x7, x9-x17, NZCV (x19 is saved/restored)
 //
 // Stack Usage:
 //   32 bytes (out pointer, loop count, saved x19)

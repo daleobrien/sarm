@@ -26,7 +26,7 @@
 //   none (void) - pt_len ciphertext bytes and the 16-byte tag written
 //
 // Clobbered Registers:
-//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
+//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v11,
 //   v16-v21, NZCV
 //
 // Stack Usage:

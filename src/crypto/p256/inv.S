@@ -18,7 +18,7 @@
 //   x0 — out fe pointer, x1 — a fe pointer
 //
 // Clobbered Registers:
-//   x0-x17, x19-x22 (saved/restored)
+//   x0-x8, x10-x17, x19-x22 (saved/restored)
 //
 // Stack Usage:
 //   80 bytes: saved x29/x30, saved x19/x20, saved x21/x22, a 4-limb

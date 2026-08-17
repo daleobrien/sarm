@@ -54,7 +54,7 @@
 //          full record is in memory)
 //
 // Clobbered Registers:
-//   x0-x10, x19-x22 (saved/restored), x30 (saved/restored), NZCV
+//   x0-x3, x5-x7, x9-x10, x16, NZCV (x19-x22, x30 saved/restored)
 //
 // Stack Usage:
 //   48 bytes: x19-x22, x30 (padded)

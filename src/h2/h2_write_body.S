@@ -32,7 +32,7 @@
 //     H2_ERR_* from a frame dispatched while waiting for credit
 //
 // Clobbered Registers:
-//   x0-x9, x13, x19-x27 (saved/restored), x30
+//   x0-x4, x8-x9, x13, x19-x27 (saved/restored)
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; stp x27, x30, [sp, #64]

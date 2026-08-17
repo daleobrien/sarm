@@ -23,7 +23,7 @@
 //   carry clear = usable single range; carry set = no usable range
 //
 // Clobbered Registers:
-//   x0-x17, x30 (saved/restored)
+//   x0-x2, x4-x10, x30 (saved/restored)
 //
 // Stack Usage:
 //   16 bytes: str x30, [sp, #-16]!

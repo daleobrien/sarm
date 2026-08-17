@@ -45,8 +45,8 @@ cv_content_prefix_len = . - cv_content_prefix
 //   none (void) — 32 digest bytes written to [x0]
 //
 // Clobbered Registers:
-//   x0-x5, x19, x20 (saved/restored), x30 (saved/restored), v0, v1,
-//   NZCV — everything sha256_update/sha256_final clobber
+//   x0-x2, NZCV (x19, x20, x30 saved/restored) — everything
+//   sha256_update/sha256_final clobber
 //
 // Stack Usage:
 //   128 bytes: x19, x20, x30 (rounded to 16), plus a 112-byte

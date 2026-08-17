@@ -24,7 +24,7 @@
 //   x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x4, x9
+//   x0, x1, x2, x3, x9
 //
 // Stack Usage:
 //   none

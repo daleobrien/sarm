@@ -32,7 +32,7 @@
 //   x0 — errno / TLS_RECORD_ERR_* on failure (carry set); 0 on EOF
 //
 // Clobbered Registers:
-//   x0-x12, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v7,
+//   x0-x14, x16, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v11,
 //   v16-v21, NZCV — a superset covering both paths (raw_read_exact
 //   only touches x0-x4/x9/x19-x21; the TLS path additionally uses
 //   everything tls_read_record/tls_app_data_read clobber)

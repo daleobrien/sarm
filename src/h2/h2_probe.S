@@ -19,7 +19,7 @@
 //   x0 — 1 (preface prefix) or 0
 //
 // Clobbered Registers:
-//   x0-x5, x9
+//   x0, x2-x5, x9
 //
 // Stack Usage:
 //   none

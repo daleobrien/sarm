@@ -21,7 +21,7 @@
 //   (the caller should reply 500)
 //
 // Clobbered Registers:
-//   x0–x7, x9–x15 (x19–x24 saved and restored)
+//   x0–x5, x9–x11, x13–x14, x16 (x19–x24 saved and restored)
 //
 // Stack Usage:
 //   64 bytes frame (stp x29, x30, [sp, #-64]! ...) plus 32 transient
