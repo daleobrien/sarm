@@ -10,7 +10,7 @@ provided:
   doc recommends for a 36 GB RAM machine (small/medium coding model +
   tight feedback loop + many iterations).
 * ``command`` -- invokes an arbitrary CLI (``--llm "ollama run
-  qwen2.5-coder:7b"``) with the prompt as the final argument, mirroring the
+  qwen3.5-coder"``) with the prompt as the final argument, mirroring the
   original prototype in OPTIMISATION.MD.
 
 Both backends ask the model for strict JSON (``{"explanation": ...,
