@@ -132,8 +132,21 @@ def canonicalize(r, ext):
             s = r[k] - pl[k] - borrow
             borrow = 1 if s < 0 else 0
             cand[k] = s & MASK64
-        if borrow == 0:
-            r, ext = cand, ext - borrow
+        # The assembly's subtraction chain is FIVE limbs wide: after the
+        # four `sbcs` over the limbs it runs `sbcs x17, x6, xzr` against
+        # ext, and `cset x16, cs` reads the carry out of *that*, not out
+        # of limb 3. So the round is taken whenever ext - borrow >= 0,
+        # which includes the (ext == 1, borrow == 1) case -- exactly the
+        # case a 4-limb-only test refuses. Modelling it as `borrow == 0`
+        # made this reference reject values the hardware reduces
+        # correctly, and it went unnoticed because a random 512-bit T
+        # almost never leaves ext == 1 after the second fold. It is
+        # reachable: T = (2^256-1) * 0xffffffffffffffff...ffffffffffffffff
+        # (see edge_cases) lands there, and p256_reduce returns the right
+        # canonical value for it.
+        cand_ext = ext - borrow
+        if cand_ext >= 0:
+            r, ext = cand, cand_ext
     return r, ext
 
 
@@ -155,6 +168,14 @@ def edge_cases():
         edge.append(1 << shift)
     for nz in range(1, 9):
         edge.append(int('1' * 16 * nz, 16))
+    # The one T known to leave ext == 1 after the second fold, i.e. the
+    # only case where the correction round's 5-limb `sbcs` against ext
+    # is load-bearing. Found by the p256_fe_mul product derivation
+    # (scripts/p256_fe_mul_derivation.py) sweeping edge x edge operand
+    # pairs; 200k random T never produced it.
+    edge.append(((2**256 - 1) *
+                 0xffffffffffffffff00000000000000000000000000000000ffffffffffffffff)
+                & (2**512 - 1))
     return [x & (2**512 - 1) for x in edge]
 
 

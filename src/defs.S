@@ -94,6 +94,10 @@
 .equ SYS_writev,       66
 .equ SYS_gettimeofday, 169
 .equ SYS_recvfrom,     207
+// getrandom(buf, len, flags): the kernel CSPRNG without a file
+// descriptor. flags = 0 blocks until the pool is seeded, which is
+// the property /dev/urandom does not give you early in boot.
+.equ SYS_getrandom,    278
 
 // socket stuff
 .equ AF_INET,          2
@@ -351,6 +355,11 @@
 .equ SYS_writev,       121
 .equ SYS_gettimeofday, 116
 .equ SYS_recvfrom,     29
+// getentropy(buf, len): the kernel CSPRNG without a file
+// descriptor. Returns 0 on success and caps len at 256 bytes per
+// call (EINVAL above that -- confirmed on this machine, not
+// assumed), so callers loop.
+.equ SYS_getentropy,   500
 
 // socket
 .equ AF_INET,          2

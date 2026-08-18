@@ -1,12 +1,20 @@
 // Unit tests for src/crypto/random.S
 //
-// crypto_random_bytes(buf=x0, len=x1) reads len bytes from /dev/urandom.
+// crypto_random_bytes(buf=x0, len=x1) fills len bytes from the kernel
+// CSPRNG (getentropy on macOS, getrandom on Linux).
 // There's no known-answer vector for randomness, so these tests check
 // what can actually be verified: the call succeeds, it doesn't touch
 // bytes past the requested length, a zero-length request is a no-op,
 // and two consecutive calls don't return the same bytes (with
 // overwhelming probability — a collision here would mean the RNG is
 // broken, not bad luck: 2^-256).
+//
+// test_chunked below covers the loop specifically. getentropy refuses
+// more than 256 bytes in one call, so anything larger is filled in
+// several passes, and an off-by-one in that loop would leave a whole
+// 256-byte stretch of the buffer untouched — which is exactly the kind
+// of bug that produces a predictable key while every other test here
+// still passes.
 
 #include "test_harness.h"
 
@@ -81,11 +89,54 @@ static void test_no_overrun(void) {
               buf[15]);
 }
 
+// Sizes around and well past getentropy's 256-byte per-call maximum,
+// so the chunking loop runs 1, 2, 3 and 4 times. The buffer is
+// pre-filled with a sentinel; a skipped or misaligned chunk leaves at
+// least 256 sentinel bytes behind, while a correctly filled buffer
+// leaves only however many random bytes happen to equal the sentinel
+// (size/256 on average, so 4 for the largest case here). The threshold
+// sits far above the one and far below the other.
+static void test_chunked(void) {
+    TEST_SUITE("crypto_random_bytes chunking past 256 bytes");
+
+    static const uint64_t sizes[] = {255, 256, 257, 512, 1000};
+    for (unsigned s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+        uint64_t n = sizes[s];
+        static uint8_t buf[1024 + 8];
+        memset(buf, 0xAA, n + 8);
+        ASSERT_EQ("large request succeeds", 0, rand_bytes(buf, n, NULL));
+
+        uint64_t sentinels = 0;
+        for (uint64_t i = 0; i < n; i++)
+            if (buf[i] == 0xAA)
+                sentinels++;
+        ASSERT_TRUE("every chunk of the buffer was written",
+                    sentinels < 64);
+
+        int guard_ok = 1;
+        for (int g = 0; g < 8; g++)
+            if (buf[n + g] != 0xAA)
+                guard_ok = 0;
+        ASSERT_TRUE("nothing written past the requested length", guard_ok);
+    }
+
+    // Two large fills must differ across their whole length, not just in
+    // the first chunk.
+    static uint8_t a[512], b[512];
+    ASSERT_EQ("first large call succeeds", 0, rand_bytes(a, sizeof(a), NULL));
+    ASSERT_EQ("second large call succeeds", 0, rand_bytes(b, sizeof(b), NULL));
+    ASSERT_EQ("large fills differ in the first chunk", 0,
+              memcmp(a, b, 256) == 0);
+    ASSERT_EQ("large fills differ in the second chunk", 0,
+              memcmp(a + 256, b + 256, 256) == 0);
+}
+
 int main(void) {
     test_basic();
     test_two_calls_differ();
     test_zero_length();
     test_no_overrun();
+    test_chunked();
     test_summary();
     return 0;
 }
