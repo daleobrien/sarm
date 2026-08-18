@@ -4,7 +4,7 @@
 // (AES-only) and bench_gcm_ghash_run (GHASH-only, through the real
 // .Lgcm_ghash_run call path) -- together the three distinguish AES-only,
 // GHASH-only and complete AES-GCM cost, so a candidate change can be
-// confirmed to target the ~79% GHASH component (docs/PROFILE.MD) rather
+// confirmed to target the ~79% GHASH component (docs/HISTORY.md) rather
 // than the ~9% AES-chain one.
 //
 // Build and run:
@@ -47,7 +47,7 @@ static uint64_t now_ns(void) {
 // this reuses that pattern instead of inventing a second one.
 //
 // aes_gcm_encrypt also calls into aes128_encrypt, which leaves v8-v11 live
-// (encrypt.S's own header, and docs/ANALYSIS-TOOLING.MD's "real ABI
+// (encrypt.S's own header, and the ABI checker's "real ABI
 // violations" section) -- AAPCS64 makes those callee-saved, so any C
 // double/float kept live across the call is at risk. v0-v31 are declared
 // clobbered below so nothing FP-shaped is ever live across the callee.

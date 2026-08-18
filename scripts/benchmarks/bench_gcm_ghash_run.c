@@ -5,7 +5,7 @@
 // `ghash` entry point) reaches this local label directly; it is the actual
 // server code path, not the unused standalone `ghash` symbol
 // (src/crypto/gcm/ghash.S:38, no in-tree caller -- see
-// docs/ANALYSIS-TOOLING.MD's "`ghash` does not shadow it"). This driver
+// docs/SCRIPTS.md's "`ghash` does not shadow it"). This driver
 // calls into it through gcm_ghash_run_probe.S, which #includes data.S to
 // reach the local label and reproduces its documented entry conditions
 // exactly (see that file's header) -- it is the same instructions as

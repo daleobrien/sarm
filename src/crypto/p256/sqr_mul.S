@@ -21,7 +21,7 @@
 //   (i>=8) as a sparse signed combination of the low eight word
 //   positions gives, for every output word j, a fixed small set of
 //   (input word, +-1/+-2/+-3 coefficient) pairs — see
-//   docs/P256-REDUCE-DERIVATION.md for the full derivation and the
+//   scripts/p256_reduce_derivation.py for the full derivation and the
 //   generator that produced this table.
 //
 //   Algorithm:
@@ -106,7 +106,7 @@ p256_reduce:
 
     // Fold each high word (c[8..15], the two halves of T4..T7) into
     // acc[] per its derived table entry. Generated mechanically from
-    // the checked derivation table (docs/P256-REDUCE-DERIVATION.md) —
+    // the checked derivation table (scripts/p256_reduce_derivation.py) —
     // not hand-transcribed — to keep this in lockstep with what was
     // actually verified in Python.
     and     x14, x2, #0xffffffff    // c[8] = lo(T4)

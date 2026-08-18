@@ -13,7 +13,7 @@
 //   deliberately not adopted: embedded_count is 6, where the entire
 //   hash table fits in two cache lines and binary search's data-dependent
 //   branching is likely to cost more than it saves. See
-//   docs/EMBEDDED-LOOKUP.MD for the measurement behind that call. If the
+//   docs/HISTORY.md for the measurement behind that call. If the
 //   embedded asset count grows enough for this to matter, re-measure
 //   before reintroducing that mechanism.
 //

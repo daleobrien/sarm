@@ -4,7 +4,7 @@
 // This is the CPU-accurate half of the profile. sample(1) reports where
 // the server's *wall* time goes, blocked syscalls included; multiplying
 // these per-call numbers by measured call counts gives an independent
-// estimate that owes nothing to the sampler, and docs/PROFILE.MD
+// estimate that owes nothing to the sampler, and docs/HISTORY.md
 // compares the two.
 //
 // Why the calls go through an assembly trampoline

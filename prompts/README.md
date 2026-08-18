@@ -1,5 +1,12 @@
 # Optimization prompt series
 
+> **Archive.** These briefs are kept as a record of how the optimisation work was
+> driven. Their references to `docs/PROFILE.MD`, `docs/PROFILE-POST.MD`,
+> `docs/REGISTER-PRESSURE.MD` and similar point at documents that have since been
+> consolidated into [`docs/HISTORY.md`](../docs/HISTORY.md) — read that for the
+> current measurements and outcomes.
+
+
 A sequence of self-contained task prompts for making `sarm` run faster. Each
 file is a complete brief for one AI coding agent session: context, objective,
 constraints, method, deliverables, acceptance criteria.

@@ -8,7 +8,7 @@
 #
 # The table is looked up by linear scan (src/file/lookup_embedded.S). An
 # FNV-1a hash-keyed side table for binary search was prototyped here and
-# deliberately dropped — see docs/EMBEDDED-LOOKUP.MD.
+# deliberately dropped — see docs/HISTORY.md.
 
 set -eu
 

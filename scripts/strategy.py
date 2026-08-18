@@ -44,7 +44,7 @@ class Metrics:
     """Everything a Strategy might judge a candidate by.
 
     Every field is optional: not every metric is available in every run
-    (llvm-mca/perf are absent on macOS -- docs/ANALYSIS-TOOLING.MD), and a
+    (llvm-mca/perf are absent on macOS -- docs/SCRIPTS.md), and a
     Strategy only needs to read the ones its own ``primary_metric``/
     ``required_metrics`` actually use.
     """
@@ -192,7 +192,7 @@ def constant_time_violation(
     secret-independent" -- not a proof.
 
     Proving data-independent control/address flow needs a taint analysis
-    this repo has no static tool for; docs/P256-REDUCE-DERIVATION.md's own
+    this repo has no static tool for; scripts/p256_reduce_derivation.py's own
     "Constant time" section is argued by hand, not machine-checked. This
     only checks whether the candidate introduces MORE conditional branches
     than the current best -- a necessary, not sufficient, condition -- and
@@ -233,10 +233,10 @@ def heap_violation(baseline_src: str, candidate_src: str) -> str | None:
 
 
 # ----------------------------------------------------------------------
-# docs/PROFILE.MD / docs/PROFILE-POST.MD workload-connection check
+# docs/HISTORY.md workload-connection check
 # ----------------------------------------------------------------------
 
-_PROFILE_DOCS = ("PROFILE-POST.MD", "PROFILE.MD")
+_PROFILE_DOCS = ("HISTORY.md",)
 
 
 def workload_share(
@@ -557,7 +557,7 @@ class P256ReductionStrategy(CryptoStrategy):
     There is no dedicated TLS-handshake microbenchmark in this repo
     (scripts/profile_workload.py drives the real server for that, which is
     far too slow to run every candidate); bench_p256_ecdsa_sign_with_k is
-    the closest proxy -- per docs/PROFILE.MD/PROFILE-POST.MD, ECDSA
+    the closest proxy -- per docs/HISTORY.md, ECDSA
     CertificateVerify/sign is ~45-51% of connection cost and p256_reduce is
     the majority of *that* -- so it stands in for "handshake latency" here,
     which is why this strategy is judged by it rather than p256_reduce's

@@ -731,7 +731,7 @@ class Optimizer:
             "benchmark": f"runtime {bench.runtime_ns:.2f} ns (median of "
                          f"{bench.rounds} rounds, noise floor "
                          f"{self.noise_floor_pct:.3f}%)",
-            # No `perf` on macOS (docs/ANALYSIS-TOOLING.MD, "Tooling
+            # No `perf` on macOS (docs/SCRIPTS.md, "Tooling
             # reality on this machine") -- say so plainly rather than
             # fabricate counter data (prompts/02-benchmark-substrate.md).
             "perf": "(perf stat unavailable on this platform -- no `perf` "

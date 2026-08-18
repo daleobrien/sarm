@@ -1,5 +1,5 @@
 // Benchmark for src/crypto/aes128/encrypt.S -- the AES-only component of
-// AES-GCM cost (~9% measured, docs/PROFILE.MD), isolated from GHASH so the
+// AES-GCM cost (~9% measured, docs/HISTORY.md), isolated from GHASH so the
 // two can't be conflated (prompts/02-benchmark-substrate.md).
 //
 // Build and run:
