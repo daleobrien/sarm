@@ -12,7 +12,7 @@
 //
 // Algorithm:
 //   z = hash mod n
-//   (Rx,Ry) = k*G  (p256_point_mul)
+//   (Rx,Ry) = k*G  (p256_point_mul_base, the fixed-base comb)
 //   r = Rx mod n                 -- fail if r == 0
 //   s = k^-1 * (z + r*d) mod n   -- fail if s == 0
 //
@@ -70,9 +70,7 @@ p256_ecdsa_sign_with_k:
     add     x0, sp, #ESLOT(4)       // Rx
     add     x1, sp, #ESLOT(5)       // Ry
     add     x2, sp, #ESLOT(2)       // k
-    adr_l   x3, p256_gx
-    adr_l   x4, p256_gy
-    bl      p256_point_mul          // (Rx,Ry) = k*G
+    bl      p256_point_mul_base     // (Rx,Ry) = k*G
 
     add     x0, sp, #ESLOT(6)
     add     x1, sp, #ESLOT(4)

@@ -135,13 +135,11 @@ p256_ecdsa_verify:
     add     x2, sp, #VSLOT(6)
     bl      p256_scalar_mul
 
-    // (p1x,p1y) = u1*G
+    // (p1x,p1y) = u1*G — fixed base, so the comb applies here too
     add     x0, sp, #VSLOT(9)
     add     x1, sp, #VSLOT(10)
     add     x2, sp, #VSLOT(7)
-    adr_l   x3, p256_gx
-    adr_l   x4, p256_gy
-    bl      p256_point_mul
+    bl      p256_point_mul_base
 
     // (p2x,p2y) = u2*Q
     add     x0, sp, #VSLOT(11)
