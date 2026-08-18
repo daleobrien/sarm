@@ -138,9 +138,21 @@ bench_p256_ecdsa_sign_with_k: _bench_bin/bench_p256_ecdsa_sign_with_k
 _bench_bin/bench_p256_ecdsa_sign_with_k: bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
 
+# ── crypto_random_bytes (prompts/05-register-overhead-experiment.md) ──
+# The fresh re-profile found this hot enough post-03/04 to be worth its
+# own isolated number: a real open+read+close of /dev/urandom per call,
+# not arithmetic, so it belongs with the primitives it's compared against.
+
+_bench_obj/random.o: ../../src/crypto/random.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+bench_crypto_random_bytes: _bench_bin/bench_crypto_random_bytes
+_bench_bin/bench_crypto_random_bytes: bench_crypto_random_bytes.c _bench_obj/random.o | _bench_bin
+	$(CC) $(CFLAGS) bench_crypto_random_bytes.c _bench_obj/random.o $(LDFLAGS) -o $@
+
 .PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
     bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
-    bench_p256_ecdsa_sign_with_k
+    bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes
 clean:
 	rm -rf _bench_obj _bench_bin
