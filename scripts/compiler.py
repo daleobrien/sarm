@@ -27,7 +27,18 @@ class Compiler:
 
     def test(self, commands) -> Result:
         """Run the correctness test commands in order; first failure stops."""
-        if isinstance(commands, (str, list)):
+        # Only wrap a bare string. ``commands`` from arm-optimize.py's
+        # default_tests() is already a list (e.g.
+        # ["make -C tests/unit test"]) -- wrapping it again produced
+        # [["make -C tests/unit test"]], so ``self.run`` received a
+        # one-element argv list whose single element was the entire command
+        # string. With no shell operator in it, run_command took the
+        # non-shell path and tried to exec a program literally named
+        # "make -C tests/unit test" (spaces and all) instead of running it
+        # through a shell -- "command not found". Commands containing "&&"
+        # (every dedicated test_<function> command) masked this: they
+        # forced the shell-join path regardless of the extra wrapping.
+        if isinstance(commands, str):
             commands = [commands]
         for command in commands:
             result = self.run(command, timeout=1200)
