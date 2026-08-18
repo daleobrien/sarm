@@ -138,6 +138,10 @@ bench_p256_point_mul_base: _bench_bin/bench_p256_point_mul_base
 _bench_bin/bench_p256_point_mul_base: bench_p256_point_mul_base.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_p256_point_mul_base.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
 
+bench_p256_scalar_inv: _bench_bin/bench_p256_scalar_inv
+_bench_bin/bench_p256_scalar_inv: bench_p256_scalar_inv.c _bench_obj/libsarm.a | _bench_bin
+	$(CC) $(CFLAGS) bench_p256_scalar_inv.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
+
 bench_p256_ecdsa_sign_with_k: _bench_bin/bench_p256_ecdsa_sign_with_k
 _bench_bin/bench_p256_ecdsa_sign_with_k: bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
@@ -177,7 +181,7 @@ _bench_bin/bench_lookup_embedded: bench_lookup_embedded.c _bench_obj/file_lookup
 .PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
     bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
-    bench_p256_point_mul_base \
+    bench_p256_point_mul_base bench_p256_scalar_inv \
     bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes \
     bench_lookup_embedded
 clean:
