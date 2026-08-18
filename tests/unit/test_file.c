@@ -1,5 +1,5 @@
 // Unit tests for src/util/ assembly functions
-// Tests: check_path_traversal, check_path_safety, get_filetype
+// Tests: check_path_traversal, check_path_safety, get_filetype, lookup_embedded
 
 #include "test_harness.h"
 
@@ -7,6 +7,45 @@
 
 extern int64_t check_path_traversal(const char *path, int64_t len) __asm__("check_path_traversal");
 extern int64_t check_path_safety(const char *path, int64_t len) __asm__("check_path_safety");
+
+// lookup_embedded(path=x0, len=x1) →
+//   (content_ptr=x0, content_size=x1, ct_ptr=x2, ct_len=x3, gzip=x4,
+//    etag_ptr=x5, etag_len=x6, carry: 1 = not found, 0 = found)
+// Table comes from stubs.S: one entry, "www/index.html".
+typedef struct {
+	const char *content_ptr;
+	int64_t content_size;
+	const char *ct_ptr;
+	int64_t ct_len;
+	int64_t gzip;
+	const char *etag_ptr;
+	int64_t etag_len;
+	int64_t not_found;
+} lookup_result_t;
+
+static inline lookup_result_t lookup_embedded_wrapper(const char *path, int64_t len) {
+	lookup_result_t r;
+	asm volatile(
+		"mov x0, %8\n"
+		"mov x1, %9\n"
+		"bl lookup_embedded\n"
+		"mov %0, x0\n"
+		"mov %1, x1\n"
+		"mov %2, x2\n"
+		"mov %3, x3\n"
+		"mov %4, x4\n"
+		"mov %5, x5\n"
+		"mov %6, x6\n"
+		"cset %7, cs\n"
+		: "=r"(r.content_ptr), "=r"(r.content_size), "=r"(r.ct_ptr),
+		  "=r"(r.ct_len), "=r"(r.gzip), "=r"(r.etag_ptr), "=r"(r.etag_len),
+		  "=r"(r.not_found)
+		: "r"(path), "r"(len)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x9", "x10",
+		  "x19", "x20", "x22", "x23", "memory"
+	);
+	return r;
+}
 
 // get_filetype(filename=x0, len=x1) → (ct=x0, ct_len=x1)
 static inline void get_filetype_wrapper(
@@ -127,12 +166,51 @@ static void test_get_filetype(void) {
 		ASSERT_STR_EQ("xyzzy → text/plain", "text/plain; charset=utf-8", ct, ct_len);
 }
 
+// ── tests: lookup_embedded ─────────────────────────────────────────
+
+static void test_lookup_embedded(void) {
+	TEST_SUITE("lookup_embedded");
+
+	// Found: the one real entry in stubs.S.
+	lookup_result_t r = lookup_embedded_wrapper("www/index.html", 14);
+	ASSERT_EQ("index.html found", 0, r.not_found);
+	if (!r.not_found) {
+		ASSERT_STR_EQ("content", "<h1>hello h2</h1>", r.content_ptr, r.content_size);
+		ASSERT_STR_EQ("content-type", "text/html; charset=utf-8", r.ct_ptr, r.ct_len);
+		ASSERT_EQ("gzip flag", 0, r.gzip);
+		ASSERT_STR_EQ("etag", "\"stub-etag\"", r.etag_ptr, r.etag_len);
+	}
+
+	// Not found: unrelated path.
+	r = lookup_embedded_wrapper("www/missing.html", 16);
+	ASSERT_EQ("unrelated path not found", 1, r.not_found);
+
+	// Not found: empty path.
+	r = lookup_embedded_wrapper("", 0);
+	ASSERT_EQ("empty path not found", 1, r.not_found);
+
+	// Not found: same length (14) as the real entry, differs mid-string —
+	// exercises the length-matches-but-streqn-rejects branch.
+	r = lookup_embedded_wrapper("www/indexxhtml", 14);
+	ASSERT_EQ("same length, wrong bytes not found", 1, r.not_found);
+
+	// Not found: shares the real path's prefix but is shorter —
+	// exercises the length-mismatch branch (streqn never called).
+	r = lookup_embedded_wrapper("www/index", 9);
+	ASSERT_EQ("shorter prefix not found", 1, r.not_found);
+
+	// Not found: shares the real path's prefix but is longer.
+	r = lookup_embedded_wrapper("www/index.html.bak", 19);
+	ASSERT_EQ("longer prefix not found", 1, r.not_found);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
 	test_check_path_traversal();
 	test_check_path_safety();
 	test_get_filetype();
+	test_lookup_embedded();
 	test_summary();
 	return 0;
 }

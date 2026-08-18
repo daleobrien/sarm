@@ -63,7 +63,7 @@ GROUPS = [
     (r"^(raw_read|raw_write|transport_|write_all|_main|skip_argv|exit$|"
      r"child)", "transport / syscalls / accept loop"),
     (r"^tls_", "handshake plumbing (non-crypto)"),
-    (r"^(memcpy|strlen|streqn|itoa|atoi|fnv1a_64)", "util"),
+    (r"^(memcpy|strlen|streqn|itoa|atoi)", "util"),
     (r".*", "everything else"),
 ]
 

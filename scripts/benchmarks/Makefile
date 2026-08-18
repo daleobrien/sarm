@@ -150,9 +150,30 @@ bench_crypto_random_bytes: _bench_bin/bench_crypto_random_bytes
 _bench_bin/bench_crypto_random_bytes: bench_crypto_random_bytes.c _bench_obj/random.o | _bench_bin
 	$(CC) $(CFLAGS) bench_crypto_random_bytes.c _bench_obj/random.o $(LDFLAGS) -o $@
 
+# ── lookup_embedded (prompts/10-embedded-lookup.md) ──
+# Links the real generated table (src/embedded.S -- run embed_www.sh
+# first) so the measurement reflects the actual six-entry asset set, not
+# a synthetic one.
+
+_bench_obj/file_lookup_embedded.o: ../../src/file/lookup_embedded.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/util_streqn.o: ../../src/util/streqn.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/embedded.o: ../../src/embedded.S | _bench_obj
+	@mkdir -p $(abspath _bench_obj)
+	cd ../.. && $(AS) $(ASFLAGS) -c src/embedded.S -o scripts/benchmarks/$@
+
+bench_lookup_embedded: _bench_bin/bench_lookup_embedded
+_bench_bin/bench_lookup_embedded: bench_lookup_embedded.c _bench_obj/file_lookup_embedded.o _bench_obj/util_streqn.o _bench_obj/embedded.o | _bench_bin
+	$(CC) $(CFLAGS) bench_lookup_embedded.c _bench_obj/file_lookup_embedded.o \
+	    _bench_obj/util_streqn.o _bench_obj/embedded.o $(LDFLAGS) -o $@
+
 .PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
     bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
-    bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes
+    bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes \
+    bench_lookup_embedded
 clean:
 	rm -rf _bench_obj _bench_bin

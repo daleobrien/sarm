@@ -76,7 +76,6 @@ TEST_STREQN := $(OBJ_DIR)/test_streqn
 TEST_STREQN_I := $(OBJ_DIR)/test_streqn_i
 TEST_MEMCPY := $(OBJ_DIR)/test_memcpy
 TEST_ITOA := $(OBJ_DIR)/test_itoa
-TEST_FNV1A_64 := $(OBJ_DIR)/test_fnv1a_64
 TEST_ATOI := $(OBJ_DIR)/test_atoi
 TEST_ATOI_N := $(OBJ_DIR)/test_atoi_n
 # Split test suites — one per .c file under the test directory
@@ -138,7 +137,7 @@ TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
-	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) $(TEST_FNV1A_64) \
+	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) \
 	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) $(TLS_APPLICATION_TESTS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) $(TEST_TLS_RECORD_READ_RECORD) \
@@ -289,11 +288,6 @@ $(TEST_MEMCPY): test_memcpy.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 # itoa returns two values (ptr=x0, len=x1), so the C test code calls it
 # via an inline asm wrapper.
 $(TEST_ITOA): test_itoa.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
-
-# test_fnv1a_64: only needs util (pure functions).
-# fnv1a_64 uses the standard ABI, so the C test code calls it directly.
-$(TEST_FNV1A_64): test_fnv1a_64.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
 # test_atoi_n: only needs util (pure functions).

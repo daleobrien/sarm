@@ -17,8 +17,7 @@
 // every Stage 10 MIME type (.html/.css/.js/.svg/.png), exercise Range
 // responses over a small fixed body, and — since Stage 11 — retrieve a
 // file (www/big.bin, 70000 bytes) larger than the initial flow-control
-// window. The 80-byte entry layout mirrors embedded.S; the linear scan
-// in lookup_embedded compares path strings, so the hash is ignored.
+// window. The 72-byte entry layout mirrors embedded.S.
 // Error-page lookups ("www/err/<code>.html") still miss, which matches
 // the current build and keeps the reply_status tests unchanged.
 stub_index_path:
@@ -106,42 +105,36 @@ stub_big_etag_end:
 
 .align 3
 embedded_files:
-    .8byte 0                                      // hash (linear scan ignores it)
     .8byte stub_index_path, (stub_index_path_end - stub_index_path - 1)
     .8byte stub_index_content, (stub_index_content_end - stub_index_content)
     .8byte stub_index_ct, (stub_index_ct_end - stub_index_ct - 1)
     .8byte 0                                      // gzip flag — raw content
     .8byte stub_index_etag, (stub_index_etag_end - stub_index_etag - 1)
 
-    .8byte 0
     .8byte stub_css_path, (stub_css_path_end - stub_css_path - 1)
     .8byte stub_css_content, (stub_css_content_end - stub_css_content)
     .8byte stub_css_ct, (stub_css_ct_end - stub_css_ct - 1)
     .8byte 0
     .8byte stub_css_etag, (stub_css_etag_end - stub_css_etag - 1)
 
-    .8byte 0
     .8byte stub_js_path, (stub_js_path_end - stub_js_path - 1)
     .8byte stub_js_content, (stub_js_content_end - stub_js_content)
     .8byte stub_js_ct, (stub_js_ct_end - stub_js_ct - 1)
     .8byte 0
     .8byte stub_js_etag, (stub_js_etag_end - stub_js_etag - 1)
 
-    .8byte 0
     .8byte stub_svg_path, (stub_svg_path_end - stub_svg_path - 1)
     .8byte stub_svg_content, (stub_svg_content_end - stub_svg_content)
     .8byte stub_svg_ct, (stub_svg_ct_end - stub_svg_ct - 1)
     .8byte 0
     .8byte stub_svg_etag, (stub_svg_etag_end - stub_svg_etag - 1)
 
-    .8byte 0
     .8byte stub_png_path, (stub_png_path_end - stub_png_path - 1)
     .8byte stub_png_content, (stub_png_content_end - stub_png_content)
     .8byte stub_png_ct, (stub_png_ct_end - stub_png_ct - 1)
     .8byte 0
     .8byte stub_png_etag, (stub_png_etag_end - stub_png_etag - 1)
 
-    .8byte 0
     .8byte stub_big_path, (stub_big_path_end - stub_big_path - 1)
     .8byte stub_big_content, (stub_big_content_end - stub_big_content)
     .8byte stub_big_ct, (stub_big_ct_end - stub_big_ct - 1)

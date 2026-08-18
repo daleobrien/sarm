@@ -10,19 +10,16 @@
 .align 3
 
 // One tiny embedded entry so HTTP/2 tests can resolve a real file
-// ("www/index.html"), mirroring the 80-byte entry layout of embedded.S:
-//   +0:  hash (8 bytes)
-//   +8:  path_ptr
-//   +16: path_len
-//   +24: content_ptr
-//   +32: content_size
-//   +40: ct_ptr
-//   +48: ct_len
-//   +56: gzip flag
-//   +64: etag_ptr
-//   +72: etag_len
-// lookup_embedded's linear scan compares path strings, so the hash is
-// ignored here.
+// ("www/index.html"), mirroring the 72-byte entry layout of embedded.S:
+//   +0:  path_ptr
+//   +8:  path_len
+//   +16: content_ptr
+//   +24: content_size
+//   +32: ct_ptr
+//   +40: ct_len
+//   +48: gzip flag
+//   +56: etag_ptr
+//   +64: etag_len
 stub_index_path:
     .asciz "www/index.html"
 stub_index_path_end:
@@ -38,7 +35,6 @@ stub_index_etag_end:
 
 .align 3
 embedded_files:
-    .8byte 0                                      // hash (linear scan ignores it)
     .8byte stub_index_path, (stub_index_path_end - stub_index_path - 1)
     .8byte stub_index_content, (stub_index_content_end - stub_index_content)
     .8byte stub_index_ct, (stub_index_ct_end - stub_index_ct - 1)
