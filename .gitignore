@@ -2,6 +2,9 @@
 /sarm
 .*
 !.gitignore
+!.claude/
+.claude/*
+!.claude/skills/
 err/*
 !err/template.html
 www/.*
