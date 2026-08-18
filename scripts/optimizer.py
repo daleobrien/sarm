@@ -41,6 +41,8 @@ from llm import LLM, LLMCandidate
 from mca import MCA
 from mutations import MutationCandidate, apply_mutations
 from perf import Perf
+import strategy as strategy_mod
+from strategy import Metrics, SpeedStrategy, Strategy
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -76,6 +78,7 @@ class Optimizer:
         target: str = "apple-silicon",
         apply: bool = False,
         quiet: bool = False,
+        strategy: Strategy | None = None,
     ) -> None:
         self.source = source
         self.function = function
@@ -96,6 +99,9 @@ class Optimizer:
         self.target = target
         self.apply = apply
         self.quiet = quiet
+        # Defaults to today's runtime-only behaviour (prompts/06's
+        # regression test: --strategy speed must reproduce it exactly).
+        self.strategy = strategy or SpeedStrategy(function=function, workdir=workdir)
 
         self.original_source = self.source.read_text()
         self.history: list[dict] = []
@@ -120,9 +126,20 @@ class Optimizer:
             rf"(?=^[ \t]*\.globa?l[ \t]+|\Z)"
         )
         match = pattern.search(source_text)
-        if not match:
-            raise RuntimeError(f"could not locate function {self.function}")
-        return match.group(0)
+        if match:
+            return match.group(0)
+        # File-local ".L" targets (e.g. .Lgcm_ghash_run, prompts/06's GHASH
+        # strategy) have no .global to anchor on and sit among other .L
+        # labels with no clean textual boundary a regex can find safely.
+        # asmparse's region parser (prompt 01) already solves this via a
+        # real CFG; fall back to it rather than a second, worse regex. Only
+        # reached when the .global regex above fails, so it cannot change
+        # behaviour for any .global-anchored target (SpeedStrategy's
+        # exact-reproduction requirement).
+        region = strategy_mod.find_region(self.workdir, self.function)
+        if region is not None and region.text in source_text:
+            return region.text
+        raise RuntimeError(f"could not locate function {self.function}")
 
     def install_candidate(self, original_source: str, replacement: str) -> str:
         """Swap the function text in ``original_source`` for ``replacement``."""
@@ -131,8 +148,10 @@ class Optimizer:
             raise CandidateError("function text not found while installing")
 
         repl = replacement.strip()
-        # Tolerate models that drop the directives: re-add the .global line.
-        if not re.search(
+        # Tolerate models that drop the directives: re-add the .global line
+        # -- but never for a file-local ".L" target, which must never gain
+        # one (it would change the symbol from private to global).
+        if not self.function.startswith(".L") and not re.search(
             rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b", repl, re.M
         ):
             repl = f".global {self.function}\n" + repl
@@ -150,8 +169,12 @@ class Optimizer:
         """Pull the doc-comment header above the function as a signature."""
         lines = source_text.splitlines()
         global_idx = None
+        label_re = re.compile(
+            rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b"
+        )
+        bare_re = re.compile(rf"^{re.escape(self.function)}:")
         for i, line in enumerate(lines):
-            if re.match(rf"^[ \t]*\.globa?l[ \t]+{re.escape(self.function)}\b", line):
+            if label_re.match(line) or bare_re.match(line):
                 global_idx = i
                 break
         if global_idx is None:
@@ -269,6 +292,61 @@ class Optimizer:
             return None
         return Benchmark(self.benchmark_cmd, rounds=self.rounds).run()
 
+    def run_workload_benchmark(self) -> BenchmarkResult | None:
+        """The strategy's *workload* benchmark, if it declares one (e.g.
+        AES-GCM throughput for a GHASH strategy) -- separate from
+        ``benchmark()``, which measures the target function in isolation.
+        Must be called with the state under test already on disk: for
+        .Lgcm_ghash_run this rebuilds bench_aes_gcm_encrypt, which
+        #includes data.S and so picks up whatever candidate is currently
+        installed.
+        """
+        cmd = self.strategy.workload_benchmark_cmd()
+        if cmd is None:
+            return None
+        return Benchmark(cmd, rounds=self.rounds).run()
+
+    def _collect_metrics(
+        self,
+        disassembly: str | None,
+        bench: BenchmarkResult | None,
+        *,
+        workload: BenchmarkResult | None = None,
+        binary_tag: str | None = None,
+        heap_ok: bool = True,
+        constant_time_ok: bool = True,
+    ) -> Metrics:
+        """Every metric a Strategy might judge a candidate by, for
+        whatever is *currently on disk* at ``self.source`` -- callers must
+        collect this right after writing the state they want measured
+        (prompts/06's Metrics model; strategy.register_metrics()'s own
+        docstring explains why the on-disk requirement exists)."""
+        instr, loads, stores = strategy_mod.instruction_counts(disassembly)
+        peak, save_restore, frame = strategy_mod.register_metrics(
+            self.workdir, self.function
+        )
+        binary_size = None
+        if binary_tag:
+            obj = self.outdir / ".build" / f"{binary_tag}.o"
+            if obj.exists():
+                binary_size = obj.stat().st_size
+        extra: dict = {}
+        if workload is not None:
+            extra["workload_runtime_ns"] = workload.runtime_ns
+        return Metrics(
+            runtime_ns=bench.runtime_ns if bench else None,
+            instruction_count=instr,
+            load_count=loads,
+            store_count=stores,
+            save_restore_count=save_restore,
+            peak_register_pressure=peak,
+            stack_bytes=frame,
+            binary_size=binary_size,
+            extra=extra,
+            heap_ok=heap_ok,
+            constant_time_ok=constant_time_ok,
+        )
+
     def run_tests(self) -> Result:
         if not self.quiet:
             print("  Running correctness tests...")
@@ -341,6 +419,8 @@ class Optimizer:
             )
         print(f"Noise floor: {self.noise_floor_pct:.3f}% "
               "(candidates must beat best by more than this)")
+        print(f"Strategy: {self.strategy.name} "
+              f"(judged by {self.strategy.workload_label()})")
         print()
 
         # ---------------------------------------------------------- baseline
@@ -372,6 +452,12 @@ class Optimizer:
         )
         (self.outdir / "baseline" / "benchmark.json").write_text(
             json.dumps(best_bench.to_dict(), indent=2) + "\n"
+        )
+
+        baseline_workload = self.run_workload_benchmark()
+        best_metrics = self._collect_metrics(
+            evidence["disassembly"], best_bench,
+            workload=baseline_workload, binary_tag="current",
         )
 
         print()
@@ -449,6 +535,7 @@ class Optimizer:
                         self.history.append(self._history_entry(
                             iteration, index, origin, explanation,
                             result="rejected", reason="ABI violation",
+                            rule="abi",
                         ))
                         rejected_count += 1
                         continue
@@ -465,7 +552,7 @@ class Optimizer:
                     )
                     self.history.append(self._history_entry(
                         iteration, index, origin, explanation,
-                        result="rejected", reason=str(exc),
+                        result="rejected", reason=str(exc), rule="install",
                     ))
                     rejected_count += 1
                     continue
@@ -478,7 +565,8 @@ class Optimizer:
                 if not tests.success:
                     print("  → rejected: correctness failure")
                     self._revert(backup, label, iteration, index, origin,
-                                 explanation, candidate_src, "correctness failure")
+                                 explanation, candidate_src,
+                                 "correctness failure", rule="correctness")
                     rejected_count += 1
                     continue
 
@@ -487,7 +575,7 @@ class Optimizer:
                     print("  → rejected: differential mismatch")
                     self._revert(backup, label, iteration, index, origin,
                                  explanation, candidate_src,
-                                 "differential mismatch")
+                                 "differential mismatch", rule="differential")
                     rejected_count += 1
                     continue
 
@@ -496,7 +584,8 @@ class Optimizer:
                 if runtime_bench is None:
                     print("  → rejected: benchmark failure")
                     self._revert(backup, label, iteration, index, origin,
-                                 explanation, candidate_src, "benchmark failure")
+                                 explanation, candidate_src,
+                                 "benchmark failure", rule="benchmark-failure")
                     rejected_count += 1
                     continue
                 runtime = runtime_bench.runtime_ns
@@ -505,19 +594,46 @@ class Optimizer:
                       f"(improvement vs best: {improvement:+.3f}%, "
                       f"noise floor: {self.noise_floor_pct:.3f}%)")
 
-                # A candidate inside the noise band is not a demonstrated
-                # improvement (prompts/02-benchmark-substrate.md): require
-                # beating best by more than both the noise floor and any
-                # explicit --min-improvement, not a bare `runtime < best`.
-                required_improvement = max(
-                    self.min_improvement, self.noise_floor_pct
-                )
                 # Compiled once and reused for both the judge's diff and
                 # the archived disassembly below.
                 cand_dis = self._current_disassembly()
 
-                # Optional LLM judge.
-                keep = runtime < best * (1.0 - required_improvement / 100.0)
+                # The strategy's own workload benchmark, if it has one
+                # (e.g. AES-GCM throughput for GHASH) -- run now, with the
+                # candidate already on disk.
+                cand_workload = self.run_workload_benchmark()
+                if cand_workload is not None:
+                    print(f"  Workload ({self.strategy.workload_label()}): "
+                          f"{cand_workload.runtime_ns:.2f} ns")
+
+                heap_reason = strategy_mod.heap_violation(backup, new_source)
+                constant_time_reason = None
+                if self.strategy.constant_time:
+                    constant_time_reason = strategy_mod.constant_time_violation(
+                        evidence.get("disassembly"), cand_dis
+                    )
+                cand_metrics = self._collect_metrics(
+                    cand_dis, runtime_bench,
+                    workload=cand_workload, binary_tag="candidate",
+                    heap_ok=heap_reason is None,
+                    constant_time_ok=constant_time_reason is None,
+                )
+
+                # Hard constraints reject outright, regardless of any score;
+                # only a survivor is then judged against the
+                # strategy-appropriate metric -- never one universal score
+                # for every optimization type (prompts/06's Acceptance
+                # section).
+                decision = self.strategy.accept(
+                    best_metrics, cand_metrics,
+                    min_improvement_pct=self.min_improvement,
+                    noise_floor_pct=self.noise_floor_pct,
+                )
+                print(f"  {decision.render()}")
+
+                # Optional LLM judge -- only consulted once the strategy
+                # itself would keep the candidate.
+                keep = decision.keep
                 judge_reason = None
                 if keep and self.judge and self.judge.available():
                     verdict = self._ask_judge(
@@ -531,6 +647,7 @@ class Optimizer:
                     print("  ✓ NEW BEST")
                     best = runtime
                     best_bench = runtime_bench
+                    best_metrics = cand_metrics
                     accepted_count += 1
                     accepted_summaries.append(
                         f"{label} [{origin}]: {improvement:+.3f}% "
@@ -546,17 +663,19 @@ class Optimizer:
                         runtime_ns=runtime,
                         improvement_percent=improvement,
                         result="accepted",
-                        reason=judge_reason or "benchmark improvement",
+                        reason=judge_reason or decision.reason,
+                        rule=decision.rule, metric=decision.metric,
                     ))
                     # Evidence refreshes against the new best.
                     evidence = self.gather_evidence(
                         self.extract_function(new_source)
                     )
                 else:
-                    reason = "no improvement" if not judge_reason else judge_reason
+                    reason = decision.reason if not judge_reason else judge_reason
                     print(f"  → rejected: {reason}")
                     self._revert(backup, label, iteration, index, origin,
-                                 explanation, candidate_src, reason)
+                                 explanation, candidate_src, reason,
+                                 rule=decision.rule, metric=decision.metric)
                     rejected_count += 1
 
             self.write_history()
@@ -659,18 +778,20 @@ class Optimizer:
 
     def _revert(self, backup: str, label: str, iteration, index,
                 origin, explanation: str, candidate_src: str,
-                reason: str) -> None:
+                reason: str, *, rule: str | None = None,
+                metric: str | None = None) -> None:
         self.source.write_text(backup)
         self.save_candidate(label, backup, candidate_src, "rejected")
         self.history.append(self._history_entry(
             iteration, index, origin, explanation,
-            result="rejected", reason=reason,
+            result="rejected", reason=reason, rule=rule, metric=metric,
         ))
 
     @staticmethod
     def _history_entry(iteration, index, origin, explanation, *,
                        result, reason, runtime_ns=None,
-                       improvement_percent=None) -> dict:
+                       improvement_percent=None, rule=None,
+                       metric=None) -> dict:
         entry: dict = {
             "iteration": iteration,
             "candidate": index,
@@ -683,6 +804,12 @@ class Optimizer:
             entry["runtime_ns"] = runtime_ns
         if improvement_percent is not None:
             entry["improvement_percent"] = improvement_percent
+        # Which rule fired and which metric decided it (prompts/06's
+        # acceptance criterion) -- None for the pipeline gates
+        # (correctness/ABI/differential/benchmark-failure) that already
+        # named themselves in ``reason`` before this field existed.
+        entry["rule"] = rule
+        entry["metric"] = metric
         return entry
 
     def _summary_text(self, baseline, best, improvement, accepted,

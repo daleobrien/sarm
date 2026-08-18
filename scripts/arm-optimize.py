@@ -47,6 +47,7 @@ sys.path.insert(0, str(HERE))
 
 from llm import LLM  # noqa: E402
 from optimizer import Optimizer  # noqa: E402
+from strategy import STRATEGY_CHOICES, StrategyTargetError, build_strategy  # noqa: E402
 
 DEFAULT_WORKDIR = HERE.parent
 
@@ -227,6 +228,26 @@ def main() -> None:
                         help="minimum %% improvement over the best to accept")
     parser.add_argument("--target", default="apple-silicon",
                         help="scheduling target hint (apple-m2, cortex-a76, ...)")
+    parser.add_argument("--strategy", choices=STRATEGY_CHOICES, default="speed",
+                        help="what a candidate is judged by (prompts/06): "
+                             "speed judges the function's own runtime; "
+                             "algorithm/crypto dispatch by --function to a "
+                             "registered algorithm-specific strategy (GHASH, "
+                             "P-256 reduction); register-pressure/"
+                             "instruction/load-store/combined require "
+                             "--workload-keyword to prove the target is on "
+                             "a measured hot path. Default: speed (today's "
+                             "behaviour, unchanged)")
+    parser.add_argument("--workload-keyword", default=None,
+                        help="label substring to look up in "
+                             "docs/PROFILE*.MD to prove --function is "
+                             "connected to measured workload (required by "
+                             "--strategy register-pressure/instruction/"
+                             "load-store/combined)")
+    parser.add_argument("--min-workload-share", type=float, default=None,
+                        help="minimum %% share of connection cost "
+                             "--workload-keyword's row must show (paired "
+                             "with --workload-keyword)")
     parser.add_argument("--abi-check", dest="abi_check", action="store_true",
                         default=True)
     parser.add_argument("--no-abi-check", dest="abi_check", action="store_false")
@@ -328,6 +349,17 @@ def main() -> None:
         else:
             differential_cmd = [args.differential]
 
+    try:
+        strategy = build_strategy(
+            args.strategy,
+            function=args.function,
+            workdir=workdir,
+            workload_keyword=args.workload_keyword,
+            min_workload_share_pct=args.min_workload_share,
+        )
+    except StrategyTargetError as exc:
+        parser.error(str(exc))
+
     optimizer = Optimizer(
         source=source,
         function=args.function,
@@ -348,6 +380,7 @@ def main() -> None:
         target=args.target,
         apply=args.apply,
         quiet=args.quiet,
+        strategy=strategy,
     )
 
     try:
