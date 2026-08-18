@@ -399,11 +399,67 @@ static void test_gcm_large_message(void) {
     }
 }
 
+// 5000 random (aad_len, pt_len) trials biased toward the boundaries of
+// .Lgcm_ghash_run's 4-block aggregated path (prompts/03-aes-gcm-throughput.md):
+// 0-3 blocks (scalar-only), exactly 4/8/12 blocks (aggregation with no
+// scalar remainder), N*4+{1,2,3} blocks (aggregation plus a scalar
+// remainder), all with and without a trailing partial block. Every trial
+// is checked against the independent bit-serial reference above.
+static void test_gcm_roundtrip_fuzz(void) {
+    TEST_SUITE("gcm round-trip vs reference (5000-trial random fuzz)");
+    enum { MAXLEN = 4096 };
+    uint8_t key[16], iv[12];
+    static uint8_t aad[256], pt[MAXLEN], ct[MAXLEN], ref_ct[MAXLEN];
+    static uint8_t out[MAXLEN];
+    uint8_t tag[16], ref_tag[16];
+    int failures = 0;
+
+    for (int trial = 0; trial < 5000; trial++) {
+        for (int i = 0; i < 16; i++)
+            key[i] = (uint8_t)rng_next();
+        for (int i = 0; i < 12; i++)
+            iv[i] = (uint8_t)rng_next();
+
+        uint64_t aad_len = rng_next() % 257;      // 0..256
+        uint64_t blocks = rng_next() % 21;        // 0..20 full blocks
+        uint64_t tail = (rng_next() % 2) ? (rng_next() % 16) : 0;
+        uint64_t pt_len = blocks * 16 + tail;      // 0..335 bytes
+
+        for (uint64_t i = 0; i < aad_len; i++)
+            aad[i] = (uint8_t)rng_next();
+        for (uint64_t i = 0; i < pt_len; i++)
+            pt[i] = (uint8_t)rng_next();
+
+        aes_gcm_encrypt(key, iv, aad, aad_len, pt, pt_len, ct, tag);
+        ref_gcm_encrypt(key, iv, aad, aad_len, pt, pt_len, ref_ct, ref_tag);
+        if ((pt_len && memcmp(ct, ref_ct, pt_len) != 0) ||
+            memcmp(tag, ref_tag, 16) != 0) {
+            if (failures < 5)
+                _FAIL("trial %d: aad=%llu pt=%llu — seal mismatch",
+                      trial, (unsigned long long)aad_len,
+                      (unsigned long long)pt_len);
+            failures++;
+            continue;
+        }
+        if (aes_gcm_decrypt(key, iv, aad, aad_len, ct, pt_len, tag, out) !=
+                1 ||
+            (pt_len && memcmp(out, pt, pt_len) != 0)) {
+            if (failures < 5)
+                _FAIL("trial %d: aad=%llu pt=%llu — open failed", trial,
+                      (unsigned long long)aad_len,
+                      (unsigned long long)pt_len);
+            failures++;
+        }
+    }
+    ASSERT_EQ("5000 random trials round-trip and match", 0, failures);
+}
+
 int main(void) {
     test_gcm_roundtrip();
     test_gcm_alignment();
     test_gcm_inplace();
     test_gcm_large_message();
+    test_gcm_roundtrip_fuzz();
     test_summary();
     return 0;
 }
