@@ -1,0 +1,370 @@
+# Multicore baseline (Plan.md Phase 0, Steps 1–3)
+
+Machine: Apple Silicon, 12 logical CPUs (`hw.perflevel0.logicalcpu` = 6 P-cores,
+`hw.perflevel1.logicalcpu` = 6 E-cores). macOS (Darwin 27.0.0).
+Measured at commit `b3e3150`, working tree clean.
+
+---
+
+## The process model as actually built
+
+sarm forks a child process for every accepted connection. All of the following
+is from `src/sarm/main.S` and `src/sarm/child_end.S`, and was confirmed at
+runtime.
+
+### What happens on each connection
+
+```
+_main
+  socket() → SO_REUSEADDR → bind() → listen(backlog 5)
+  SIGCHLD = SIG_IGN | SA_NOCLDWAIT      # kernel auto-reaps; no wait() anywhere
+  SIGPIPE = SIG_IGN
+  │
+loop:
+  accept()  ─────────────────────────────────────────────┐
+  fork()                                                 │
+   ├── parent: close(clientfd); b loop ───────────────────┘
+   │
+   └── child:  close(sockfd)             # drops the listening socket
+               SO_RCVTIMEO
+               recvfrom(MSG_PEEK, 1)     # protocol detection
+                ├── 0x16 → tls_server_handshake → h2_connection_loop
+                └── else → child         # HTTP/1 or h2c
+               child_end: close(clientfd); close(file_des); exit(0)
+```
+
+The child serves **exactly one connection** and then calls `SYS_exit`
+(`child_end.S`). It never returns to `accept()`. The parent does nothing but
+accept and fork.
+
+Both branches are explicit in the code, and both close the descriptor they do
+not own: the parent closes the client fd so it does not leak, the child closes
+the listening fd so the port is not held open after the parent exits.
+
+### Why the fork is there
+
+The comment at the fork site states the reason: an HTTP/2 connection is
+persistent, so serving it inline on the accept loop would leave every other
+connection stuck in the listen backlog until it finished. Browsers routinely
+open a second connection, and those requests would hang. The fork also gives
+each connection a private copy-on-write image of every global, "which is
+exactly the isolation the single-connection-at-a-time code assumed".
+
+### The `no_fork` debug mode
+
+Passing a non-numeric argv[1] (`./sarm d`) sets the `no_fork` global and
+suppresses the fork; the connection is served inline on the accept loop and
+`child_end` branches back to `loop` instead of exiting. argv[1] is parsed by
+first byte — `< 'A'` is treated as a port, anything else as the debug flag — so
+`no_fork` mode always listens on the default port 8080. `scripts/profile_workload.py`
+depends on this to attribute one process's `getrusage` to a whole workload.
+
+### Verification
+
+Three connections held open concurrently, counting processes:
+
+```
+sarm PIDs: 25504 25508 25509 25510      # 1 parent + 3 children
+```
+
+### There is no HTTP/1 keep-alive
+
+Every HTTP/1 response carries `Connection: close`, and the server closes the
+socket immediately after:
+
+```
+HTTP/1.1 200 OK
+...
+Connection: close
+```
+
+`grep -ri keep-alive src/` returns nothing. So on HTTP/1 a connection is a
+single request, and therefore **one `fork()` per request**. On HTTP/2 a
+connection is one fork amortised over every stream it carries.
+
+### Where the documentation disagrees
+
+Three existing claims are stale and should be corrected independently of the
+multicore work:
+
+| Claim | Where | Reality |
+| --- | --- | --- |
+| "One process, one connection at a time, no fork, no threads" | `docs/ARCHITECTURE.md:22` | Forks per connection; many connections in flight at once |
+| "there is no fork left to disable" | `docs/ARCHITECTURE.md:73` | `no_fork` disables exactly that fork |
+| "`defs.S` still defines fork-era syscalls (`SYS_fork`, …) that are never used" | `docs/ARCHITECTURE.md:247` | `SYS_fork` is used on every connection |
+
+Plan.md inherits the same error: it opens by describing sarm as a
+"single-process, connection-per-loop server", and Step 12 says "Do not
+introduce `fork()` … the current project deliberately moved away from the
+previous fork-based design and is documented as single-process."
+
+### What this changes about the plan
+
+- **sarm already runs connections on multiple cores.** Each connection is an
+  independently scheduled process. The multicore work is therefore not "add
+  parallelism where there is none" but "replace fork-per-connection with N
+  persistent workers". The win is removing the per-connection `fork()` cost and
+  the single-parent `accept()` serialisation — not the parallelism itself,
+  which exists today.
+- **Step 12's preference for threads over fork is still a reasonable choice**,
+  but it is a decision to *replace* a working fork, not to avoid introducing
+  one. Framed correctly, it also needs a reason to beat what fork already
+  provides.
+- **The global-state audit (Phases 5 and 12) is not urgent while fork
+  remains.** `fork()` already gives every connection a private copy-on-write
+  image, so all ~86 writable globals below are per-connection-isolated today.
+  They become genuinely shared the instant workers become threads — which is
+  the real risk the plan identifies, just deferred to the moment of that
+  switch rather than present now.
+- **`SO_REUSEPORT` (Phase 3) is still worth doing** even keeping fork, since it
+  removes the single accept loop as a serialisation point.
+
+---
+
+## Step 1 — Build and test baseline
+
+`make clean && make && make test`, from a clean tree:
+
+| Metric | Value |
+| --- | --- |
+| Build | succeeds, no warnings |
+| Clean build time | 5.5 s wall (2.6 s user, 2.3 s sys) |
+| Test suite | **4304 tests, all pass** (`test_files.sh`, `test_security.sh`, `test_protocols.sh`, `tests/unit`) |
+| `make test` time | 27.1 s wall |
+| Binary size, unstripped (`make`) | 3 619 128 B (3.45 MiB) |
+| Binary size, stripped (`make production`) | 295 632 B (289 KiB) |
+| Startup → first `accept()` | median **6.3 ms** (min 3.7, max 7.6; n=5) |
+| Single-request latency, HTTP/1.1 | median **0.195 ms**, p95 0.294 ms, min 0.160 ms (fresh connection, `GET /`, n=300) |
+
+The two binary sizes differ by 12×; quote the stripped number when tracking
+size regressions, since that is what `make production` ships.
+
+The 0.195 ms latency figure includes a `fork()`, since HTTP/1 has no
+keep-alive. It is a connect-fork-serve-close round trip, not a bare request.
+
+---
+
+## Step 2 — Single-core throughput baseline
+
+**No new benchmark script was written — one already exists.**
+`scripts/benchmarks/rps_bench.sh` already does everything Step 2 asks for: it
+starts sarm, drives HTTP/1.1 with `wrk` and both h2c and HTTP/2-over-TLS with
+`h2load`, and emits machine-readable JSON with `--json`.
+
+```bash
+for i in 1 2 3; do ./scripts/benchmarks/rps_bench.sh --no-build --duration 5 --json; done
+```
+
+Three runs, 5 s each, 50 connections, 4 threads, path `/`:
+
+| Run | HTTP/1.1 req/s | HTTP/2 h2c req/s | HTTP/2 + TLS req/s |
+| --- | ---: | ---: | ---: |
+| 1 | 16 433 | 175 705 | 154 595 |
+| 2 | 16 974 | 157 435 | 169 897 |
+| 3 | 16 168 | 168 554 | 152 665 |
+| **median** | **16 433** | **168 554** | **154 595** |
+| spread (max/min) | 5 % | 12 % | 11 % |
+
+Run-to-run spread is 5 % on HTTP/1 and 11–12 % on the HTTP/2 numbers. That is
+stable enough to detect the kind of change multicore work should produce
+(expected ≫ 12 %), but *not* stable enough to adjudicate a claimed 5–10 %
+improvement. For those, raise `--duration` and take more runs.
+
+### The 10× HTTP/1-to-h2c gap is the fork
+
+16 k req/s on HTTP/1.1 against 169 k on h2c is a 10× gap on the same server
+serving the same resource. The cause is the fork rate, which follows directly
+from the keep-alive finding above:
+
+| | connections | forks | requests |
+| --- | ---: | ---: | ---: |
+| HTTP/1.1 (`wrk`) | one per request | **one per request** | ~82 k over 5 s |
+| HTTP/2 h2c (`h2load -c50 -m10`) | 50 | **50 total** | ~843 k over 5 s |
+
+`wrk` is configured for keep-alive, but the server answers `Connection: close`,
+so every request costs a fresh connection and a fresh `fork()`. The HTTP/1
+number is substantially a measurement of `fork()` throughput.
+
+Two consequences for later phases:
+
+- **HTTP/1 is where the headroom is.** It is the workload the worker rewrite
+  should move most, and the number to watch in Phase 10.
+- **Steps 28–30 cannot treat today's HTTP/1 figure as a "1 worker" baseline.**
+  It is not a single-core number; it is a fork-per-request number, and it is
+  already spread across cores. Comparing "1 worker" against it measures the
+  removal of fork, not the addition of workers. Record both, and say which is
+  which.
+
+---
+
+## Step 3 — Inventory of process-global mutable state
+
+Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,
+classified. Pure read-only constant tables (string literals, HPACK static
+table, `file_types_*`, HTTP status lines, P-256 curve constants, `K256`,
+`embedded.S`, `tls/cert_data.S`) are summarised rather than listed
+individually — they are ~200 of the ~280 writable-section symbols, and none is
+ever written at run time.
+
+**Read this list as conditional.** Under fork-per-connection, everything in
+categories C–G is already private to one connection, because `fork()` copies
+it. The classification is what each object *would* have to become if workers
+became threads. Nothing here is a bug today.
+
+### A. Read-only in practice (shared, safe)
+
+Emitted into `.data` (so technically writable) but never stored to:
+
+| Group | Where | Notes |
+| --- | --- | --- |
+| Embedded content, paths, ETags, content types | `src/embedded.S` | Must stay single-copy (Plan.md "Keep embedded data read-only") |
+| TLS certificate DER + private key | `src/tls/cert_data.S` | Shared read-only; per-connection TLS state is category F |
+| P-256 constants: `p256_p`, `p256_mu`, `p256_n`, `p256_gx/gy/b`, `p256_comb_table`, `p256_scalar_inv_chain`, `p256_scalar_n0inv`, `p256_scalar_rr_n` | `src/crypto/p256*/` | |
+| SHA-256 round constants `K256`, IV `sha256_h256` | `src/crypto/sha256/data.S` | |
+| HPACK static table + all `hp_s_*` / `hp_v_*` strings | `src/hpack/h2_hpack_static_lookup.S` | |
+| MIME table `file_types_*`, `unknown_ct` | `src/file/get_filetype.S` | |
+| HTTP status lines `header_2xx`–`header_5xx`, `status_table` | `src/http1/http_code/data.S` | |
+| HTTP/1 header fragments, `err_dir`, `err_ext` | `src/http1/` | |
+| Match strings: `host_match_str`, `range_match_str`, `bytes_match_str`, `header_end`, `www_prefix`, `default_file`, `h2_preface`, `get_req`/`head_req`/`options_req`/`brew_req`, `http_1_0`, `http_1_1` | `src/parse/`, `src/sarm/main.S` | |
+| TLS key-schedule labels `khs_label_*`, `as_label_*`, `fk_label_finished`, `cv_content_prefix`, `khs_empty_hash`, `x25519_basepoint9`, `tls_alpn_h2` | `src/tls/handshake/` | |
+| `h2_frame_handlers`, `h2_stream_transitions`, `h2_settings_frame`, `h2_pseudo_*`, `h2_method_*`, `h2_bytes_name`, `h2_range_name`, `h2_gzip_str` | `src/h2/`, `src/h2/settings/` | |
+| `one` (the `setsockopt` int) | `src/sarm/data.S` | |
+
+### B. Mutable server state (set once at startup, then read-only)
+
+| Symbol | Where | Notes |
+| --- | --- | --- |
+| `sockfd` | `src/sarm/main.S` | The listening fd. **This is the one that becomes `worker[i].listen_fd` in Steps 10–13.** Note the child already `close()`s it, so any worker redesign has to revisit that ownership rule |
+| `addr` | `src/sarm/main.S` | `sockaddr_in`; port patched from argv[1] before `bind` |
+| `no_fork` | `src/data.S` | Debug flag, set from argv[1] |
+| `rcv_timeout` | `src/sarm/child.S` | `struct timeval` for `SO_RCVTIMEO`, never written |
+
+Written before any connection exists, so they stay shared and read-only after
+startup under either process model.
+
+### C. Mutable connection state — HTTP/1 and dispatch
+
+| Symbol | Where | Size |
+| --- | --- | --- |
+| `clientfd` | `src/data.S` | 16 |
+| `connection_mode` | `src/data.S` | 8 (`CONNECTION_HTTP1` init) |
+| `file_des` | `src/data.S` | 8 (init −1) |
+| `resource_type` | `src/data.S` | 16 |
+| `embedded_content`, `embedded_ct`, `embedded_ct_len`, `embedded_etag`, `embedded_etag_len`, `embedded_gzip` | `src/data.S` | 16 each — resolved-asset pointers for the request in flight |
+| `header_len` | `src/data.S` | 16 |
+| `tls_peek_byte` | `src/sarm/main.S` | 1 — `MSG_PEEK` protocol-detection scratch, written in the child after the fork |
+
+### D. Temporary buffers (per-connection scratch)
+
+| Symbol | Where | Size |
+| --- | --- | --- |
+| `buf` | `src/data.S` | `BUF_SIZE`, 16-aligned — main I/O buffer |
+| `request` | `src/data.S` | `REQUEST_SIZE` |
+| `response` | `src/data.S` | `RESPONSE_SIZE` |
+| `header_buf` | `src/http1/data.S` | `header_buf_size` |
+| `err_page_buf` | `src/http1/reply_status.S` | `err_page_buf_size` |
+| `filename_buf`, `query_buf`, `authority_buf` | `src/parse/data.S` | |
+| `range_buf` | `src/parse/parse_range.S` | 19 → 32 |
+| `h2_range_buf`, `h2_cr_buf` | `src/h2/h2_build_request.S`, `h2_write_headers.S` | |
+| `itoa_buf` | `src/util/itoa.S` | 20 — **shared formatting scratch, called from every path** |
+
+`itoa_buf` deserves a flag: it is a single global used by an ordinary utility
+that every response path calls. Fork hides it completely today. Under threads
+it is the most likely source of silent, intermittent, hard-to-attribute
+corruption, because nothing about `itoa`'s call sites suggests connection
+ownership.
+
+### E. HTTP/2 connection and stream state
+
+| Symbol | Where | Notes |
+| --- | --- | --- |
+| `h2_conn` | `src/h2/data.S` | Connection struct — flow-control windows, settings, state |
+| `h2_streams` | `src/h2/data.S` | Stream table |
+| `h2_frame_header`, `h2_frame_buf` | `src/h2/data.S` | Frame scratch |
+| `h2_hpack_fields`, `h2_hpack_str_buf`, `h2_hpack_str_off` | `src/hpack/data.S` | HPACK decode scratch |
+| `h2_hpack_dyn_entries`, `h2_hpack_dyn_bytes`, `h2_hpack_dyn_count`, `h2_hpack_dyn_size`, `h2_hpack_dyn_used`, `h2_hpack_dyn_max`, `h2_hpack_dyn_tail` | `src/hpack/dynamic_table/data.S` | **HPACK dynamic table — per-connection by protocol definition (RFC 7541 §2.3.2).** Sharing it across connections does not merely race; it corrupts the compression context and yields wrong header values, not obviously garbled ones |
+
+### F. TLS state
+
+All of `src/tls/data.S`, all per-connection:
+
+`tls_fd`, `tls_state`, `tls_hs_state`, `tls_client_random`, `tls_server_random`,
+`tls_session_id`, `tls_session_id_len`, `tls_sni_hostname`, `tls_alpn`,
+`tls_alpn_len`, `tls_client_key_share`, `tls_server_key_share`,
+`tls_shared_secret`, `tls_handshake_secret`, `tls_master_secret`,
+`tls_client_hs_traffic_secret`, `tls_server_hs_traffic_secret`,
+`tls_client_hs_key`/`_iv`, `tls_server_hs_key`/`_iv`,
+`tls_client_app_key`/`_iv`, `tls_server_app_key`/`_iv`,
+`tls_client_seq`, `tls_server_seq`, `tls_hs_msg_buf` (2 KiB),
+`tls_hs_record_buf` (16 448 B), `tls_transcript_ctx` (+ `_state`, `_bitlen`,
+`_buf`, `_buflen`), `tls_transcript_hash_field`.
+
+Transport layer, `src/transport/data.S`, also per-connection:
+`transport_mode`, `tls_read_raw_buf` (16 448 B), `tls_read_stage_buf`
+(16 384 B), `tls_read_stage_len`, `tls_read_stage_pos`,
+`tls_write_record_buf` (16 448 B).
+
+Three things to carry into Phase 5:
+
+1. **`tls_client_seq` / `tls_server_seq` are AEAD record sequence numbers.**
+   Sharing them across concurrent connections is nonce reuse in AES-128-GCM —
+   a confidentiality failure, not a correctness annoyance. First thing to make
+   connection-local.
+2. **`main.S` already contains a fork-model artefact here.** The
+   `Lmain_tls_close` path resets `transport_mode` to `TRANSPORT_PLAIN` before
+   branching to `child_end`, commented as necessary because it "is a single
+   global (one connection in flight at a time, PLAN.MD's connection-per-loop
+   model)". In the forking build that reset is dead code on the child path —
+   the child exits immediately afterwards — and it only does anything under
+   `no_fork`. It is a leftover from the pre-fork design and a good marker for
+   the reset-shared-state pattern that a worker model has to replace rather
+   than extend.
+3. **TLS state is ~66 KiB of buffers per connection.** Worth knowing before
+   choosing per-worker vs per-connection allocation, since there is no heap.
+   Under fork this is copy-on-write and mostly never faulted in; under threads
+   it has to be real, statically reserved memory times the worker count.
+
+### G. Cryptographic scratch (Plan.md Step 18)
+
+| Symbol | Where | Notes |
+| --- | --- | --- |
+| `sha256_ctx` (+ `_state`, `_bitlen`, `_buf`, `_buflen`) | `src/crypto/data.S` | **A single process-global streaming SHA-256 context.** Its own header comment describes it as "a fixed-layout global, like `tls_state`" |
+
+This is what Step 18 asks about, and the answer is that a shared crypto scratch
+object already exists — harmless under fork, unusable under threads. It is
+*separate* from `tls_transcript_ctx`, which carries its own copy of the same
+layout, so the TLS transcript is already insulated from general SHA-256 use.
+Only the general context is shared.
+
+`src/crypto/random.S` declares no writable globals (entropy comes from
+`getentropy(2)` straight into caller storage), so the RNG needs no work.
+
+### H. Counters / statistics
+
+**None.** There are no global counters or statistics anywhere in `src/`.
+Plan.md Step 19 and "Keep statistics out of the hot path" are satisfied by
+construction; there is nothing to remove.
+
+---
+
+## Summary for Phase 1
+
+Writable-section symbols, by category:
+
+| Category | Count | Today (fork) | If workers become threads |
+| --- | ---: | --- | --- |
+| A — read-only in practice | ~200 | Shared, never written | Stays shared |
+| B — startup-only server state | 4 | Set pre-fork, then read-only | `sockfd` → per-worker; rest stays shared |
+| C — connection state | 13 | Private via COW | Per-connection |
+| D — scratch buffers | 12 | Private via COW | Per-connection (`itoa_buf` is the sleeper) |
+| E — HTTP/2 state | 13 | Private via COW | Per-connection (HPACK dynamic table mandatory) |
+| F — TLS + transport state | 39 | Private via COW | Per-connection (~66 KiB; seq numbers security-critical) |
+| G — crypto scratch | 5 | Private via COW | Per-connection or caller-provided |
+| H — counters | 0 | — | — |
+
+Roughly **86 writable globals** must become worker- or connection-local if
+workers become threads; **zero** need to while workers remain forked processes.
+That ratio is the main argument for deciding the worker primitive (Step 12)
+before doing any of the Phase 5 state work, rather than after.
+
+No code was changed in Steps 1–3.

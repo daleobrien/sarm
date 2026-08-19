@@ -12,6 +12,10 @@ is the map, those headers are the contract.
 ```
 accept()
    │
+   fork()  ── parent ──► back to accept()
+   │
+   child (serves exactly one connection, then _exit)
+   │
    ├─ peek first byte ──┬─ 0x16 ──► TLS 1.3 handshake ──► HTTP/2 over TLS
    │                    ├─ "PRI " ─► HTTP/2 cleartext (h2c)
    │                    └─ else ───► HTTP/1.1
@@ -19,11 +23,21 @@ accept()
    └──────────────────────────► embedded asset table ──► response
 ```
 
-One process, one connection at a time, no fork, no threads, no heap, no libc.
-All mutable state is `.bss`/`.data` globals — safe precisely because only one
-connection is ever in flight (`src/data.S`, `src/tls/data.S`, `src/h2/data.S`).
-That is the single biggest architectural constraint: it makes the code simple
-and makes concurrency a rewrite, not a tuning knob.
+One process per connection, no threads, no heap, no libc. The parent does
+nothing but `accept` and `fork`; each child serves its one connection to
+completion and exits.
+
+All mutable state is `.bss`/`.data` globals (`src/data.S`, `src/tls/data.S`,
+`src/h2/data.S`) with no locking, and the fork is what makes that safe: every
+child gets a private copy-on-write image, so one connection can never observe
+another's parsing buffers, HPACK dynamic table or TLS keys. The code is written
+as though one connection is in flight because, within a process, one always is.
+
+That is the single biggest architectural constraint. Connections already run
+concurrently across cores, but the concurrency lives entirely in the kernel's
+process isolation — so moving to threads or an event loop would mean making
+roughly 86 writable globals worker- or connection-local first. See
+`docs/MULTICORE-BASELINE.md` for the full inventory.
 
 ## Build and link
 
@@ -69,18 +83,33 @@ table compresses.
 `src/sarm/main.S:_main`:
 
 1. If `argv[1]` starts below `'A'` it is parsed as a port (`atoi`, byte-swapped
-   into the `sockaddr_in`). A leading letter is a vestigial "debug" flag that is
-   accepted and ignored — there is no fork left to disable.
+   into the `sockaddr_in`). A leading letter (`./sarm d`) instead sets the
+   `no_fork` debug flag — connections are then served inline in the one
+   process, which is what makes `scripts/profile_workload.py` able to attribute
+   a whole workload to a single `getrusage`. Because argv[1] is either a port
+   or the flag, `no_fork` mode always listens on the default port.
 2. `socket` → `setsockopt(SO_REUSEADDR)` → `bind` → `listen(5)`.
-3. `SIGCHLD` → `SIG_IGN`, `SIGPIPE` → `SIG_IGN` so `write()` returns `EPIPE`
-   instead of killing the process.
-4. Loop: `accept` → arm `SO_RCVTIMEO` → `recvfrom(MSG_PEEK, 1)`.
-   - `0x16` (TLS handshake record) → `tls_server_handshake(fd)`, then straight
-     into `h2_connection_loop` over the now-encrypted transport. There is no
-     HTTP/1-over-TLS path.
-   - anything else → `child`, unchanged plaintext path.
-   - either way, `child_end` closes the fd, resets `transport_mode` to PLAIN and
-     branches back to `accept`.
+3. `SIGCHLD` → `SIG_IGN` with `SA_NOCLDWAIT` so the kernel reaps children and
+   nothing ever has to `wait()`; `SIGPIPE` → `SIG_IGN` so `write()` returns
+   `EPIPE` instead of killing the process.
+4. Loop: `accept` → `fork`.
+   - **parent**: `close(clientfd)` and straight back to `accept`. If the fork
+     failed it closes the connection and carries on rather than serving it on
+     the accept loop, where it could block every later one.
+   - **child**: `close(sockfd)` — holding the listening socket open would keep
+     the port bound after the parent exits — then arm `SO_RCVTIMEO` and
+     `recvfrom(MSG_PEEK, 1)`.
+     - `0x16` (TLS handshake record) → `tls_server_handshake(fd)`, then straight
+       into `h2_connection_loop` over the now-encrypted transport. There is no
+       HTTP/1-over-TLS path.
+     - anything else → `child`, unchanged plaintext path.
+     - either way, `child_end` closes the fd and `_exit`s. Under `no_fork` it
+       branches back to `accept` instead.
+
+Why fork at all: an HTTP/2 connection is persistent, so serving one on the
+accept loop would strand every other connection in the listen backlog until it
+ended. Browsers routinely open a second connection, and those requests would
+simply hang.
 
 The peek is what makes one port serve all three protocols; the byte stays on the
 socket, so the chosen path reads it normally.
@@ -244,5 +273,9 @@ Honest inventory, so nobody spends an afternoon on it:
 - `find_http_code`'s table still holds 201/409/411/413/502/503/507 from the
   removed PUT/CGI features; no handler produces them.
 - `MAX_PROCS` and `ALLOW_DIR_LISTING` in `config.S` are read by nothing.
-- `defs.S` still defines fork-era syscalls (`SYS_fork`, `SYS_proc_info`,
-  `SYS_getdirentries64`, …) that are never used.
+- `defs.S` defines syscalls that are never used (`SYS_proc_info`,
+  `SYS_getdirentries64`, …) — but *not* `SYS_fork`/`SYS_clone`, which run on
+  every connection.
+- The `transport_mode` reset at `Lmain_tls_close` (`main.S`) is dead on the
+  forked path — the child `_exit`s immediately afterwards — and only does
+  anything under `no_fork`. It predates the fork.
