@@ -1,16 +1,27 @@
 #include "../defs.S"
 
 // ─────────────────────────────────────────────────────────────────────
-// Function Name: child
+// Function Name: child / child_with_data
 //
-// Description: Handle one client connection: set a receive timeout on
-//   the socket, read the request into buf, detect the protocol (HTTP/2
+// Description: Handle one client connection: read the request into buf
+//   (the receive timeout is already armed by main.S), detect the protocol (HTTP/2
 //   client preface vs HTTP/1) on the first read, and find the header
-//   terminator (Lcheck_leftover/read_loop/Lheader_found/Lno_header). The
-//   2: block then logs the request, verifies the HTTP version, parses
-//   the request, and dispatches GET/HEAD/OPTIONS to the http1 handlers.
-//   read_failed maps read errors to a silent close, a 408, or a 500 via
-//   the reply_status trampolines at the bottom of the file.
+//   terminator (Lcheck_leftover/read_loop/Lread_got_data/Lheader_found/
+//   Lno_header). The 2: block then logs the request, verifies the HTTP
+//   version, parses the request, and dispatches GET/HEAD/OPTIONS to the
+//   http1 handlers. read_failed maps read errors to a silent close, a
+//   408, or a 500 via the reply_status trampolines at the bottom of the
+//   file.
+//
+//   Two entry points share everything past socket setup:
+//     - `child` — fresh connection, nothing read yet; blocks in
+//       read_loop for the first bytes as before.
+//     - `child_with_data` — fresh connection whose first bytes main.S
+//       already read for real, off the accept-time protocol-detection
+//       read (Plan.md Phase 2, Step 9, which replaced a MSG_PEEK that
+//       used to leave those bytes for child to read again). Skips
+//       straight to Lread_got_data with those bytes already accounted
+//       for in x7, so they're never read twice.
 //
 //   Every handler tail-branches to http1_keepalive_continue once its
 //   response is written (Plan.md Phase 1, Step 6) rather than always
@@ -18,10 +29,13 @@
 //   shifts any leftover pipelined bytes (Step 5) to the front of buf,
 //   and resumes at Lcheck_leftover — the same entry a fresh connection
 //   uses, so a complete next request already sitting in the leftover
-//   bytes is served without blocking in read() for more.
+//   bytes is served without blocking in read() for more. (Lcheck_leftover
+//   only checks for an already-complete header, not the h2 preface —
+//   that's already been decided earlier in the same connection by then.)
 //
 // Input/Arguments:
-//   (none — uses the clientfd global set by the accept loop)
+//   child: none. child_with_data: x0 = bytes already read (> 0).
+//   Both use the clientfd global set by the accept loop.
 //
 // Output/Returns:
 //   (never returns — branches to child_end or a reply_status trampoline)
@@ -44,17 +58,26 @@ rcv_timeout:           // struct timeval for SO_RCVTIMEO
 .align 2
 .global child
 child:
-    // setsockopt() with a SO_RCVTIMEO timeout from config.S, to prevent
-    // connections from staying open indefinitely
-    SCWINUM SYS_setsockopt
-    ldr_l x0, clientfd
-    mov x1, #SOL_SOCKET
-    mov x2, #SO_RCVTIMEO
-    adr_l x3, rcv_timeout
-    mov x4, #16 // struct timeval is 16 bytes
-    SCWISVC
-    SCERR
-    b.cs Lchild_end
+    mov x22, #0                 // fresh connection, nothing read yet
+    b Lchild_common
+
+// Entry for a fresh connection whose first bytes were already read for
+// real by main.S's accept-time read (Plan.md Phase 2, Step 9 — replaces
+// the old MSG_PEEK). Falls into the same socket setup `child` uses,
+// then resumes exactly where read_loop would be after that first read()
+// completed, instead of blocking to read the same bytes again.
+//
+// Input: x0 = bytes already read (> 0; main.S handles the 0-byte/error
+// cases itself before ever branching here).
+.global child_with_data
+child_with_data:
+    mov x22, x0
+
+Lchild_common:
+    // SO_RCVTIMEO is armed once, in main.S's Lmain_serve, before the
+    // protocol read — that covers this (plaintext) path too, so setting
+    // it again here would just be a second syscall for the same socket
+    // option (Plan.md Phase 2, Step 8).
 
 #ifndef __linux__
     // setsockopt(), SO_NOSIGPIPE (macOS only; Linux ignores SIGPIPE instead)
@@ -76,9 +99,16 @@ child:
     mov x0, #HTTP1_KEEPALIVE_BUDGET
     str_l x0, request_budget, x9
 
-    // read(client_fd, buffer, buffer_size)
-    mov x7, #0
+    mov x7, x22 // 0 for `child`; bytes already read for `child_with_data`
     mov x25, #0 // protocol not yet detected (0 = undetected, 1 = decided)
+
+    // `child_with_data` already has real bytes in buf and needs the
+    // full post-read handling below (h2 preface probe + header search),
+    // not Lcheck_leftover's leftover-bytes-only check (Step 5) — that
+    // one deliberately skips the h2 probe because a keep-alive
+    // continuation has already decided the protocol earlier in the same
+    // connection, which isn't true here.
+    cbnz x22, Lread_got_data
 
 // Entry point for both a fresh connection (x7 == 0, falls straight
 // through to read_loop) and a kept-alive connection resuming with
@@ -112,6 +142,11 @@ read_loop:
 
     add x7, x7, x0 // save x0 because parse_header_end clobbers it. cumulatively
 
+// Entry point once bytes are known to be sitting in buf, whether just
+// read by read_loop above or handed in already-read by child_with_data
+// (Step 9): x7 = total bytes buffered so far, x22 = bytes from the most
+// recent read, x25 = protocol-decided flag.
+Lread_got_data:
     // ── protocol detection — the first data decides HTTP/2 vs HTTP/1 ──
     // The HTTP/2 client connection preface ("PRI * HTTP/2.0\r\n\r\n...")
     // starts every HTTP/2 connection (RFC 9113 §3.4); if the buffered

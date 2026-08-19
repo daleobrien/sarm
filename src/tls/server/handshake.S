@@ -7,6 +7,8 @@
 
 .extern tls_transcript_init
 .extern tls_read_record
+.extern tls_read_record_prefilled
+.extern memcpy
 .extern tls_transcript_add
 .extern tls_parse_client_hello
 .extern tls_build_server_hello
@@ -56,6 +58,10 @@
 //
 // Input/Arguments:
 //   x0 — the connection's file descriptor (still TRANSPORT_PLAIN)
+//   x1 — pointer to bytes already read off the wire for this connection
+//        (Plan.md Phase 2, Step 9 — main.S's real first read, which
+//        replaced the old MSG_PEEK); ignored when x2 == 0
+//   x2 — length of those already-read bytes (0 if none)
 //
 // Output/Returns:
 //   carry clear (success): tls_hs_state == TLS_HS_CONNECTED,
@@ -101,6 +107,8 @@ tls_server_handshake:
     str     x30, [sp, #64]
 
     mov     x19, x0                     // fd
+    mov     x23, x1                     // bytes already read off the wire (Step 9)
+    mov     x24, x2                     // ... and how many
 
     bl      tls_transcript_init
 
@@ -125,10 +133,22 @@ tls_server_handshake:
     str     w10, [x9]
 
     // ── ClientHello ───────────────────────────────────────────────
+    // Step 9: main.S's real first read may already have pulled some
+    // (or all) of the ClientHello record off the wire, into its own
+    // buffer rather than tls_hs_record_buf -- copy those bytes over
+    // first, then let tls_read_record_prefilled read only whatever
+    // wasn't already there.
+    cbz     x24, .Lhs_ch_no_prefill
+    adr_l   x0, tls_hs_record_buf
+    mov     x1, x23
+    mov     x2, x24
+    bl      memcpy
+.Lhs_ch_no_prefill:
     mov     x0, x19
     adr_l   x1, tls_hs_record_buf
     mov     x2, #BUF_SIZE
-    bl      tls_read_record
+    mov     x3, x24
+    bl      tls_read_record_prefilled
     b.cs    .Lhs_fail
     cmp     x0, #TLS_RECORD_HANDSHAKE
     b.ne    .Lhs_fail_generic

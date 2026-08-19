@@ -20,7 +20,7 @@
 //   (never returns — exits via fatal_exit)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x4, x5, x9, x16, x28, x30, sp (transient syscall/stack use)
+//   x0, x1, x2, x3, x4, x5, x9, x16, x21, x28, x30, sp (transient syscall/stack use)
 //
 // Stack Usage:
 //   none (sp scratch only for the sigaction struct blocks)
@@ -37,11 +37,6 @@ addr:
     .byte 0x7F, 0x00, 0x00, 0x01 // 127.0.0.1
 #endif
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // padding
-.align 4
-
-// tls_peek_byte — scratch destination for the MSG_PEEK recvfrom() that
-// decides TLS vs plaintext on each newly accepted connection (Phase 20)
-tls_peek_byte: .byte 0
 .align 4
 
 get_req:
@@ -87,6 +82,7 @@ sockfd:             .skip 8
 .extern tls_server_handshake
 .extern h2_connection_loop
 .extern child
+.extern child_with_data
 .extern child_end
 
 #ifdef __linux__
@@ -168,10 +164,13 @@ skip_argv:
     SCERR
     b.cs exit
 
-    // listen(sockfd, 5)
+    // listen(sockfd, 128) — was 5; a fork-bound accept loop that only
+    // gets back to accept() after handing off each connection can leave
+    // a burst sitting in the backlog, and 5 drops connections under load
+    // (Plan.md Phase 2, Step 7).
     SCWINUM SYS_listen
     ldr_l x0, sockfd
-    mov x1, #5
+    mov x1, #128
     SCWISVC
     SCERR
     b.cs exit
@@ -345,39 +344,47 @@ Lmain_serve:
     SCWISVC
     SCERR
 
-    // ── TLS detection (PLAN.MD Phase 20) ────────────────────────────
-    // Peek (MSG_PEEK — the byte stays on the socket either way) the
-    // connection's very first byte without consuming it: a TLS 1.3
-    // ClientHello always starts with a handshake record (type 0x16,
-    // RFC 8446 §5.1), which no plaintext HTTP/1 or HTTP/2 request ever
-    // does (HTTP/1 starts with a method like "GET", HTTP/2 with the
-    // "PRI *" preface). A TLS connection runs the full handshake, then
-    // is handed straight to h2_connection_loop over the now-encrypted
-    // transport — matching the Phase 20 diagram (TLS transport →
-    // existing H2) exactly, no HTTP/1-over-TLS support (see
-    // src/transport/README's scope note). Anything else falls through
-    // to the existing plaintext child path, completely unchanged.
-    SCWINUM SYS_recvfrom
+    // ── protocol detection (PLAN.MD Phase 20; real read, not a peek,
+    //    since Plan.md Phase 2 Step 9) ────────────────────────────────
+    // A TLS 1.3 ClientHello always starts with a handshake record (type
+    // 0x16, RFC 8446 §5.1), which no plaintext HTTP/1 or HTTP/2 request
+    // ever does (HTTP/1 starts with a method like "GET", HTTP/2 with the
+    // "PRI *" preface). Previously this was decided by a MSG_PEEK
+    // recvfrom() that left the byte on the socket for child/
+    // tls_server_handshake to read again; now the bytes are read for
+    // real, straight into buf, and handed to whichever path is chosen —
+    // one fewer syscall per connection, and child.S already knows how
+    // to resume with a buffer that isn't empty (Step 5's leftover-bytes
+    // mechanism), so child_with_data reuses exactly that.
+    SCWINUM SYS_read
     ldr_l x0, clientfd
-    adr_l x1, tls_peek_byte
-    mov x2, #1
-    mov x3, #MSG_PEEK
-    mov x4, #0
-    mov x5, #0
+    adr_l x1, buf
+    mov x2, #BUF_SIZE
     SCWISVC
     SCERR
-    b.cs Lmain_tls_close        // peek failed — close like a dead connection
-    cmp x0, #1
-    b.ne Lmain_tls_close        // 0 bytes peeked — client already closed
+    b.cs Lmain_tls_close        // read failed — close like a dead connection
+    mov x21, x0                 // bytes read (0 = EOF); survives the calls below
+    cbz x21, Lmain_tls_close    // 0 bytes read — client already closed
 
-    adr_l x1, tls_peek_byte
+    adr_l x1, buf
     ldrb w2, [x1]
     cmp w2, #TLS_RECORD_HANDSHAKE
     b.eq Lmain_tls_detected
-    b child                     // not TLS — existing plaintext path
+
+    // not TLS — hand the plaintext path the bytes already read instead
+    // of making it read them again
+    mov x0, x21
+    b child_with_data
 Lmain_tls_detected:
 
+    // tls_server_handshake copies these bytes into its own scratch
+    // buffer before reading anything else off the wire (see its header
+    // comment) — a conforming TLS 1.3 client's first flight is exactly
+    // one ClientHello record, so this is the whole record (or a prefix
+    // of it) and nothing beyond it.
     ldr_l x0, clientfd
+    adr_l x1, buf
+    mov x2, x21
     bl tls_server_handshake
     b.cs Lmain_tls_close        // handshake failed — close, never reaches H2
 
