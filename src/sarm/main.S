@@ -39,6 +39,26 @@ addr:
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // padding
 .align 4
 
+// ── Phase 3, Step 14 option tokens ────────────────────────────────
+// Matched with streqn over a length that INCLUDES the NUL, so a longer
+// argument sharing the prefix ("--workersplease") is a mismatch rather
+// than a match on the first 9 bytes.
+.align 4
+opt_workers: .asciz "--workers"
+.equ opt_workers_len, . - opt_workers
+
+.align 4
+opt_auto: .asciz "auto"
+.equ opt_auto_len, . - opt_auto
+
+// hw_logicalcpu — the sysctl name `--workers auto` resolves. Passed to
+// the raw sysctlbyname syscall, which (unlike libc's wrapper) wants the
+// name length as its second argument; that length excludes the NUL.
+.align 4
+hw_logicalcpu: .asciz "hw.logicalcpu"
+.equ hw_logicalcpu_len, . - hw_logicalcpu - 1
+
+.align 4
 get_req:
     .ascii "GET "
 .equ get_req_len, . - get_req
@@ -76,6 +96,16 @@ http_1_1: .ascii "HTTP/1.1"
 .align 4
 sockfd:             .skip 8
 
+// worker_pids / worker_pid_count — the pids of the accept workers this
+// process forked at startup (Plan.md Phase 3, Step 15), so shutdown
+// (Step 16) can signal them. Only the FORKED workers are listed: the
+// original process is a worker too, but never needs to signal itself.
+// SIGCHLD is SIG_IGN with SA_NOCLDWAIT, so nothing wait()s on these —
+// the list exists purely to address them.
+.align 4
+worker_pid_count:   .skip 8
+worker_pids:        .skip (MAX_WORKERS * 8)
+
 .text
 .align 2
 
@@ -94,43 +124,272 @@ sockfd:             .skip 8
 .global loop
 .global exit
 
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: detect_cpus
+//
+// Description: How many logical CPUs this machine has, for
+//   `--workers auto` (Plan.md Phase 3, Step 14). macOS answers via
+//   sysctlbyname("hw.logicalcpu"); the raw syscall takes the name
+//   length as its second argument, where libc's wrapper computes it.
+//
+//   Linux has no equivalent one-call answer (it would mean
+//   sched_getaffinity plus a popcount over the returned mask, or
+//   parsing /proc/cpuinfo — a filesystem read this server does not do
+//   while serving), so `auto` there conservatively reports 1 rather
+//   than guessing. An explicit `--workers N` works identically on both.
+//
+// Input/Arguments:
+//   (none)
+//
+// Output/Returns:
+//   x0 — logical CPU count, or 1 if it could not be determined
+//
+// Clobbered Registers:
+//   x0-x5, x9, x16
+//
+// Stack Usage:
+//   32 bytes: the u32 result plus its size_t length, both by-reference
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+detect_cpus:
+#ifdef __linux__
+    mov x0, #1                  // see the header note above
+    ret
+#else
+    sub sp, sp, #32
+    str xzr, [sp]               // result slot (u32, zeroed)
+    mov x9, #4
+    str x9, [sp, #8]            // oldlenp = sizeof(u32)
+
+    SCWINUM SYS_sysctlbyname
+    adr_l x0, hw_logicalcpu
+    mov x1, #hw_logicalcpu_len
+    add x2, sp, #0              // oldp   -> result slot
+    add x3, sp, #8              // oldlenp
+    mov x4, #0                  // newp   = NULL
+    mov x5, #0                  // newlen = 0
+    SCWISVC
+    SCERR
+    b.cs Ldc_fallback
+
+    ldr w0, [sp]
+    cbz w0, Ldc_fallback        // 0 CPUs is not an answer
+    add sp, sp, #32
+    ret
+Ldc_fallback:
+    mov x0, #1
+    add sp, sp, #32
+    ret
+#endif
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: worker_shutdown
+//
+// Description: SIGTERM/SIGINT handler, installed in the process that
+//   forked the accept workers (Plan.md Phase 3, Step 16). Stops
+//   accepting by closing the shared listening socket, sends SIGTERM to
+//   every forked worker, then exits.
+//
+//   Only the forking process installs this — it is installed AFTER the
+//   spawn loop so the workers keep the default disposition and simply
+//   die when signalled, and so `--workers 1` (which forks nothing) is
+//   left bit-identical to the pre-Phase-3 server.
+//
+//   The per-connection children are deliberately NOT signalled: they
+//   are not in worker_pids, so an in-flight response finishes. Their
+//   parent worker is gone by then, so init reaps them.
+//
+//   Async-signal-safe by construction: three raw syscalls, no libc, no
+//   allocation, no shared state written. It never returns, so the
+//   trampoline's sigreturn tail below is unreachable in practice.
+//
+//   Neither this routine nor sig_tramp ends in `ret`, so abi.py and
+//   validate_clobbers.py cannot see where they stop and read on into
+//   the code that follows; their "x30 never saved" warning and the
+//   extra registers they attribute here belong to that overrun, not to
+//   these ten instructions.
+//
+// Input/Arguments:
+//   x0 — signal number (ignored; both signals mean the same thing here)
+//
+// Output/Returns:
+//   (does not return — exits the process with status 0)
+//
+// Clobbered Registers:
+//   x0-x2, x9-x13, x16 (irrelevant — the process is going away)
+//
+// Stack Usage:
+//   none
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global worker_shutdown
+worker_shutdown:
+    // stop accepting: close the one shared listening socket. The forked
+    // workers hold their own copies of this descriptor; each of those is
+    // closed exactly once, by the kernel, as the worker exits below.
+    SCWINUM SYS_close
+    ldr_l x0, sockfd
+    SCWISVC
+
+    mov x11, #0                 // i = 0
+Lws_kill:
+    ldr_l x12, worker_pid_count
+    cmp x11, x12
+    b.ge Lws_done
+    adr_l x13, worker_pids
+    ldr x0, [x13, x11, lsl #3]
+    mov x1, #SIGTERM_
+#ifndef __linux__
+    mov x2, #1                  // macOS kill() takes a third `posix` arg
+#endif
+    SCWINUM SYS_kill
+    SCWISVC
+    add x11, x11, #1
+    b Lws_kill
+
+Lws_done:
+    SCWINUM SYS_exit
+    mov x0, #0
+    SCWISVC
+
+#ifndef __linux__
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: sig_tramp
+//
+// Description: macOS signal trampoline (the `sa_tramp` field of
+//   struct __sigaction). The Darwin kernel enters userspace HERE, not
+//   at the handler: libc normally supplies _sigtramp, so a program
+//   making the sigaction syscall directly has to supply its own.
+//   It calls the handler, then sigreturn()s.
+//
+//   arm64 Linux needs no equivalent — the kernel provides the return
+//   trampoline itself and ignores sa_restorer.
+//
+// Input/Arguments:
+//   x0 -> catcher (the handler)
+//   x1 — infostyle
+//   x2 — signal number
+//   x3 -> siginfo
+//   x4 -> ucontext
+//
+// Output/Returns:
+//   (does not return)
+//
+// Clobbered Registers:
+//   x0-x7, x16, x30
+//
+// Stack Usage:
+//   none
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global sig_tramp
+sig_tramp:
+    mov x5, x0                  // catcher
+    mov x6, x1                  // infostyle, for the sigreturn below
+    mov x7, x4                  // ucontext,  ditto
+    mov x0, x2                  // handler(sig, siginfo, ucontext)
+    mov x1, x3
+    mov x2, x4
+    blr x5
+    // worker_shutdown exits, so this tail is unreachable today; it is
+    // here so the trampoline is correct rather than merely sufficient.
+    mov x0, x7
+    mov x1, x6
+    SCWINUM SYS_sigreturn
+    SCWISVC
+    SCWINUM SYS_exit
+    mov x0, #0
+    SCWISVC
+#endif
+
 #ifdef __linux__
 _start:
 #endif
 _main:
+    // ── argument scan (Plan.md Phase 3, Step 14) ──────────────────────
+    // Walks argv[1..argc) rather than looking only at argv[1], so the
+    // `--workers N` flag can sit alongside the existing positional port.
+    // The positional rule itself is unchanged: a token starting below
+    // 'A' is a port, any other bare token is the no_fork debug letter.
+    // _main never returns, so x19-x22 are used as long-lived scratch
+    // without saving them (atoi and streqn both leave x19+ alone).
+    //
+    //   ./sarm                  1 worker, port 8080   (unchanged)
+    //   ./sarm 8081             1 worker, port 8081   (unchanged)
+    //   ./sarm d                no_fork debug mode    (unchanged)
+    //   ./sarm 8081 --workers 4 4 accept workers
+    //   ./sarm 8081 --workers auto   one worker per logical CPU
+    mov x19, x0                 // argc
+    mov x20, x1                 // argv
+    mov x21, #1                 // i = 1
     mov x28, #0
-    // did we get an argument
-    cmp x0, #1
-    b.le skip_argv
 
-    ldr x9, [x1, #8] // argv[1] pointer
-    ldrb w0, [x9] // first byte of string
-    // if it's less than 'A' (0x41), it's probably a number. so if it is, just
-    // treat it as a port. otherwise, if it's > A (so any letter), let's treat
-    // it as a debug option. pretty hack-y, but supes helpful for debugging, so
-    // we can automatically not fork().
+Largv_loop:
+    cmp x21, x19
+    b.ge skip_argv
+    lsl x9, x21, #3
+    ldr x22, [x20, x9]          // argv[i]
+
+    // --workers ?  (length includes the NUL, so "--workersXYZ" won't match)
+    mov x0, x22
+    adr_l x1, opt_workers
+    mov x2, #opt_workers_len
+    bl streqn
+    cbnz x0, Largv_workers
+
+    ldrb w0, [x22]
     cmp w0, #'A'
-    b.lt 2f
+    b.lt Largv_port
 
-    mov x28, #1
-    str_l x28, no_fork
-    b skip_argv
+    // a bare letter — the no_fork debug flag
+    mov x9, #1
+    str_l x9, no_fork
+    b Largv_next
 
-2:
-    // get argv0.
-    ldr x0, [x1, #8]
+Largv_port:
+    mov x0, x22
     bl atoi
-    b.cs fatal_exit
-
-    // now x0 contains the integer representation of argv[1]
+    b.cs fatal_exit             // not a number, or 0 — neither is a port
     mov x2, #65535
     cmp x0, x2
     b.gt fatal_exit
-
-    // overwrite the address struct's port with the custom port.
-    rev16 w0, w0 // make x0 big-endian, which the port needs to be
+    rev16 w0, w0                // the port field is big-endian
     adr_l x1, addr
     strh w0, [x1, #2]
+    b Largv_next
+
+Largv_workers:
+    add x21, x21, #1            // the count is the next argument
+    cmp x21, x19
+    b.ge fatal_exit             // `--workers` with nothing after it
+    lsl x9, x21, #3
+    ldr x22, [x20, x9]
+
+    mov x0, x22
+    adr_l x1, opt_auto
+    mov x2, #opt_auto_len
+    bl streqn
+    cbnz x0, Largv_workers_auto
+
+    mov x0, x22
+    bl atoi
+    b.cs fatal_exit             // non-numeric, or an explicit 0 — rejected
+    b Largv_workers_set
+
+Largv_workers_auto:
+    bl detect_cpus              // x0 = logical CPUs, or 1 if undetectable
+
+Largv_workers_set:
+    cbz x0, fatal_exit          // belt and braces — never 0 workers
+    mov x2, #MAX_WORKERS
+    cmp x0, x2
+    csel x0, x2, x0, gt         // clamp rather than reject, so `auto` on a
+                                //   very large machine still starts
+    str_l x0, worker_count, x9
+
+Largv_next:
+    add x21, x21, #1
+    b Largv_loop
 
 skip_argv:
     // socket(AF_INET, SOCK_STREAM, 0)
@@ -247,6 +506,122 @@ skip_argv:
     add sp, sp, #32
 #endif
     b.cs exit
+
+    // ── pre-fork the accept workers (Plan.md Phase 3, Step 15) ────────
+    // ONE listening socket, already bound and listening above, shared by
+    // every worker: they all block in accept() on the same inherited
+    // descriptor and the kernel hands each incoming connection to one of
+    // them. This is a deliberate departure from Phase 3's original
+    // SO_REUSEPORT design, which Step 13 disproved on macOS — see that
+    // step's note in Plan.md. It needs no socket option, no userspace
+    // lock, and no per-worker descriptor bookkeeping, and it measured an
+    // even spread across workers.
+    //
+    // The inner per-connection fork below is untouched, so the property
+    // it exists for still holds: a persistent HTTP/2 connection is served
+    // by a forked child, leaving its worker free to return to accept().
+    //
+    // The original process becomes the last worker rather than
+    // supervising idly, which is what makes `--workers 1` fork nothing at
+    // all and stay bit-identical to the pre-Phase-3 server.
+    ldr_l x9, worker_count
+    cmp x9, #1
+    b.le loop                   // one worker — no fork, nothing to track
+
+    ldr_l x9, no_fork
+    cbnz x9, loop               // debug mode is single-process by definition
+
+    mov x23, #1                 // this process is worker 1 of worker_count
+Lspawn_loop:
+    ldr_l x9, worker_count
+    cmp x23, x9
+    b.ge Linstall_shutdown      // spawned them all; be the last worker
+
+#ifdef __linux__
+    SCWINUM SYS_clone
+    mov x0, #SIGCHLD_LINUX
+    mov x1, #0
+    mov x2, #0
+    mov x3, #0
+    mov x4, #0
+    SCWISVC
+    SCERR
+    b.cs Linstall_shutdown      // can't spawn more — run with what we have
+    cbz x0, loop                // the child is a worker: straight to accept()
+#else
+    SCWINUM SYS_fork
+    SCWISVC
+    SCERR
+    b.cs Linstall_shutdown      // can't spawn more — run with what we have
+    cbnz x1, loop               // x1 == 1 in the child (see the note below)
+#endif
+    // parent — record the child so Step 16 can signal it, then continue.
+    // worker_pids holds only the FORKED workers (0..worker_pid_count-1);
+    // this process is a worker too but has no entry, since it never needs
+    // to signal itself.
+    adr_l x10, worker_pids
+    ldr_l x11, worker_pid_count
+    lsl x12, x11, #3
+    str x0, [x10, x12]
+    add x11, x11, #1
+    str_l x11, worker_pid_count, x9
+    add x23, x23, #1
+    b Lspawn_loop
+
+    // ── shutdown handling (Plan.md Phase 3, Step 16) ──────────────────
+    // Reached only by the process that forked workers, and only once it
+    // has finished forking them: the workers inherit the DEFAULT
+    // SIGTERM/SIGINT disposition and die on the signal, while this
+    // process catches it and passes it on. Installing before the fork
+    // loop would give every worker a handler and a half-filled pid list,
+    // and they would all signal each other.
+Linstall_shutdown:
+#ifdef __linux__
+    sub sp, sp, #32
+    adr_l x0, worker_shutdown
+    str x0, [sp, #0]   // sa_handler
+    str xzr, [sp, #8]  // sa_flags = 0
+    str xzr, [sp, #16] // sa_restorer = NULL (ignored on arm64)
+    str xzr, [sp, #24] // sa_mask = 0
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGTERM_
+    mov x1, sp
+    mov x2, #0
+    mov x3, #8         // sigsetsize
+    SCWISVC
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGINT_
+    mov x1, sp
+    mov x2, #0
+    mov x3, #8
+    SCWISVC
+    add sp, sp, #32
+#else
+    sub sp, sp, #32
+    adr_l x0, worker_shutdown
+    str x0, [sp, #0]   // sa_handler
+    adr_l x0, sig_tramp
+    str x0, [sp, #8]   // sa_tramp — the kernel enters here, not the handler
+    str wzr, [sp, #16] // sa_mask = 0
+    str wzr, [sp, #20] // sa_flags = 0
+
+    SCWINUM SYS_sigaction
+    mov w0, #SIGTERM_
+    mov x1, sp
+    mov x2, #0
+    SCWISVC
+
+    SCWINUM SYS_sigaction
+    mov w0, #SIGINT_
+    mov x1, sp
+    mov x2, #0
+    SCWISVC
+    add sp, sp, #32
+#endif
+    // a failure here is not fatal: the server still serves, it just
+    // leaves its workers behind on an explicit kill of this process.
 
 loop:
     // accept(sockfd, NULL, NULL)

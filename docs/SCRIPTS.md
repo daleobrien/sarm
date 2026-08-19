@@ -35,6 +35,8 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_files.sh           # asset integrity, ranges, MIME, ETag, gzip
 ./tests/test_security.sh        # traversal, encoding, oversize, malformed input
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
+./tests/test_keepalive.sh       # pipelining, fragmentation, keep-alive budget
+./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
 ```
 
@@ -42,6 +44,14 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 test directory per assembly module. Many of the crypto test files are
 *generated* by the derivation scripts below and should be regenerated, not
 hand-edited.
+
+`tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
+accept workers — properties of *processes* rather than of functions, so they
+cannot live in `tests/unit/`: which `--workers` arguments are accepted and
+where the `MAX_WORKERS` clamp lands, that every worker really does take
+connections off the shared listening socket, and that `SIGTERM`/`SIGINT`
+leaves no worker behind, frees the port immediately, and lets in-flight
+connections finish.
 
 `tests/h2_browser_sim.py` is a dependency-free HTTP/2 client (stdlib `ssl`/`socket`
 plus its own frame writer and encode-side HPACK) that mimics real browser frame

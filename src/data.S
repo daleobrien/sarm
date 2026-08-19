@@ -21,6 +21,7 @@
 .global connection_mode
 .global h2_preface
 .global no_fork
+.global worker_count
 
 .data
 .align 4 // 16-byte alignment for every string and buffer
@@ -33,6 +34,16 @@ file_des:     .quad -1 // file descriptor for GET/HEAD and stuff. should be
 // to CONNECTION_HTTP2 once the client preface checks out.
 .align 4
 connection_mode: .quad CONNECTION_HTTP1
+
+// worker_count — how many pre-forked accept workers to run (Plan.md
+// Phase 3, Step 14), set by `--workers N` / `--workers auto`. Default 1,
+// which is bit-identical to the pre-Phase-3 server: main.S forks no
+// workers at all and runs the accept loop in the original process.
+// Clamped to [1, MAX_WORKERS] (config.S) at parse time, so every later
+// reader can trust the value without re-checking it. Lives in .data
+// rather than .bss precisely because its default is nonzero.
+.align 4
+worker_count: .quad 1
 
 // h2_preface — the 24-byte HTTP/2 client connection preface
 // (RFC 9113 §3.4), compared byte-for-byte by h2_verify_preface. Read

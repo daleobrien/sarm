@@ -280,6 +280,8 @@
 .equ SIGALRM,        14
 .equ SIGCHLD_,       17
 .equ SIGPIPE_,       13
+.equ SIGINT_,        2
+.equ SIGTERM_,       15
 .equ SIG_IGN,        1
 
 // For SA_NOCLDWAIT on Linux ARM64, we just set SIGCHLD to SIG_IGN
@@ -336,6 +338,11 @@
 .equ SYS_kill,         37
 .equ SYS_pipe,         42
 .equ SYS_sigaction,    46
+// sigreturn(ucontext, infostyle) — the tail of a macOS signal
+// trampoline. libc's _sigtramp calls it; a raw-syscall program that
+// installs its own handler has to supply the trampoline (sa_tramp)
+// and therefore this call too (Plan.md Phase 3, Step 16).
+.equ SYS_sigreturn,    184
 .equ SYS_execve,       59
 .equ SYS_munmap,       73
 .equ SYS_setitimer,    83
@@ -360,6 +367,11 @@
 // call (EINVAL above that -- confirmed on this machine, not
 // assumed), so callers loop.
 .equ SYS_getentropy,   500
+
+// sysctlbyname(name, namelen, oldp, oldlenp, newp, newlen) — the raw
+// syscall takes the name length libc's wrapper would compute for you.
+// Used only by detect_cpus (`--workers auto`, Plan.md Phase 3 Step 14).
+.equ SYS_sysctlbyname, 274
 
 // socket
 .equ AF_INET,          2
@@ -434,6 +446,8 @@
 .equ SIGALRM,        14
 .equ SIGCHLD_,       20
 .equ SIGPIPE_,       13
+.equ SIGINT_,        2
+.equ SIGTERM_,       15
 .equ SIG_IGN,        1
 .equ SA_NOCLDWAIT,   0x0020
 

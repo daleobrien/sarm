@@ -30,14 +30,17 @@
 // Default: 100
 .equ HTTP1_KEEPALIVE_BUDGET, 100
 
-// Maximum number of active, concurrent processes allowed.
-// This is entirely up to you and how many processes your computer can handle.
-// Note that currently, proc_info() will fail to recognize greater than 512
-// processes. This is because proc_info has to write into a buffer, we gave it
-// 2048 bytes. 2048 / 4 = 512 max procs. If you want more, you gotta increase
-// the buffer in sarm.S. I'll leave that as an exercise to the reader.
-// Default: 256
-.equ MAX_PROCS, 256
+// Upper bound on `--workers N` (Plan.md Phase 3, Step 14): the number of
+// pre-forked processes that sit in accept() on the shared listening
+// socket. Nothing stops you raising it, but past the core count the
+// workers just take turns, and each one is another process the kernel
+// wakes on an incoming connection.
+//
+// This replaces the old MAX_PROCS, which was vestigial: it bounded
+// nothing (no code read it) and its comment described a proc_info()
+// buffer in a sarm.S that no longer exists.
+// Default: 64
+.equ MAX_WORKERS, 64
 
 // Allow GET /dir to list the directory's contents, or just 403?
 // 0: Do not allow directory contents to be listed.

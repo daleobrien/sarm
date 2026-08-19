@@ -531,6 +531,128 @@ were, again, taken on a machine under nontrivial background load (see Step
 10's note) — h2c stayed in the same noisy 86k-119k range as before, no
 conclusion drawn either way.
 
+
+## Phase 3, Step 13 — `SO_REUSEPORT` does not distribute on macOS
+
+Phase 3 as planned was N listening sockets on one port, one per worker,
+each with `SO_REUSEPORT`, relying on the kernel to spread accepts across
+them. Plan.md required that semantic to be proven before anything was built
+on it, because BSD-derived kernels and Linux differ here. It does not hold.
+
+Two throwaway probes, both with three `SO_REUSEPORT` sockets bound to one
+port:
+
+| Probe | Result |
+| --- | --- |
+| 300 sequential connections | all 300 to the **last socket bound** |
+| 400 concurrent connections, 3 worker processes | all 400 to worker 2; killing worker 2 sent all 400 to worker 1 |
+
+That is a deterministic "last bind wins" fallback chain — a failover order,
+not load balancing. macOS also has no `SO_REUSEPORT_LB` (the FreeBSD option
+that *does* balance). `SO_REUSEPORT` was therefore never added to `defs.S`:
+nothing in sarm can use it.
+
+### What shipped instead
+
+**One shared listening socket, N workers blocked in `accept()` on it.** The
+same probe harness, four workers, 500 connections:
+
+| | Spread across workers | Throughput |
+| --- | --- | --- |
+| 1 worker (baseline) | — | 5,043 conn/s |
+| 4 workers, shared socket | 128 / 124 / 124 / 124 | 15,449 conn/s (3.1×) |
+
+No socket option, no userspace lock, and no per-worker descriptor
+bookkeeping. Plan.md Step 13 rules out "a shared accept queue with locks",
+and this is not that: the lock it rules out is one in userspace around a
+descriptor. Here the kernel's own accept queue hands each connection to
+exactly one blocked acceptor — which is the behaviour the per-socket queues
+were being bought to imitate in the first place.
+
+## Phase 3, Step 14 — `--workers`
+
+`--workers N` / `--workers auto`, defaulting to **1** so an unflagged
+`./sarm` is bit-identical to the pre-Phase-3 server. The existing argv[1] is
+overloaded (numeric → port, letter → `no_fork`), so the count is a flag and
+`_main` now walks all of argv instead of looking only at argv[1]; the
+positional rules are untouched.
+
+`auto` is `sysctlbyname("hw.logicalcpu")` via the raw syscall (`SYS_sysctlbyname`,
+274) — 12 on this machine. Linux has no equivalent single call, so `auto`
+there reports 1 rather than guessing; an explicit `--workers N` behaves
+identically on both. The count is clamped to `[1, MAX_WORKERS]` at parse
+time, so every later reader can trust it.
+
+`MAX_WORKERS` (64) replaces `config.S`'s `MAX_PROCS` (256), which was
+vestigial: nothing read it, and its comment described a `proc_info()` buffer
+in a `sarm.S` that no longer exists. Two similarly-named constants would
+have been worse than either.
+
+Verified against a live binary: `4`, `auto`, and `999` (clamped) all serve
+200s; `0`, `abc`, and a missing value all exit 1.
+
+## Phase 3, Step 15 — pre-forked accept workers
+
+The socket setup is unchanged. Immediately after `listen`, and after the
+signal handlers are installed, the process forks `worker_count - 1` children
+and then becomes the last worker itself rather than supervising idly — which
+is why `--workers 1` forks nothing at all. `no_fork` debug mode stays
+single-process by definition. Each forked pid is recorded in `worker_pids`
+for Step 16; nothing `wait()`s on them (`SIGCHLD` is still `SIG_IGN` with
+`SA_NOCLDWAIT`).
+
+The **per-connection** fork inside the accept loop is untouched, so the
+property it exists for still holds: a persistent HTTP/2 connection is served
+by a forked child, leaving its worker free to return to `accept()`. Workers
+are processes, not threads, so none of the ~86 writable globals in the Step 3
+inventory below needed to become worker-local — the entire old Phase 5/6/12
+disappears.
+
+Verified:
+- `./sarm 8099 --workers 3` → 3 processes; 60 concurrently-held connections
+  landed **23 / 19 / 20** across them, so every worker really does accept.
+- `--workers 1` and a bare `./sarm` → one process, as before.
+- `--workers auto` → 12 processes on this 12-CPU machine.
+- `make test` (4349 assertions + files/security/protocols/keepalive) and
+  `tests/h2_browser_sim.py all` against a 4-worker server — both pass.
+
+## Phase 3, Step 16 — shutdown
+
+Before this step, killing the forking process orphaned every worker:
+`kill -TERM <parent>` on a 3-worker server left 2 processes alive still
+holding the port.
+
+`worker_shutdown` (in `main.S`) now handles `SIGTERM`/`SIGINT`: close the
+listening socket, `kill(SIGTERM)` each recorded worker pid, `exit`. Three
+raw syscalls, no shared state written — async-signal-safe by construction.
+
+Two things make it simple:
+
+- The handler is installed **only in the forking process, and only after the
+  fork loop**. The workers therefore keep the default disposition and just
+  die when signalled, and `--workers 1` installs no handler at all.
+- The per-connection children are deliberately not signalled — they are not
+  in `worker_pids`, so an in-flight response finishes.
+
+macOS needed a signal trampoline of our own (`sig_tramp`, the `sa_tramp`
+field of `struct __sigaction`): the Darwin kernel enters userspace at the
+trampoline, not the handler, and nothing but libc normally makes the
+`sigaction` syscall directly. arm64 Linux needs no equivalent — the kernel
+supplies the return path and ignores `sa_restorer`.
+
+Neither `worker_shutdown` nor `sig_tramp` ends in `ret`, so `abi.py` and
+`validate_clobbers.py` cannot see where they stop and read on into the code
+that follows. Their "x30 never saved" warning is that overrun, not a defect;
+it is noted in both header comments.
+
+Verified:
+- 5 start/kill cycles alternating `SIGTERM` and `SIGINT` on a 4-worker
+  server: zero processes left behind each time, and the port was rebindable
+  immediately (each cycle rebound it 0.6 s later and served a 200).
+- A keep-alive connection mid-session survived the shutdown and served its
+  next request, confirming in-flight children are left alone.
+- `tests/test_workers.sh` covers all of the above and runs in `make test`.
+
 ---
 
 ## Step 3 — Inventory of process-global mutable state

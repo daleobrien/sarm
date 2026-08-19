@@ -10,22 +10,33 @@ is the map, those headers are the contract.
 ## Shape of the thing
 
 ```
+socket / bind / listen        one listening socket, shared
+   │
+   └─ pre-forked workers ──►  N processes, all blocked in accept()
+                              (N = --workers, default 1)
+   │
 accept()
    │
-   fork()  ── parent ──► back to accept()
+   fork()  ── worker ──► back to accept()
    │
    child (serves exactly one connection, then _exit)
    │
-   ├─ peek first byte ──┬─ 0x16 ──► TLS 1.3 handshake ──► HTTP/2 over TLS
+   ├─ first read ───────┬─ 0x16 ──► TLS 1.3 handshake ──► HTTP/2 over TLS
    │                    ├─ "PRI " ─► HTTP/2 cleartext (h2c)
    │                    └─ else ───► HTTP/1.1
    │
    └──────────────────────────► embedded asset table ──► response
 ```
 
-One process per connection, no threads, no heap, no libc. The parent does
+One process per connection, no threads, no heap, no libc. A worker does
 nothing but `accept` and `fork`; each child serves its one connection to
 completion and exits.
+
+The workers are the only thing `--workers` adds (Plan.md Phase 3): they share
+one listening socket rather than owning one each, because macOS
+`SO_REUSEPORT` is a last-bind-wins fallback chain and does not distribute —
+see `docs/MULTICORE-BASELINE.md`, Step 13. Because a worker is a process, not
+a thread, none of the globals below had to change.
 
 All mutable state is `.bss`/`.data` globals (`src/data.S`, `src/tls/data.S`,
 `src/h2/data.S`) with no locking, and the fork is what makes that safe: every
@@ -82,23 +93,36 @@ table compresses.
 
 `src/sarm/main.S:_main`:
 
-1. If `argv[1]` starts below `'A'` it is parsed as a port (`atoi`, byte-swapped
-   into the `sockaddr_in`). A leading letter (`./sarm d`) instead sets the
-   `no_fork` debug flag — connections are then served inline in the one
-   process, which is what makes `scripts/profile_workload.py` able to attribute
-   a whole workload to a single `getrusage`. Because argv[1] is either a port
-   or the flag, `no_fork` mode always listens on the default port.
-2. `socket` → `setsockopt(SO_REUSEADDR)` → `bind` → `listen(5)`.
+1. `_main` walks all of `argv`. A token starting below `'A'` is parsed as a
+   port (`atoi`, byte-swapped into the `sockaddr_in`); any other bare token is
+   the `no_fork` debug flag (`./sarm d`) — connections are then served inline
+   in the one process, which is what makes `scripts/profile_workload.py` able
+   to attribute a whole workload to a single `getrusage`. `--workers N` /
+   `--workers auto` takes the next token as the worker count, clamped to
+   `[1, MAX_WORKERS]`; `auto` is `sysctlbyname("hw.logicalcpu")` on macOS and
+   1 on Linux, which has no equivalent single call. Anything unparseable
+   exits 1.
+2. `socket` → `setsockopt(SO_REUSEADDR)` → `bind` → `listen(128)`.
 3. `SIGCHLD` → `SIG_IGN` with `SA_NOCLDWAIT` so the kernel reaps children and
    nothing ever has to `wait()`; `SIGPIPE` → `SIG_IGN` so `write()` returns
    `EPIPE` instead of killing the process.
-4. Loop: `accept` → `fork`.
-   - **parent**: `close(clientfd)` and straight back to `accept`. If the fork
+4. If `worker_count > 1` (and `no_fork` is unset): fork `worker_count - 1`
+   workers, recording their pids in `worker_pids`, then become the last worker
+   — so `--workers 1` forks nothing and is bit-identical to the pre-Phase-3
+   server. The forking process, and only it, then installs `worker_shutdown`
+   on `SIGTERM`/`SIGINT`: close the listening socket, signal those pids, exit.
+   The workers keep the default disposition and simply die; per-connection
+   children are not signalled, so an in-flight response finishes. macOS needs
+   the `sig_tramp` trampoline in the same file, since the raw `sigaction`
+   syscall has no libc `_sigtramp` behind it.
+5. Loop: `accept` → `fork`.
+   - **worker**: `close(clientfd)` and straight back to `accept`. If the fork
      failed it closes the connection and carries on rather than serving it on
      the accept loop, where it could block every later one.
    - **child**: `close(sockfd)` — holding the listening socket open would keep
-     the port bound after the parent exits — then arm `SO_RCVTIMEO` and
-     `recvfrom(MSG_PEEK, 1)`.
+     the port bound after the workers exit — then arm `SO_RCVTIMEO` and read
+     the first bytes for real (the `MSG_PEEK` went away in Phase 2, Step 9;
+     the bytes are handed to whichever path is chosen).
      - `0x16` (TLS handshake record) → `tls_server_handshake(fd)`, then straight
        into `h2_connection_loop` over the now-encrypted transport. There is no
        HTTP/1-over-TLS path.

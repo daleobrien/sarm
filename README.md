@@ -34,9 +34,23 @@ Put an `index.html` in `www/` — `GET /` resolves to it.
 ./sarm 8080
 ```
 
-Serves on `127.0.0.1:8080` (macOS) or `0.0.0.0:8080` (Linux); the port is the
-only argument. The listen address is fixed — that's an unimplemented feature,
-not a security decision, though it reads like one.
+Serves on `127.0.0.1:8080` (macOS) or `0.0.0.0:8080` (Linux). The listen
+address is fixed — that's an unimplemented feature, not a security decision,
+though it reads like one.
+
+One process accepts by default. `--workers` pre-forks more of them, all
+blocked in `accept()` on the same listening socket, which is what lets
+connection *setup* use more than one core:
+
+```bash
+./sarm 8080 --workers 4      # four accepting processes
+./sarm 8080 --workers auto   # one per logical CPU (macOS; 1 on Linux)
+```
+
+Each accepted connection is still served by its own forked child, so this
+changes how fast connections are taken, not how they are served. `SIGTERM`
+or `SIGINT` stops every worker and frees the port; connections already in
+flight finish.
 
 The protocol is detected per connection from its first byte: `0x16` → TLS 1.3
 handshake then HTTP/2, the `PRI *` preface → cleartext HTTP/2 (h2c), anything
