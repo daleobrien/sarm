@@ -13,7 +13,7 @@ rebuild.
 | `RESPONSE_HEADER_SIZE` | 512 | Max response header bytes; overflow is a 500. |
 | `RECV_TIMEOUT` | 10 | Seconds without data before the connection is closed with 408. Also the total header timeout. |
 | `TRANSPORT_MODE` | `TRANSPORT_PLAIN` | Compile-time default for the runtime `transport_mode` global. TLS is selected per connection by first-byte detection, so this normally stays PLAIN. |
-| `MAX_PROCS` | 256 | **Vestigial** — fork-era process cap, read by nothing. |
+| `MAX_PROCS` | 256 | **Vestigial** — read by nothing. sarm does fork per connection, so a cap like this is meaningful in principle; it is simply not wired up. Nothing bounds concurrent connections today except the system process limit. |
 | `ALLOW_DIR_LISTING` | 1 | **Vestigial** — directory listing was removed, read by nothing. |
 
 `DOCROOT` can be relative or absolute (`"./"`, `"/Library/WebServer/Documents/"`),

@@ -88,9 +88,15 @@ the round-to-round noise floor a candidate must beat; `arm-optimize.py` reads it
 
 `rps_bench.sh` builds `make production`, starts sarm on a scratch port, and runs
 `wrk` (HTTP/1.1), `h2load --no-tls-proto=h2c` (h2c) and `h2load` over TLS against
-that one instance. Use duration mode (`-D`, the default here) not `-n`: sarm
-serves one connection at a time, and fixed-request-count mode undercounts when
-more clients are configured than requests needed.
+that one instance. Use duration mode (`-D`, the default here) not `-n`:
+fixed-request-count mode undercounts when more clients are configured than
+requests needed.
+
+Read the HTTP/1.1 number with care. sarm has no HTTP/1 keep-alive, so every
+request costs a new connection and a `fork()`, and `wrk` — which runs
+keep-alive — reports socket read errors for the closes it did not expect. The
+figure is roughly an order of magnitude below h2c for that reason alone, not
+because the HTTP/1 path is slower per request.
 
 ## Static analysis
 

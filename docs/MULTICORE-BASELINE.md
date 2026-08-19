@@ -82,42 +82,55 @@ Connection: close
 single request, and therefore **one `fork()` per request**. On HTTP/2 a
 connection is one fork amortised over every stream it carries.
 
-### Where the documentation disagrees
+### Where the documentation disagreed (all now corrected)
 
-Three existing claims are stale and should be corrected independently of the
-multicore work:
+The fork was reinstated by `2dbbd23` ("Better forking", 2026-08-16). The
+documentation set was written and revised on 2026-08-19 — *after* that commit —
+but from the pre-fork mental model, so every one of these claims was wrong at
+the time it was written rather than merely overtaken.
 
-| Claim | Where | Reality |
+| Claim as written | Where | Reality |
 | --- | --- | --- |
-| "One process, one connection at a time, no fork, no threads" | `docs/ARCHITECTURE.md:22` | Forks per connection; many connections in flight at once |
-| "there is no fork left to disable" | `docs/ARCHITECTURE.md:73` | `no_fork` disables exactly that fork |
-| "`defs.S` still defines fork-era syscalls (`SYS_fork`, …) that are never used" | `docs/ARCHITECTURE.md:247` | `SYS_fork` is used on every connection |
+| "One process, one connection at a time, no fork, no threads" | `docs/ARCHITECTURE.md` | Forks per connection; many connections in flight at once |
+| "there is no fork left to disable" | `docs/ARCHITECTURE.md` | `no_fork` disables exactly that fork |
+| "`defs.S` still defines fork-era syscalls (`SYS_fork`, …) that are never used" | `docs/ARCHITECTURE.md` | `SYS_fork` runs on every connection |
+| "single process" | `README.md` | One process per connection |
+| "served one connection at a time and never forked (still true)" | `docs/HISTORY.md` | Written three days after the fork landed |
+| "sarm serves one connection at a time" | `docs/SCRIPTS.md` | Used to justify benchmark advice that stands for other reasons |
+| "`MAX_PROCS` — fork-era process cap" | `docs/CONFIGURATION.md` | Unused, but "fork-era" implied fork was past |
 
-Plan.md inherits the same error: it opens by describing sarm as a
-"single-process, connection-per-loop server", and Step 12 says "Do not
-introduce `fork()` … the current project deliberately moved away from the
-previous fork-based design and is documented as single-process."
+All have been fixed. The original `Plan.md` inherited the same error — it
+opened by describing sarm as a "single-process, connection-per-loop server" and
+told the implementer not to introduce `fork()` — and has been replaced by a
+plan built on the findings below.
 
-### What this changes about the plan
+One open question resolved along the way: `docs/HISTORY.md` recorded ~10k `wrk`
+socket read errors per ~90k HTTP/1 requests as "an unexplained characteristic
+of the HTTP/1 path". The cause is the absence of keep-alive — `wrk` runs
+keep-alive, sarm answers `Connection: close` and closes, and the errors are
+`wrk` observing closes it did not expect.
+
+### What this changes about the work
 
 - **sarm already runs connections on multiple cores.** Each connection is an
-  independently scheduled process. The multicore work is therefore not "add
-  parallelism where there is none" but "replace fork-per-connection with N
-  persistent workers". The win is removing the per-connection `fork()` cost and
-  the single-parent `accept()` serialisation — not the parallelism itself,
-  which exists today.
-- **Step 12's preference for threads over fork is still a reasonable choice**,
-  but it is a decision to *replace* a working fork, not to avoid introducing
-  one. Framed correctly, it also needs a reason to beat what fork already
-  provides.
-- **The global-state audit (Phases 5 and 12) is not urgent while fork
-  remains.** `fork()` already gives every connection a private copy-on-write
-  image, so all ~86 writable globals below are per-connection-isolated today.
-  They become genuinely shared the instant workers become threads — which is
-  the real risk the plan identifies, just deferred to the moment of that
-  switch rather than present now.
-- **`SO_REUSEPORT` (Phase 3) is still worth doing** even keeping fork, since it
-  removes the single accept loop as a serialisation point.
+  independently scheduled process. Exactly one thing is serialised on one core:
+  the parent's `accept` → `fork` loop. So concurrency work can only ever speed
+  up connection *setup* — not request serving, which is already parallel.
+- **That makes HTTP/1 the only workload concurrency can help**, because it is
+  the only one dominated by connection setup: no keep-alive means one fork per
+  request. HTTP/2 amortises a single fork over every stream on the connection.
+- **The global-state audit is unnecessary while workers stay processes.**
+  `fork()` already gives every connection a private copy-on-write image, so all
+  ~86 writable globals below are per-connection-isolated today. They become
+  genuinely shared only if workers become threads.
+- **Threads are therefore the wrong primitive**, and `Plan.md` now says so
+  explicitly: pre-forked worker *processes* with `SO_REUSEPORT` give the same
+  multicore benefit with none of the ~86-global refactor, and preserve the
+  blocking-safety property the inner fork exists to provide.
+- **`SO_REUSEPORT` is still worth doing** even keeping fork, since it removes
+  the single accept loop as a serialisation point — but it is now sequenced
+  last, behind keep-alive and syscall reduction, because it is the narrowest of
+  the three wins.
 
 ---
 
@@ -324,14 +337,14 @@ Three things to carry into Phase 5:
    Under fork this is copy-on-write and mostly never faulted in; under threads
    it has to be real, statically reserved memory times the worker count.
 
-### G. Cryptographic scratch (Plan.md Step 18)
+### G. Cryptographic scratch
 
 | Symbol | Where | Notes |
 | --- | --- | --- |
 | `sha256_ctx` (+ `_state`, `_bitlen`, `_buf`, `_buflen`) | `src/crypto/data.S` | **A single process-global streaming SHA-256 context.** Its own header comment describes it as "a fixed-layout global, like `tls_state`" |
 
-This is what Step 18 asks about, and the answer is that a shared crypto scratch
-object already exists — harmless under fork, unusable under threads. It is
+A shared crypto scratch object already exists — harmless under fork, unusable
+under threads. It is
 *separate* from `tls_transcript_ctx`, which carries its own copy of the same
 layout, so the TLS transcript is already insulated from general SHA-256 use.
 Only the general context is shared.
@@ -342,8 +355,9 @@ Only the general context is shared.
 ### H. Counters / statistics
 
 **None.** There are no global counters or statistics anywhere in `src/`.
-Plan.md Step 19 and "Keep statistics out of the hot path" are satisfied by
-construction; there is nothing to remove.
+"Keep statistics out of the hot path" is satisfied by construction; there is
+nothing to remove, and nothing should be added to measure this work — the
+benchmark script measures from outside the process.
 
 ---
 

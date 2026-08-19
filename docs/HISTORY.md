@@ -89,8 +89,13 @@ simulator (`tests/h2_browser_sim.py`, dependency-free stdlib):
 
 1. `SETTINGS_INITIAL_WINDOW_SIZE` was never applied to already-open streams.
 2. A `WINDOW_UPDATE` for a recently-closed stream killed the whole connection.
-3. The server served one connection at a time and never forked (still true —
-   now a documented design property rather than a surprise).
+3. The server served one connection at a time and never forked.
+
+   *No longer true.* `2dbbd23` ("Better forking", 2026-08-16) reinstated a
+   `fork()` per accepted connection, precisely because serving a persistent
+   HTTP/2 connection on the accept loop stranded every other connection in the
+   listen backlog. This entry — and several others in the docs — was written
+   afterwards from the pre-fork mental model; see `docs/ARCHITECTURE.md`.
 
 Also fixed: settings stored with `str w7` into 8-byte fields left a stale
 `0xFFFFFFFF` in the upper half of `H2C_SETTINGS_MAX_HEADER_LIST_SIZE`.
@@ -342,7 +347,21 @@ TLS costs ~4% *per request* at steady state — the handshake is a separate
 per-connection fixed cost, which is what all the P-256 work above was aimed at.
 HTTP/1.1's figure includes socket read errors under concurrent keep-alive load
 (~10k over ~90k requests) that don't appear on the HTTP/2 paths; `wrk` nets them
-out of the number, but they're an unexplained characteristic of the HTTP/1 path.
+out of the number.
+
+**Explained since.** sarm has no HTTP/1 keep-alive: every response carries
+`Connection: close` and the server closes immediately, while `wrk` runs in
+keep-alive mode and intends to reuse the connection. The errors are `wrk`
+observing closes it did not expect. They are a subset rather than one per
+request (~10k of ~90k), which fits a timing race — the close landing after
+`wrk` has already written the next request — rather than every close being
+counted. The HTTP/2 paths are unaffected because those connections are
+genuinely persistent.
+
+This is also why the HTTP/1.1 figure sits an order of magnitude below h2c on
+the same server and asset: without keep-alive, every request costs a fresh
+connection and a fresh `fork()`. See `docs/MULTICORE-BASELINE.md` and `Plan.md`
+Phase 1.
 
 ---
 

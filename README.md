@@ -3,7 +3,8 @@
 # sarm — a web server in ARM64 assembly
 
 `sarm` is a static-file web server written entirely by hand in ARM64 assembly:
-no libc, no linked libraries, no heap, syscall-only, single process. It speaks
+no libc, no linked libraries, no heap, syscall-only, one process per
+connection. It speaks
 **HTTP/1.1**, **HTTP/2** (RFC 9113) and **TLS 1.3** (RFC 8446), including its own
 SHA-256, HMAC, HKDF, AES-128-GCM, X25519 and ECDSA P-256. Every asset — pages,
 error pages, certificate — is pre-compressed and embedded into the binary at
