@@ -208,9 +208,14 @@ read_failed:
     cmp x0, #EINTR
     b.eq read_loop
     // check if errno is ECONNRESET, ECONNABORTED, etc — silently exit.
-    // ETIMEDOUT from SO_RCVTIMEO sends a 408 before closing.
+    // SO_RCVTIMEO expiring is documented (POSIX, Linux socket(7)) to
+    // report EAGAIN/EWOULDBLOCK, not ETIMEDOUT -- read() never actually
+    // returns ETIMEDOUT for this, but the check is harmless to keep in
+    // case some platform genuinely does. Either way, send a 408 before
+    // closing.
     cb eq, x0, #ECONNRESET, Lchild_end
     cb eq, x0, #ETIMEDOUT, L408
+    cb eq, x0, #EAGAIN, L408
     cb eq, x0, #ECONNABORTED, Lchild_end
     cb eq, x0, #EPIPE, Lchild_end
     cb eq, x0, #ENETDOWN, Lchild_end
