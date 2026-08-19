@@ -80,6 +80,17 @@ h2_connection_loop:
     // connection's entries must not leak into this one's decode
     bl h2_hpack_dyn_reset
 
+    // transport_read's PLAIN-mode stage buffer (src/transport/data.S,
+    // Plan.md Phase 2 Step 10) is a single global, not per-connection —
+    // under `no_fork` the same process serves connection after
+    // connection, so a previous connection's unread staged bytes must
+    // never leak into this one (mirrors tls_server_handshake's own
+    // reset of the TLS stage buffer at the equivalent moment).
+    adr_l x9, plain_read_stage_len
+    str xzr, [x9]
+    adr_l x9, plain_read_stage_pos
+    str xzr, [x9]
+
     // ── 3.4 — verify the client connection preface ──
     cmp x21, #H2_PREFACE_LEN
     b.hs 1f
