@@ -13,6 +13,10 @@
 .global embedded_etag
 .global embedded_etag_len
 .global request
+.global request_header_len
+.global request_total_len
+.global request_budget
+.global keep_alive_decision
 .global response
 .global connection_mode
 .global h2_preface
@@ -72,6 +76,35 @@ response:     .skip RESPONSE_SIZE
 header_len:   .skip 16
 clientfd:     .skip 16
 resource_type:    .skip 16
+
+// request_header_len — length of the raw request header currently in
+// `buf` (one byte past the final \r\n\r\n), set by child.S once the
+// header terminator is found. http1_should_keep_alive reads it (via
+// http1_write_response) to detect Connection/Content-Length/
+// Transfer-Encoding on the request that produced the response being
+// encoded — see Plan.md Phase 1, Step 3.
+request_header_len: .skip 16
+
+// request_total_len — total bytes in `buf` when the header terminator was
+// found (request_header_len <= this). The difference is leftover
+// pipelined bytes belonging to the next request; http1_keepalive_continue
+// (child.S) shifts them to the front of buf before resuming the read loop
+// — see Plan.md Phase 1, Step 5.
+request_total_len: .skip 16
+
+// request_budget — requests remaining on this connection before sarm
+// sends Connection: close and ends it (HTTP1_KEEPALIVE_BUDGET in
+// config.S), decremented per request by child.S. http1_write_response
+// ANDs "budget > 0" into the keep-alive decision alongside
+// http1_should_keep_alive's result — see Plan.md Phase 1, Step 6.
+request_budget: .skip 16
+
+// keep_alive_decision — the keep-alive/close decision http1_write_response
+// just made for the response it encoded (http1_should_keep_alive's result,
+// ANDed with request_budget > 0). http1_keepalive_continue reads this
+// after the handler returns, so the loop-vs-close behavior always matches
+// the Connection: header the client just received, by construction.
+keep_alive_decision: .skip 16
 
 embedded_content: .skip 16
 embedded_ct:      .skip 16

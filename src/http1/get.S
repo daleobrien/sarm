@@ -148,7 +148,7 @@ Lcreate_response:
     bl create_response
     bl http1_write_response
     b.cs L500
-    b child_end
+    b http1_keepalive_continue
 
 // local trampolines: b.cond/cbz can't reach reply_status across files
 L416:

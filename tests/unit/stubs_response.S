@@ -161,3 +161,16 @@ child_end:
     ret
 
 .global child_end
+
+// http1_keepalive_continue — normally in child.S (Plan.md Phase 1, Step
+// 6): resets per-request state and either resumes the connection or
+// branches to child_end, depending on keep_alive_decision. The tests
+// that exercise get/head/reply_status directly use reply_status's
+// flag=1 path (a plain ret, never reaching this symbol) or don't care
+// about connection continuation at all; this stub only exists so the
+// linker can resolve the `b http1_keepalive_continue` in get/head/
+// reply_status.
+http1_keepalive_continue:
+    ret
+
+.global http1_keepalive_continue

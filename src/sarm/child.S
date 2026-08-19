@@ -6,11 +6,19 @@
 // Description: Handle one client connection: set a receive timeout on
 //   the socket, read the request into buf, detect the protocol (HTTP/2
 //   client preface vs HTTP/1) on the first read, and find the header
-//   terminator (read_loop/Lheader_found/Lno_header). The 2: block then
-//   logs the request, verifies the HTTP version,
-//   parses the request, and dispatches GET/HEAD/OPTIONS to the http1
-//   handlers. read_failed maps read errors to a silent close, a 408, or
-//   a 500 via the reply_status trampolines at the bottom of the file.
+//   terminator (Lcheck_leftover/read_loop/Lheader_found/Lno_header). The
+//   2: block then logs the request, verifies the HTTP version, parses
+//   the request, and dispatches GET/HEAD/OPTIONS to the http1 handlers.
+//   read_failed maps read errors to a silent close, a 408, or a 500 via
+//   the reply_status trampolines at the bottom of the file.
+//
+//   Every handler tail-branches to http1_keepalive_continue once its
+//   response is written (Plan.md Phase 1, Step 6) rather than always
+//   going to child_end: on keep-alive it resets per-request state,
+//   shifts any leftover pipelined bytes (Step 5) to the front of buf,
+//   and resumes at Lcheck_leftover — the same entry a fresh connection
+//   uses, so a complete next request already sitting in the leftover
+//   bytes is served without blocking in read() for more.
 //
 // Input/Arguments:
 //   (none — uses the clientfd global set by the accept loop)
@@ -63,9 +71,33 @@ child:
 
 
 
+    // one keep-alive request budget for the whole connection (Plan.md
+    // Phase 1, Step 6) -- decremented per request at Lheader_found.
+    mov x0, #HTTP1_KEEPALIVE_BUDGET
+    str_l x0, request_budget, x9
+
     // read(client_fd, buffer, buffer_size)
     mov x7, #0
     mov x25, #0 // protocol not yet detected (0 = undetected, 1 = decided)
+
+// Entry point for both a fresh connection (x7 == 0, falls straight
+// through to read_loop) and a kept-alive connection resuming with
+// leftover pipelined bytes already in buf (Step 5): check whether a
+// full header is already sitting in those bytes before blocking in
+// read() for more. http1_keepalive_continue below is the other caller.
+Lcheck_leftover:
+    cbz x7, read_loop
+    adr_l x0, buf
+    mov x1, x7
+    bl parse_header_end
+    cmp x1, #0
+    b.ne Lheader_found
+    // no complete header in the leftover bytes yet -- need to read more,
+    // unless the buffer is already full without ever finding one.
+    cmp x7, #BUF_SIZE
+    b.ge L431
+    b read_loop
+
 read_loop:
     SCWINUM SYS_read
     ldr_l x0, clientfd
@@ -111,6 +143,13 @@ read_loop:
 Lheader_found:
     mov x23, x1 // end of header index (one byte after \r\n\r\n)
     mov x24, x7 // total bytes
+    str_l x23, request_header_len, x9 // for http1_should_keep_alive (Step 3)
+    str_l x24, request_total_len, x9  // for the leftover-bytes shift (Step 5)
+
+    ldr_l x9, request_budget
+    sub x9, x9, #1
+    str_l x9, request_budget, x10
+
     b 2f // break from the hell of reading
 
 Lno_header:
@@ -216,3 +255,63 @@ L501:
 // local trampoline: b.cond/cbz can't reach child_end across files
 Lchild_end:
     b child_end
+
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: http1_keepalive_continue
+//
+// Description: The shared continuation every HTTP/1 response handler
+//   (get, head, reply_status) tail-branches to once a response has been
+//   written, instead of always going straight to child_end (Plan.md
+//   Phase 1, Step 6). Reads keep_alive_decision — set by
+//   http1_write_response for the response that was just sent, so this
+//   always agrees with the Connection: header the client just received.
+//   Close (keep_alive_decision == 0): behaves exactly as before this
+//   step, branching to child_end. Keep alive: resets per-request state
+//   (http1_reset_request), shifts any leftover pipelined bytes in `buf`
+//   to the front (Step 5), and resumes the connection at
+//   Lcheck_leftover — the same entry point a fresh connection uses,
+//   just with x7 possibly nonzero and x25 already 1 (protocol stays
+//   decided for the life of the connection).
+//
+// Input/Arguments:
+//   (none — reads the keep_alive_decision / request_header_len /
+//   request_total_len globals)
+//
+// Output/Returns:
+//   (never returns — branches to child_end or Lcheck_leftover)
+//
+// Clobbered Registers:
+//   x0-x4, x7, x9, x10, x25, x30
+//
+// Stack Usage:
+//   none
+// ─────────────────────────────────────────────────────────────────────
+.global http1_keepalive_continue
+http1_keepalive_continue:
+    ldr_l x0, keep_alive_decision
+    cbz x0, Lchild_end
+
+    bl http1_reset_request
+
+    // load x10 first: ldr_l's default scratch is x9, so loading into x9
+    // second (last) avoids the second call's address computation
+    // clobbering the value the first call just loaded into x9.
+    ldr_l x10, request_total_len
+    ldr_l x9, request_header_len
+    subs x7, x10, x9
+    b.gt Lhkc_shift
+    mov x7, #0
+    b Lhkc_resume
+
+Lhkc_shift:
+    // move the leftover pipelined bytes (the start of the next request)
+    // to the front of buf -- safe as an ascending memcpy since dst < src
+    adr_l x0, buf
+    adr_l x1, buf
+    add x1, x1, x9
+    mov x2, x7
+    bl memcpy
+
+Lhkc_resume:
+    mov x25, #1 // protocol already decided for this connection
+    b Lcheck_leftover

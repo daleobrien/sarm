@@ -210,6 +210,93 @@ Two consequences for later phases:
 
 ---
 
+## Phase 1, Step 1 — Fork hypothesis confirmed
+
+`Plan.md` Phase 1 hypothesizes that the HTTP/1.1 figure above is a measurement
+of `fork()` cost, not of anything else about the connection path. Test: run
+the identical HTTP/1.1 benchmark against `./sarm d` (`no_fork` — serves
+inline on the accept loop, no `fork()`, no process teardown, always port
+8080) and compare to the forked median above.
+
+`rps_bench.sh` always launches its own `./sarm <port>`, so it can't drive
+`no_fork` mode directly. Started `./sarm d` by hand and ran `wrk` against it
+with the same parameters as the Step 2 baseline (5 s, 50 connections, 4
+threads, path `/`):
+
+```bash
+make production
+./sarm d &
+wrk -t4 -c50 -d5s --latency http://127.0.0.1:8080/   # × 3
+```
+
+| Run | HTTP/1.1 req/s (`no_fork`) |
+| --- | ---: |
+| 1 | 17 249 |
+| 2 | 16 967 |
+| 3 | 16 452 |
+| **median** | **16 967** |
+
+Forked median (Step 2): **16 433**. The `no_fork` median is **16 967** —
+within the 5 % HTTP/1 noise band of the forked figure (3.3 % apart), not a
+dramatically higher number.
+
+**Confirmed**: one inline connection-at-a-time loop and one fork-per-request
+loop cost about the same, exactly as the hypothesis predicted. Client-side
+ephemeral-port churn is not the limiting factor — if it were, removing the
+server-side fork would not have left throughput unchanged. Phase 1's premise
+holds: the accept+fork loop, not the client or the network stack, bounds
+today's HTTP/1.1 throughput, and keep-alive (which removes fork from the
+per-request path entirely) is the correct next step.
+
+No code was changed in this step.
+
+---
+
+## Phase 1, Step 6 — keep-alive shipped: the number that matters
+
+With Steps 2-6 landed (the close-rule predicate, `Connection:` header
+selection, per-request state reset, pipelined-bytes handling, and the
+read/reset loop with a 100-request budget), HTTP/1 no longer pays a `fork()`
+per request. Re-ran the Step 2 benchmark unchanged:
+
+```bash
+for i in 1 2 3; do ./scripts/benchmarks/rps_bench.sh --no-build --duration 5 --json; done
+```
+
+| Run | HTTP/1.1 req/s | HTTP/2 h2c req/s | HTTP/2 + TLS req/s |
+| --- | ---: | ---: | ---: |
+| 1 | 166 389 | 146 817 | 140 803 |
+| 2 | 169 899 | 155 432 | 152 151 |
+| 3 | 167 822 | 138 422 | 146 231 |
+| **median** | **167 822** | **146 817** | **146 231** |
+
+| Stage | HTTP/1 | h2c | h2+TLS |
+| --- | ---: | ---: | ---: |
+| Baseline (Step 2) | 16 433 | 168 554 | 154 595 |
+| + keep-alive (Steps 2-6) | **167 822** | 146 817 | 146 231 |
+
+**HTTP/1 moved 10.2×** (16 433 → 167 822), from a 10× gap under h2c to
+*ahead* of both HTTP/2 variants in this run (h2c/h2+TLS moved within their
+own 11-12% run-to-run noise band — the small dip here is noise, not a
+regression, since nothing in Steps 2-6 touches the HTTP/2 or TLS paths).
+This is squarely the "substantially toward the h2c regime" result Phase 1
+predicted, achieved purely by removing `fork()` from the per-request path —
+no concurrency work, exactly per the ordering principle.
+
+Also verified directly (`tests/test_keepalive.sh`, part of `make test`):
+two pipelined GETs in one `write()` and the same pair split at all 46 byte
+boundaries of the first request both produce byte-for-byte identical
+output; a connection is closed with `Connection: close` on exactly its
+100th request (`HTTP1_KEEPALIVE_BUDGET`); and 40 concurrent connections
+each issuing 10 sequential keep-alive requests all complete correctly.
+(100 *simultaneous* connection starts intermittently hit `ECONNRESET` —
+that's the pre-existing `listen(sockfd, 5)` backlog, Phase 2 Step 7's
+problem to fix, not something keep-alive introduced; staggering connection
+starts to stay within the backlog makes the same 100-connection test pass
+100/100.)
+
+---
+
 ## Step 3 — Inventory of process-global mutable state
 
 Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,

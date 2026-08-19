@@ -11,7 +11,9 @@
 //
 // Input/Arguments:
 //   x0 — http code
-//   x1 — boolean: if 0 → go to child_end, if nonzero → ret
+//   x1 — boolean: if 0 → go to http1_keepalive_continue (close or
+//        continue the connection, per keep_alive_decision), if
+//        nonzero → ret
 //
 // Output/Returns:
 //   nothing
@@ -172,9 +174,9 @@ sc_err:
     bl http1_write_response
 
 sc_epilogue:
-    cbnz x27, 3f // if x27 (x1) is nonzero, ret instead of branching to child_end
+    cbnz x27, 3f // if x27 (x1) is nonzero, ret instead of continuing the connection
 2:
-    b child_end
+    b http1_keepalive_continue
 3:
     ldr x27, [sp, #80]
     ldp x25, x26, [sp, #64]

@@ -41,8 +41,8 @@ head:
     bl http1_write_response
     b.cs L500
 
-    // child_end will close the file descriptor
-    b child_end
+    // on close, child_end will close the file descriptor
+    b http1_keepalive_continue
 
 // local trampoline: b.cond/cbz can't reach reply_status across files
 L500:

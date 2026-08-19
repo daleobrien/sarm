@@ -23,6 +23,13 @@
 // Default: 10 seconds
 .equ RECV_TIMEOUT, 10
 
+// Maximum number of HTTP/1 requests served on one kept-alive connection
+// before sarm sends Connection: close and ends it. Bounds how long a
+// single forked child can occupy a process slot under keep-alive — see
+// "The ceiling" in Plan.md.
+// Default: 100
+.equ HTTP1_KEEPALIVE_BUDGET, 100
+
 // Maximum number of active, concurrent processes allowed.
 // This is entirely up to you and how many processes your computer can handle.
 // Note that currently, proc_info() will fail to recognize greater than 512

@@ -50,9 +50,15 @@ header_etag: .ascii "\r\nETag: "
 .equ header_etag_len, . - header_etag
 
 .align 4
-header_tail:
+header_tail_close:
     .ascii "\r\nConnection: close\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: sarm\r\n\r\n"
-.equ header_tail_len, . - header_tail
+.equ header_tail_close_len, . - header_tail_close
+    .align 4 // pad the string block to a 16-byte multiple
+
+.align 4
+header_tail_keep:
+    .ascii "\r\nConnection: keep-alive\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nAllow: GET, HEAD, OPTIONS\r\nAccept-Ranges: bytes\r\nServer: sarm\r\n\r\n"
+.equ header_tail_keep_len, . - header_tail_keep
     .align 4 // pad the string block to a 16-byte multiple
 
 // the 500 status-line string lives in find_http_code.S; this copies its
@@ -289,10 +295,33 @@ Lheader_tail:
     mov x13, x0
 
 2:
+    // Connection: keep-alive or close, decided fresh for this response
+    // (Plan.md Phase 1, Step 3): the pure predicate, ANDed with the
+    // per-connection request budget (Step 6) it doesn't know about.
+    // Stored in keep_alive_decision so http1_keepalive_continue's actual
+    // loop-or-close behavior always agrees with the header just chosen.
+    adr_l x0, buf
+    ldr_l x1, request_header_len
+    adr_l x9, request
+    ldr w2, [x9, #REQ_METHOD]
+    ldr x3, [x19, #RESP_STATUS]
+    bl http1_should_keep_alive
+    cbz x0, Lhw_decided
+    ldr_l x1, request_budget
+    cmp x1, #0
+    csel x0, x0, xzr, gt // budget exhausted -> force close
+Lhw_decided:
+    str_l x0, keep_alive_decision, x9
+    cbz x0, Lhw_tail_close
+    adr_l x1, header_tail_keep
+    mov x2, header_tail_keep_len
+    b Lhw_tail_write
+Lhw_tail_close:
+    adr_l x1, header_tail_close
+    mov x2, header_tail_close_len
+Lhw_tail_write:
     // write the \r\n\r\n
     mov x0, x13 // destination, header_buf + offset
-    adr_l x1, header_tail
-    mov x2, header_tail_len
     add x14, x14, x2
     cb hi, x14, header_buf_size, Lheader_too_big
     bl memcpy

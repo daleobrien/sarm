@@ -38,6 +38,10 @@ bytes_match_str: .ascii "bytes"
 range_buf: .skip (19 + 15) & ~15 // 19 bytes, rounded up to 16-byte multiple
 .align 4
 
+// exported so http1_reset_request (Plan.md Phase 1, Step 4) can zero it
+// between requests on a kept-alive connection.
+.global range_buf
+
 .text
 .align 2
 .global parse_range

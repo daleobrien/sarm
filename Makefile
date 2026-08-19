@@ -47,4 +47,5 @@ test: sarm
 	@./tests/test_files.sh --no-build --quiet
 	@./tests/test_security.sh --no-build --quiet
 	@./tests/test_protocols.sh --no-build --quiet
+	@./tests/test_keepalive.sh --no-build --quiet
 	@$(MAKE) -s -C tests/unit

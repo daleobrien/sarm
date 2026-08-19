@@ -71,6 +71,8 @@ TEST_PARSE := $(OBJ_DIR)/test_parse
 TEST_FILE  := $(OBJ_DIR)/test_file
 TEST_REQUEST := $(OBJ_DIR)/test_request
 TEST_RESPONSE := $(OBJ_DIR)/test_response
+TEST_KEEP_ALIVE := $(OBJ_DIR)/test_keep_alive
+TEST_RESET_REQUEST := $(OBJ_DIR)/test_reset_request
 TEST_STR_LEN := $(OBJ_DIR)/test_strlen
 TEST_STREQN := $(OBJ_DIR)/test_streqn
 TEST_STREQN_I := $(OBJ_DIR)/test_streqn_i
@@ -136,7 +138,7 @@ TEST_H2_MUX       := $(OBJ_DIR)/test_h2_mux
 TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
 
-TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) \
+TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) $(TEST_KEEP_ALIVE) $(TEST_RESET_REQUEST) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) \
 	$(TEST_ATOI) $(TEST_ATOI_N) $(SHA256_TESTS) $(HMAC_TESTS) $(HKDF_TESTS) $(AES128_TESTS) $(GCM_TESTS) $(X25519_TESTS) $(P256_TESTS) $(P256_SCALAR_TESTS) $(P256_POINT_TESTS) $(P256_ECDSA_TESTS) $(TEST_CRYPTO_RANDOM) $(TEST_TRANSPORT) $(TEST_TLS) $(TEST_TLS_CLIENT_HELLO) $(TEST_TLS_SERVER_HELLO) $(TEST_TLS_KEY_SCHEDULE) $(TEST_TLS_ENCRYPTED_EXTENSIONS) $(TEST_TLS_CERTIFICATE) $(TLS_CERTIFICATE_VERIFY_TESTS) $(TLS_FINISHED_TESTS) $(TLS_APPLICATION_TESTS) \
 	$(TEST_TLS_TRANSCRIPT_INIT) $(TEST_TLS_TRANSCRIPT_ADD) $(TEST_TLS_TRANSCRIPT_HASH) \
@@ -497,6 +499,21 @@ $(TEST_REQUEST): test_request.c $(HARNESS) $(util_objs) $(parse_objs) $(data_obj
 # parse_range/get_filetype. stubs_response.o replaces stubs.o (no
 # duplicate reply_status/build_header stubs) and adds a child_end stub.
 $(TEST_RESPONSE): test_response.c $(HARNESS) $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) $(LDFLAGS) -o $@
+
+# test_keep_alive: Plan.md Phase 1 Step 2 predicate (src/http1/keep_alive.S).
+# It only calls get_header_field (parse) and streqn_i (util), but lives in
+# the http1/ folder, so the same object set as test_response resolves the
+# rest of that folder's symbols (data.S struct offsets, the embedded table
+# and child_end via stubs_response.o).
+$(TEST_KEEP_ALIVE): test_keep_alive.c $(HARNESS) $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) $(LDFLAGS) -o $@
+
+# test_reset_request: Plan.md Phase 1 Step 4 (src/http1/reset_request.S).
+# Same object set as test_keep_alive/test_response -- it touches globals
+# from data.S, parse/data.S and parse_range.S (parse_objs), all in the
+# http1/ folder's dependency closure already.
+$(TEST_RESET_REQUEST): test_reset_request.c $(HARNESS) $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(data_objs) $(parse_objs) $(file_objs) $(http1_objs) $(stubs_resp_objs) $(LDFLAGS) -o $@
 
 # HTTP/2 suites: one .c file per stage group, all linking the same
