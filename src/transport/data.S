@@ -34,6 +34,15 @@
 //     the same process serves connection after connection, so a
 //     previous connection's unread staged bytes must never leak into
 //     the next one.
+//   transport_writev_scratch — TRANSPORT_TLS's fallback for
+//     transport_writev (Plan.md Phase 2, Step 11): a TLS record has to
+//     be sealed from one contiguous plaintext buffer, so the TLS branch
+//     assembles the header + body here before handing the whole thing
+//     to transport_write, exactly what a caller doing its own
+//     copy-then-write_all did before transport_writev existed. Sized
+//     for a small frame header plus one full TLS_MAX_PLAINTEXT chunk —
+//     transport_writev's only caller today (h2_write_body) never asks
+//     for more than that.
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -73,3 +82,7 @@ plain_read_stage_pos: .quad 0
 .align 4
 .global plain_read_stage_buf
 plain_read_stage_buf: .skip 16384
+
+.align 4
+.global transport_writev_scratch
+transport_writev_scratch: .skip 16416  // small header + TLS_MAX_PLAINTEXT, rounded

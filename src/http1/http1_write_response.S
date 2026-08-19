@@ -11,14 +11,19 @@
 //   struct. Builds the status line (via find_http_code), then
 //   Content-Length/Content-Range/Content-Type, plus Content-Encoding
 //   and ETag for embedded resources, into header_buf and sends
-//   header + body with a single writev.
+//   header + body with a zero-copy writev, looped by raw_writev_all
+//   until every iovec is fully drained (Plan.md Phase 2, Step 12) — a
+//   partial write can't split the header from the body, or split the
+//   body itself, and leave the client desynced.
 //
 // Input/Arguments:
 //   x0 — response struct pointer
 //
 // Output/Returns:
 //   carry clear = success, carry set = header didn't fit in header_buf
-//   (the caller should reply 500)
+//   (the caller should reply 500) — a write failure is not reported;
+//   it is ignored the same way it always was, since child_end closes
+//   the connection regardless.
 //
 // Clobbered Registers:
 //   x0–x5, x9–x11, x13–x14, x16 (x19–x24 saved and restored)
@@ -360,9 +365,9 @@ Lhw_done:
 2:
     ldr_l x0, clientfd
     mov x1, sp              // pointer to iovec array
-    SCWINUM SYS_writev
-    SCWISVC
-    SCERR
+    // x2 already holds iovcnt (1 or 2, set above)
+    bl raw_writev_all       // loops until fully drained (Plan.md Phase 2,
+                             // Step 12) instead of one unchecked writev()
     add sp, sp, #32
     // write errors are ignored — child_end closes the connection anyway.
     // only a header that didn't fit reports failure (carry set above).

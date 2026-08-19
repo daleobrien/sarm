@@ -460,6 +460,79 @@ machine before it can be trusted either way.
 
 ---
 
+## Phase 2, Step 11 — `writev` for HTTP/2 DATA frames
+
+`h2_write_body` used to build each DATA frame by `memcpy`ing the (up to 16
+KiB) chunk into `h2_frame_buf` right behind the 9-byte frame header, then
+sending the whole thing with one `write_all` — a real copy of every byte of
+every response body, per frame, exactly what the file's own comment flagged
+as "zero-copy DATA is a later stage."
+
+That stage: a new `transport_writev` (`src/transport/transport_writev.S`)
+takes a header and a body chunk as two separate pointers. `TRANSPORT_PLAIN`
+sends both with one real `writev(2)` — genuinely zero-copy, via a new
+`raw_writev_all` (`src/transport/raw_writev.S`, mirroring `raw_write_all`
+but for an iovec array, looping on a partial write until every iovec is
+fully drained). `TRANSPORT_TLS` has no vectored-write equivalent — a TLS
+record has to be sealed from one contiguous plaintext buffer — so it copies
+both parts into a new `transport_writev_scratch` and hands that to the
+ordinary `transport_write`, unchanged from what `h2_write_body` did before
+this existed. `h2_write_headers` needed no change — its header block is
+always assembled in place already, there's no separate large body pointer
+to avoid copying.
+
+**Found and fixed a real bug while building this**: the first version of
+`transport_writev`'s `PLAIN` branch called `bl raw_writev_all` without
+saving its own `x30` (link register) first. `raw_writev_all`'s own `ret`
+correctly returned to the instruction right after that `bl` — but that
+instruction's own trailing `ret` then read the *same* `x30` value again,
+jumping back to itself instead of to `transport_writev`'s real caller: an
+infinite two-instruction loop, `add sp,sp,#0x20` / `ret`, endlessly growing
+`sp`. It surfaced as five test suites crashing with SIGILL (`sample`
+consistently showed 100% of CPU time pinned at that one address) once `sp`
+wandered far enough to fault. Fixed by giving the `PLAIN` branch a proper
+16-byte-aligned frame that saves/restores `x30` around the call, the same
+discipline every other multi-call function in this codebase already
+follows — this is exactly the class of bug Plan.md's own register-clobber
+documentation convention exists to catch, and a good reminder to write it
+for every new function immediately, not after something crashes.
+
+Verified:
+- `make test` — all 4349 tests (including all `h2_*` suites, which caught
+  the bug above once the object cache was rebuilt clean).
+- `tests/h2_browser_sim.py all` — exit 0.
+- The largest embedded asset (76 KB, gzipped) over both h2c and h2+TLS,
+  byte-identical to the on-disk source after gzip-aware `curl --compressed`.
+- `h2load` burst on that same asset: 2000 requests / 20 connections / 10
+  streams each — 2000/2000 succeeded, 0 failed.
+
+## Phase 2, Step 12 — loop the HTTP/1 `writev` on partial writes
+
+`http1_write_response` called `SYS_writev` once and ignored the result, with
+no partial-write retry loop, unlike `raw_write_all`/`raw_writev_all` which do
+loop. Replaced the raw syscall with a call to the same `raw_writev_all` Step
+11 introduced — a correctness fix, not a performance one, exactly as Plan.md
+describes it: on a blocking socket a short write is essentially only
+possible on `EINTR` (both `SIGPIPE` and `SIGCHLD` are ignored server-wide),
+so this was latent, not live, but a real gap the largest response could have
+exposed.
+
+Verified:
+- `make test` — all 4349 tests, unchanged.
+- 15 repeated fetches of the largest embedded asset (76 KB, gzipped) over
+  fresh HTTP/1.1 connections — all 15 byte-identical to the on-disk source.
+- The same asset served mid-keep-alive-connection (first request), followed
+  by a second request reusing the connection — both responses correct,
+  matching Step 6's own keep-alive mechanism.
+
+No benchmark claim for either step: Step 12 is explicitly a correctness fix
+with no expected throughput movement, and Step 11's `rps_bench.sh` numbers
+were, again, taken on a machine under nontrivial background load (see Step
+10's note) — h2c stayed in the same noisy 86k-119k range as before, no
+conclusion drawn either way.
+
+---
+
 ## Step 3 — Inventory of process-global mutable state
 
 Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,

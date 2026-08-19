@@ -32,7 +32,7 @@
 //     H2_ERR_* from a frame dispatched while waiting for credit
 //
 // Clobbered Registers:
-//   x0-x4, x8-x9, x13, x19-x27 (saved/restored)
+//   x0-x13, x16, x19-x27 (saved/restored)
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; stp x27, x30, [sp, #64]
@@ -110,17 +110,17 @@ h2_write_body:
     lsr w4, w3, #8
     strb w4, [x13, #7]
     strb w3, [x13, #8]
-    // copy the chunk behind the header (zero-copy DATA is a later stage)
-    add x0, x13, #H2_WIRE_HEADER_LEN
-    mov x1, x22
-    mov x2, x24
-    bl memcpy
-    // one write per frame
+    // header + body chunk in one real writev, no copy of the chunk
+    // itself (Plan.md Phase 2, Step 11 — zero-copy DATA): the chunk
+    // already lives in the response body, so there's nothing to gain by
+    // copying it next to the header first, the way http1_write_response
+    // already avoids copying the body for HTTP/1.
     mov x0, x19
     adr_l x1, h2_frame_buf
     mov x2, #H2_WIRE_HEADER_LEN
-    add x2, x2, x24
-    bl write_all
+    mov x3, x22
+    mov x4, x24
+    bl transport_writev
     b.cs .Lh2wb_err
     // the DATA octets drain both windows (§5.2)
     ldr x8, [x26, #H2C_WINDOW]
