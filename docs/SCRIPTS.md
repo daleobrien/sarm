@@ -37,6 +37,7 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
 ./tests/test_keepalive.sh       # pipelining, fragmentation, keep-alive budget
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
+./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
 ```
 
@@ -52,6 +53,14 @@ where the `MAX_WORKERS` clamp lands, that every worker really does take
 connections off the shared listening socket, and that `SIGTERM`/`SIGINT`
 leaves no worker behind, frees the port immediately, and lets in-flight
 connections finish.
+
+`tests/test_multicore.sh` (with `tests/multicore_checks.py`) is the Phase 4
+stress harness: concurrent clients over HTTP/1 (single, keep-alive, pipelined,
+split-write), h2c and h2+TLS with every body checked byte for byte, then a
+randomised mixed workload with slow clients and long-lived HTTP/2 connections
+while a probe times fresh connections. `--iterations` and `--stress-seconds`
+turn it into a soak; `--workers` picks the server's worker count. It found the
+`SA_NOCLDWAIT` zombie bug described in `docs/MULTICORE-BASELINE.md`.
 
 `tests/h2_browser_sim.py` is a dependency-free HTTP/2 client (stdlib `ssl`/`socket`
 plus its own frame writer and encode-side HPACK) that mimics real browser frame

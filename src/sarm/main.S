@@ -125,6 +125,73 @@ worker_pids:        .skip (MAX_WORKERS * 8)
 .global exit
 
 // ─────────────────────────────────────────────────────────────────────
+// Function Name: install_sigchld
+//
+// Description: SIGCHLD -> SIG_IGN with SA_NOCLDWAIT, so the kernel reaps
+//   per-connection children and nothing ever has to wait().
+//
+//   A routine rather than a straight line of _main because **every
+//   accept worker has to install this for itself** (Plan.md Phase 3,
+//   Step 15). On macOS the effect of SA_NOCLDWAIT is a process flag that
+//   fork() does NOT copy to the child, so a worker forked after _main
+//   set it inherits SIG_IGN without the auto-reap, and every connection
+//   it then serves leaves a zombie behind: 300 connections against a
+//   two-worker server left 151 of them, and the server stopped being
+//   able to fork at all a few thousand connections later. Found by the
+//   Phase 4 stress test; see docs/MULTICORE-BASELINE.md.
+//
+// Input/Arguments:
+//   (none)
+//
+// Output/Returns:
+//   carry clear on success, set on error (x0 = errno)
+//
+// Clobbered Registers:
+//   x0-x3, x16 (x8 on Linux)
+//
+// Stack Usage:
+//   32 bytes for the sigaction struct
+// ─────────────────────────────────────────────────────────────────────
+.align 2
+.global install_sigchld
+install_sigchld:
+#ifdef __linux__
+    sub sp, sp, #32
+    mov x0, #SIG_IGN
+    str x0, [sp, #0]  // sa_handler = SIG_IGN
+    mov x0, #SA_NOCLDWAIT
+    str x0, [sp, #8]  // sa_flags = SA_NOCLDWAIT
+    str xzr, [sp, #16] // sa_restorer = NULL
+    str xzr, [sp, #24] // sa_mask = 0
+
+    SCWINUM SYS_rt_sigaction
+    mov w0, #SIGCHLD_
+    mov x1, sp
+    mov x2, #0 // old action = NULL
+    mov x3, #8 // sigsetsize
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+#else
+    sub sp, sp, #32
+    mov x0, #SIG_IGN
+    mov x1, #SA_NOCLDWAIT
+    str x0, [sp, #0]  // sa_handler = SIG_IGN
+    str x0, [sp, #8]   // sp_tramp
+    str wzr, [sp, #16] // sa_mask = 0
+    str x1, [sp, #20] // sa_flags = SA_NOCLDWAIT
+
+    SCWINUM SYS_sigaction
+    mov w0, #SIGCHLD_
+    mov x1, sp
+    mov x2, #0 // old action = NULL
+    SCWISVC
+    SCERR
+    add sp, sp, #32
+#endif
+    ret
+
+// ─────────────────────────────────────────────────────────────────────
 // Function Name: detect_cpus
 //
 // Description: How many logical CPUs this machine has, for
@@ -434,42 +501,10 @@ skip_argv:
     SCERR
     b.cs exit
 
-    // set up SIG_IGN on SIGCHLD, with SA_NOCLDWAIT to tell the kernel to auto
-    // reap children. previously zombies were piling up :(
-#ifdef __linux__
-    sub sp, sp, #32
-    mov x0, #SIG_IGN
-    str x0, [sp, #0]  // sa_handler = SIG_IGN
-    mov x0, #SA_NOCLDWAIT
-    str x0, [sp, #8]  // sa_flags = SA_NOCLDWAIT
-    str xzr, [sp, #16] // sa_restorer = NULL
-    str xzr, [sp, #24] // sa_mask = 0
-
-    SCWINUM SYS_rt_sigaction
-    mov w0, #SIGCHLD_
-    mov x1, sp
-    mov x2, #0 // old action = NULL
-    mov x3, #8 // sigsetsize
-    SCWISVC
-    SCERR
-    add sp, sp, #32
-#else
-    sub sp, sp, #32
-    mov x0, #SIG_IGN
-    mov x1, #SA_NOCLDWAIT
-    str x0, [sp, #0]  // sa_handler = SIG_IGN
-    str x0, [sp, #8]   // sp_tramp
-    str wzr, [sp, #16] // sa_mask = 0
-    str x1, [sp, #20] // sa_flags = SA_NOCLDWAIT
-
-    SCWINUM SYS_sigaction
-    mov w0, #SIGCHLD_
-    mov x1, sp
-    mov x2, #0 // old action = NULL
-    SCWISVC
-    SCERR
-    add sp, sp, #32
-#endif
+    // SIGCHLD -> SIG_IGN with SA_NOCLDWAIT so the kernel auto-reaps the
+    // per-connection children. Every forked worker re-installs this for
+    // itself (see install_sigchld) -- fork does not carry the flag.
+    bl install_sigchld
     b.cs exit
 
     // ignore SIGPIPE so write() returns EPIPE instead of killing us
@@ -547,13 +582,13 @@ Lspawn_loop:
     SCWISVC
     SCERR
     b.cs Linstall_shutdown      // can't spawn more — run with what we have
-    cbz x0, loop                // the child is a worker: straight to accept()
+    cbz x0, Lworker_child       // the child is a worker
 #else
     SCWINUM SYS_fork
     SCWISVC
     SCERR
     b.cs Linstall_shutdown      // can't spawn more — run with what we have
-    cbnz x1, loop               // x1 == 1 in the child (see the note below)
+    cbnz x1, Lworker_child      // x1 == 1 in the child (see the note below)
 #endif
     // parent — record the child so Step 16 can signal it, then continue.
     // worker_pids holds only the FORKED workers (0..worker_pid_count-1);
@@ -567,6 +602,17 @@ Lspawn_loop:
     str_l x11, worker_pid_count, x9
     add x23, x23, #1
     b Lspawn_loop
+
+Lworker_child:
+    // A forked worker has to install SIGCHLD/SA_NOCLDWAIT for itself:
+    // macOS does not carry the auto-reap flag across fork(), so without
+    // this every connection this worker serves leaves a zombie and the
+    // server runs out of processes within a few thousand connections.
+    // Ignoring the result is deliberate — a worker that cannot set it is
+    // still better than one fewer worker, and _main already exited if
+    // the very same call failed there.
+    bl install_sigchld
+    b loop
 
     // ── shutdown handling (Plan.md Phase 3, Step 16) ──────────────────
     // Reached only by the process that forked workers, and only once it

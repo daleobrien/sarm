@@ -653,6 +653,210 @@ Verified:
   next request, confirming in-flight children are left alone.
 - `tests/test_workers.sh` covers all of the above and runs in `make test`.
 
+
+## Phase 4, Step 17 — concurrent multi-protocol correctness
+
+`tests/test_multicore.sh` with `tests/multicore_checks.py`. Each iteration
+takes its own reference bodies over HTTP/1, then N concurrent clients re-fetch
+the same resources over six connection styles — HTTP/1 single, keep-alive,
+pipelined, split-write, h2c, and h2-over-TLS — and every response is compared
+byte for byte. A body that differs in length is truncation; a body of the right
+length with the wrong bytes is reported as probable cross-connection leakage,
+which is the failure mode the whole worker design has to be innocent of.
+
+**50 iterations x 112 responses = 5,600 responses at `--workers 4`, no
+intermittent failure.**
+
+## Phase 4, Step 18 — randomised mixed workload, and the bug it found
+
+The `stress` mode of the same harness: a randomised mixture over all three
+protocols plus HEAD, range and missing-file requests, two slow clients
+trickling their request headers eight bytes at a time, two long-lived HTTP/2
+connections, and a probe thread timing a *fresh* connection twice a second
+throughout.
+
+**13,461 requests over 60 s: no crash, no malformed response, no hang, and the
+worst fresh-connection time was 3 ms** — a busy worker does not block accepts.
+
+### The regression it found first: macOS drops `SA_NOCLDWAIT` across `fork()`
+
+The first run of this test took the machine's entire process table with it.
+
+`_main` sets `SIGCHLD` to `SIG_IGN` with `SA_NOCLDWAIT` so the kernel reaps
+per-connection children. On macOS the effect of that flag is a process flag
+that **`fork()` does not copy to the child**. A worker forked in Step 15
+therefore inherited `SIG_IGN` *without* the auto-reap, and every connection it
+served left a zombie behind:
+
+| | Result |
+| --- | --- |
+| 300 connections, 2 workers | 151 zombies, all parented to the forked worker |
+| sustained connections, 3 workers | fork starts failing at ~2x the free process slots; the server then accepts connections and closes them unanswered |
+| the same load at `--workers 1` | clean — no zombies, no failures |
+
+`--workers 1` forks no workers, which is exactly why every Phase 3 test passed
+and why this only appeared under sustained load. Fixed by extracting
+`install_sigchld` and calling it in each forked worker; `tests/test_multicore.sh`
+now asserts that no worker leaves an unreaped child, and that assertion was
+checked against a deliberately-created zombie before being trusted.
+
+### Why the stress client is paced
+
+Unpaced, it is the *client* that breaks first: several thousand connections a
+second exhausts the ephemeral port range (`EADDRNOTAVAIL`), and every port
+burned sits in `TIME_WAIT` for 30 s, which then poisons the next run. This
+script is a correctness test; `rps_bench.sh` is the benchmark.
+
+## Phase 4, Step 19 — the whole sequence, measured
+
+### Method
+
+Each stage was rebuilt from its own commit in a git worktree (`make
+production`, same certificates, and the *current* `rps_bench.sh` copied in so
+the harness is identical across stages). `--workers` was added to
+`rps_bench.sh` for this. Every figure below is the median of three 8-second
+runs at `rps_bench.sh`'s default 50 connections / 4 threads, `±` the full
+spread.
+
+The machine was not quiet — background load moved during the sweep — so
+anything that mattered was re-measured with the stages **interleaved and their
+order alternated** between rounds. That controls for drift. It does **not**
+control for the two effects described below, which is why the h2 columns of
+this table do not mean what they appear to mean: **read the table together
+with "The apparent HTTP/2 regression was the benchmark, not the code"**, and
+treat the h2c and h2+TLS columns as measurements of a 12-core machine running
+50 server processes, not of the server.
+
+### The table
+
+| Stage | HTTP/1 | h2c (saturated) | h2+TLS (saturated) | Binary |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline (`b3e3150`) | 15,593 (±13%) | 146,087 (±6%) | 160,701 (±10%) | 295,624 |
+| + keep-alive, Ph 1 (`91363dc`) | **164,150** (±3%) | 153,590 (±19%) | 141,921 (±18%) | 296,104 |
+| + syscall work, Ph 2 (`467114c`) | 162,832 (±16%) | **85,086** (±10%) | 91,908 (±13%) | 329,592 |
+| + 1 worker, Ph 3 (HEAD) | 161,690 (±8%) | 90,844 (±3%) | 101,514 (±1%) | 329,800 |
+| + 2 workers | 161,650 (±2%) | 94,632 (±30%) | 101,539 (±12%) | 329,800 |
+| + 4 workers | 161,931 (±2%) | 92,428 (±6%) | 101,480 (±1%) | 329,800 |
+| + 8 workers | 161,584 (±1%) | 95,541 (±3%) | 107,174 (±16%) | 329,800 |
+
+HTTP/1 mean latency: 2.25 ms at baseline, ~230 µs from keep-alive onwards,
+unchanged by worker count.
+
+**The observed noise band is wider than Plan.md assumed** (5% HTTP/1, 12%
+HTTP/2): HTTP/1 spread reached ±16% and h2 ±30% on this machine. Nothing in the
+worker rows is outside it, in either direction.
+
+At a connection count the machine can actually run (`-c8`, eight interleaved
+repeats), HEAD serves **255,491 req/s h2c and 207,668 req/s h2+TLS** — above
+every h2 figure in the table above, including the baseline row. That is the
+number to quote for the server; the column above is the number to quote for
+50 concurrent processes on 12 cores.
+
+### Keep-alive is the entire HTTP/1 gain
+
+15,593 -> 164,150 req/s, a 10.5x move, and nothing after it changes HTTP/1 at
+all. **Extra workers do not appear in this benchmark, and should not**: `wrk`
+holds 50 keep-alive connections, so there is almost no connection setup left to
+parallelise. Phase 3's gain is a *connection* rate — 5,043 -> 15,449 conn/s in
+the Step 13 probe — and this benchmark deliberately does not exercise it. The
+right reading is that workers cost nothing here, not that they do nothing.
+
+### The apparent HTTP/2 regression was the benchmark, not the code
+
+The first pass at this section reported that Phase 2 had cost ~30% of HTTP/2
+throughput, bisected to `ffef67b`. **That was wrong, and it is worth recording
+why**, because the mistake survived an order-alternating A/B whose ranges did
+not overlap — the usual defence against exactly this class of error.
+
+What actually happens:
+
+**1. `-c50` on a 12-core machine measures oversubscription.** sarm runs one
+process per connection, so 50 connections is 50 processes plus `h2load`'s own
+four threads, all on 12 cores. Throughput falls off monotonically well before
+that:
+
+| connections | h2c req/s | median latency |
+| ---: | ---: | ---: |
+| 4 | 282,541 | 214 µs |
+| 8 | 250,416 | 473 µs |
+| 12 | 184,068 | 1.08 ms |
+| 16 | 152,758 | 1.69 ms |
+| 24 | 119,286 | 3.19 ms |
+| 32 | 104,494 | 4.64 ms |
+| 50 | 93,334 | 8.89 ms |
+
+No code changes between those rows. `rps_bench.sh` has always defaulted to
+`-c50`, so every h2 figure it has ever produced sits deep in this regime.
+
+**2. Raising the listen backlog changed what `-c50` means.** Step 7's
+`listen(5)` -> `listen(128)` is a correctness fix (5 dropped connections under
+a burst: 94/100 succeeded before, 100/100 after). But with a backlog of 5, 50
+simultaneous connections cannot all be established at once — the kernel drops
+SYNs and the client's connections trickle in over TCP retries, so much of the
+run has far fewer than 50 processes competing. The old, higher numbers were
+measured at a lower *effective* concurrency. Two builds differing only in that
+one constant, at `-c12`: 291k/284k (backlog 5) against 180k/184k (backlog 128).
+
+**3. Past the core count the metric is bimodal.** This machine is 6 P-cores
+and 6 E-cores, and which cluster the children land on decides the result. Same
+three builds, same order, two rounds at `-c12`:
+
+| | round 1 | round 3 |
+| --- | ---: | ---: |
+| keep-alive | 261,437 | 171,648 |
+| `ffef67b` + backlog 5 | 173,077 | 284,129 |
+
+Every build produces both modes. A single run — or a handful, however
+carefully ordered — samples whichever mode it happens to land in, and an
+order-alternating A/B does nothing about it because the modes are not a
+function of order.
+
+**Measured properly, there is no regression.** Eight repeats per build,
+interleaved, at `-c8` (inside the core count, unimodal):
+
+| Build | median h2c | runs |
+| --- | ---: | --- |
+| Baseline (`b3e3150`) | 252,301 | 239k 241k 244k 249k 256k 257k 281k 289k |
+| + keep-alive (`91363dc`) | 264,804 | 222k 227k 242k 264k 266k 286k 286k 296k |
+| HEAD | 251,308 | 235k 240k 241k 251k 252k 253k 255k 258k |
+
+The distributions overlap almost completely, HEAD's medians are within 5% of
+both others, and HEAD has the *tightest* spread of the three. At `-c8` HEAD
+serves **255k h2c and 208k h2+TLS**, both comfortably above the 168k / 154k
+this document has been quoting as the baseline all along — those baseline
+figures were themselves taken at `-c50` and are not the server's ceiling.
+
+### What changed as a result
+
+`rps_bench.sh` gained `--repeat N` (median of N passes, reported with the full
+spread) and prints an explicit warning when `--connections` exceeds the
+machine's logical CPU count, naming the connection count to compare at
+instead. The lesson is in the header comment: **connection count is part of
+the result**, and for a process-per-connection server it is the single most
+important part.
+
+No server code was changed. The one real defect Phase 4 found is the
+`SA_NOCLDWAIT` zombie bug above, which was fixed.
+
+### CPU utilisation, and why the obvious measurement is useless
+
+Sampling per-process CPU during an HTTP/1 load shows only ~4% of one core per
+worker, which is the accept-and-fork loop and nothing else. The actual serving
+work is invisible to it: with `HTTP1_KEEPALIVE_BUDGET` at 100 requests, a
+connection is closed after 100 requests and `wrk` reconnects, so children turn
+over constantly — **2,217 distinct connection children in 3 seconds of load**,
+each living ~30 ms. `ps` cannot sample that, and the client shares the same 12
+cores as the server, so an absolute utilisation figure would not be
+attributable to either. The child-churn number is the useful one, and it is a
+direct measure of what the keep-alive budget costs.
+
+## Phase 4, Step 20 — in `make test`
+
+Three stages, one per worker count (`--workers 1`, `2`, `4`), each running 2
+correctness iterations plus a 5-second stress run. The soak lengths quoted
+above are what the `--iterations` and `--stress-seconds` flags are for and are
+run by hand. `tests/test_workers.sh` from Phase 3 runs there too.
+
 ---
 
 ## Step 3 — Inventory of process-global mutable state

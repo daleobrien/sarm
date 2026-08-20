@@ -17,6 +17,7 @@ connection.
 ./scripts/benchmarks/rps_bench.sh --no-build                   # reuse existing binary
 ./scripts/benchmarks/rps_bench.sh --duration 15 --connections 100 --threads 4
 ./scripts/benchmarks/rps_bench.sh --path /pretty/index.html
+./scripts/benchmarks/rps_bench.sh --workers 4                  # N pre-forked accept workers
 ./scripts/benchmarks/rps_bench.sh --json                       # machine-readable summary
 ```
 
@@ -24,8 +25,28 @@ Requires `wrk`, `h2load`, and `curl` on PATH — the script checks and exits
 2 with a clear message if any are missing.
 
 Use duration mode (the default; `--duration`), not a fixed request count:
-sarm serves one connection at a time, so a fixed-request-count mode
-undercounts once more clients are configured than requests are needed.
+a fixed-request-count mode undercounts once more clients are configured
+than requests are needed.
+
+**Connection count is part of the result.** sarm runs one process per
+connection, so `--connections` above the machine's logical CPU count
+measures oversubscription, not the server: 282k req/s h2c at `-c4` down to
+93k at `-c50` on a 12-core box, same binary. Past the core count the metric
+also goes bimodal (P-core vs E-core placement), so one run can read 170k or
+290k for the same build. Compare builds at half the core count or below,
+with `--repeat` (median of N passes, printed with the spread). The script
+warns when the connection count is too high for the machine.
+
+**Read a single sweep with suspicion.** Stage-to-stage differences on this
+machine have been as large as the background load moving underneath them.
+Run at least three repeats, quote the spread, and when comparing two builds
+interleave them and alternate which goes first — otherwise drift lands
+entirely on whichever ran last. The Phase 4 measurements in
+`docs/MULTICORE-BASELINE.md` show what that changes.
+
+`--workers` only shows up in a benchmark that opens connections. `wrk` and
+`h2load` both hold their connections open, so worker count is invisible
+here by design; the accept path is measured by connection rate instead.
 
 ## Frame-level correctness under load
 

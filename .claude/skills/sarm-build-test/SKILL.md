@@ -27,8 +27,14 @@ make -C tests/unit              # unit suite alone (~4,300 assertions, C drivers
 ./tests/test_files.sh           # asset integrity, ranges, MIME, ETag, gzip
 ./tests/test_security.sh        # traversal, encoding, oversize, malformed input
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
+./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
+./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator (NOT part of `make test`, run separately)
 ```
+
+`tests/test_multicore.sh` takes `--workers N`, `--iterations N` and
+`--stress-seconds S`; `make test` runs it at 1, 2 and 4 workers with short
+settings, and the long soaks are run by hand.
 
 `make test` builds `sarm` first, so it's always the safe default after a
 source change. The individual `test_*.sh` scripts accept `--no-build
