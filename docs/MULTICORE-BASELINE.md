@@ -178,6 +178,11 @@ Three runs, 5 s each, 50 connections, 4 threads, path `/`:
 | **median** | **16 433** | **168 554** | **154 595** |
 | spread (max/min) | 5 % | 12 % | 11 % |
 
+> **Superseded.** These are Phase 0 figures and neither the HTTP/1 number
+> nor its fork model still holds — see
+> [2026-08-21 — re-measured at HEAD](#2026-08-21--re-measured-at-head-de62b76)
+> at the end of this document.
+
 Run-to-run spread is 5 % on HTTP/1 and 11–12 % on the HTTP/2 numbers. That is
 stable enough to detect the kind of change multicore work should produce
 (expected ≫ 12 %), but *not* stable enough to adjudicate a claimed 5–10 %
@@ -856,6 +861,48 @@ Three stages, one per worker count (`--workers 1`, `2`, `4`), each running 2
 correctness iterations plus a 5-second stress run. The soak lengths quoted
 above are what the `--iterations` and `--stress-seconds` flags are for and are
 run by hand. `tests/test_workers.sh` from Phase 3 runs there too.
+
+---
+
+## 2026-08-21 — re-measured at HEAD (`de62b76`)
+
+Same knobs as the Step 2 baseline table (5 s, 4 threads, path `/`, median of 3,
+1 worker), re-run on the current tree so the Phase 0 numbers have an up-to-date
+counterpart. Machine unchanged: 12 logical CPUs, not quiet.
+
+At the baseline's 50 connections:
+
+| | req/s | spread | forks | limited by |
+| --- | ---: | ---: | --- | --- |
+| HTTP/1.1 | 165,479 | ±5.4% | 50 total (one per connection) | per-request syscalls and parsing |
+| HTTP/2 h2c | 90,699 | ±20.3% | 50 total | oversubscription — 50 processes on 12 cores |
+| HTTP/2 + TLS | 92,177 | ±35.3% | 50 total | oversubscription — 50 processes on 12 cores |
+
+HTTP/1 mean latency 229.6 µs.
+
+The h2 rows carry ±20–35% spread and are not usable for build-to-build
+comparison — same effect as in Step 19. At a connection count the machine can
+actually run, the spread collapses and the protocol ordering flips:
+
+| (`-c6`) | req/s | spread | forks | limited by |
+| --- | ---: | ---: | --- | --- |
+| HTTP/1.1 | 102,714 | ±0.9% | 6 total | per-request syscalls and parsing (41.7 µs avg latency) |
+| HTTP/2 h2c | 303,988 | ±0.8% | 6 total | per-request syscalls and parsing |
+| HTTP/2 + TLS | 263,565 | ±2.1% | 6 total | per-request syscalls and parsing + record crypto |
+
+**Two things in the Phase 0 table no longer hold.** HTTP/1.1's 16,433 req/s and
+its "one fork per request" both predate keep-alive (Phase 1) and the pre-forked
+accept workers (Phase 3): every protocol now forks once per *connection*, so
+the forks column is 50 (or 6) across the board and HTTP/1 is ~10x its Phase 0
+figure. And the Phase 0 h2 numbers (169 k / 155 k at `-c50`) are not
+reproducible at that connection count on this machine any more; `-c6` is where
+h2's real ~3x lead over HTTP/1 shows up.
+
+Reproduce with:
+
+```
+./scripts/benchmarks/rps_bench.sh --duration 5 --connections 6 --threads 4 --path / --repeat 3
+```
 
 ---
 
