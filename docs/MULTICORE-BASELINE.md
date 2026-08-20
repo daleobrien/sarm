@@ -906,6 +906,93 @@ Reproduce with:
 
 ---
 
+## 2026-08-21 — is the loopback the limit? No; syscall count is
+
+Asked of the 303,988 req/s h2c figure above: how much loopback bandwidth is
+that, and is the network path the wall? Measured rather than estimated.
+
+### Bandwidth is not remotely the constraint
+
+At 292,600 req/s (a repeat pass), h2load's own counters report **117.20 MB/s**
+— 585.99 MB in 5 s, of which 503.68 MB body and 57.20 MB headers (HPACK saving
+50.6%), serving the 681-byte `www/index.html`. Scaled to 303,988 req/s that is
+~121.8 MB/s, **~0.97 Gbit/s**. HTTP/2+TLS was 97.66 MB/s at 243,808 req/s.
+
+What loopback can do on this machine (C sender/receiver pair, 127.0.0.1,
+2 GiB per run):
+
+| write size | throughput | sends/s |
+| ---: | ---: | ---: |
+| 400 B | 66 MB/s (0.5 Gbit/s) | 164 k |
+| 681 B | 112 MB/s (0.9 Gbit/s) | 165 k |
+| 4 KiB | 639 MB/s (5.1 Gbit/s) | 156 k |
+| 64 KiB | 5,997 MB/s (48.0 Gbit/s) | 92 k |
+| 1 MiB | 7,510 MB/s (60.1 Gbit/s) | 7 k |
+
+~0.97 Gbit/s against a ~60 Gbit/s ceiling is **1.6% of capacity**. Loopback has
+no wire — it is a copy through the socket buffers — so bytes/s only binds at
+megabyte-sized writes. Note the sends/s column is flat from 400 B to 4 KiB: a
+10x change in payload with no change in message rate. Below ~4 KiB you pay per
+*message*, and the MB/s column is just that fixed rate times the payload.
+
+### The sends/s column is NOT a ceiling sarm is hitting
+
+Two corrections to the obvious reading of that table, both of which matter:
+
+1. **`TCP_NODELAY` inflated the cost.** The harness set it, forcing a wakeup
+   and a segment per `send()`. sarm sets it nowhere (`grep -rn NODELAY src` is
+   empty). Without it the 681 B row goes 165 k -> **243 k sends/s**.
+2. **sarm issues two writes per h2 request, and still beats that number.**
+   `h2_write_headers.S:232` (`bl write_all`, HEADERS frame) and
+   `h2_write_body.S:123` (`bl transport_writev`, 9-byte DATA header + body as
+   one iovec — 681 B is one chunk, well under the 16 KiB frame size). At the
+   single-connection rate of **144,552 req/s** (`-c1`, median of 3) that is
+   ~289 k write syscalls/s on one socket — above both harness figures.
+
+So the harness was measuring how fast one receiver process gets woken, not a
+send ceiling. sarm exceeds it because `h2load -m10` keeps 10 streams in flight:
+writes coalesce in the socket buffer and the client drains many per wakeup.
+
+Connection scaling for reference (5 s, median of 3, path `/`):
+
+| connections | HTTP/1.1 req/s | h2c req/s |
+| ---: | ---: | ---: |
+| 1 | 31,905 (±2.4%) | 144,552 (±2.6%) |
+| 2 | 57,373 (±0.2%) | 241,183 (±0.3%) |
+| 4 | 101,758 (±2.4%) | 312,970 (±2.1%) |
+| 6 | 101,534 (±0.3%) | 307,618 (±0.3%) |
+| 8 | 143,758 (±5.3%) | 266,481 (±4.2%) |
+
+### What is actually the limit: 82% of per-request CPU is kernel time
+
+`python3 scripts/profile_workload.py request` — marginal **11.80 us/request**,
+fixed 2.672 ms, R^2 0.9997 — with this user/sys split:
+
+| workload size | user | sys | sys share |
+| ---: | ---: | ---: | ---: |
+| 1000 | 2.90 ms | 11.74 ms | 80% |
+| 2000 | 4.75 ms | 21.28 ms | **82%** |
+
+Four fifths of per-request CPU is the socket syscalls. Syscalls dominate as
+*cost per call inside sarm's own CPU budget*, not as an external rate ceiling —
+nothing outside the process is throttling it.
+
+(That profile runs over TLS with sequential requests, not `-m10` pipelined h2c,
+so its 11.80 us marginal is not directly comparable to the ~6.9 us/request
+implied by 144,552 req/s on one connection. The sys/user *ratio* is the
+transferable part.)
+
+### The lever this points at
+
+Not bandwidth, and not a higher sends/s ceiling — **fewer syscalls per
+response**. The concrete one: HEADERS and DATA leave as two separate writes,
+while the `transport_writev` at `h2_write_body.S:123` already takes a
+two-part iovec. Folding the encoded HEADERS block in as a third part would take
+per-request write syscalls from 2 to 1. Same class of change as Phase 2
+Steps 11-12, and with an 82% sys share that is where the headroom is.
+
+---
+
 ## Step 3 — Inventory of process-global mutable state
 
 Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,
