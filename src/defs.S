@@ -590,6 +590,13 @@
 // are per-file .equ values used by several h2 functions, so they live
 // here (included by every file) rather than next to the .skip.
 .equ h2_frame_buf_size, H2_WIRE_HEADER_LEN + H2_DEFAULT_MAX_FRAME_SIZE
+// h2_wait_buf holds one *incoming* frame read by h2_write_body's
+// flow-control wait loop: the 9-byte wire header first, then the payload
+// over the top of it. h2_validate_frame caps that payload at
+// H2C_MAX_RX_FRAME_SIZE, whose initial (and only) value is
+// H2_DEFAULT_MAX_FRAME_SIZE, so the same sizing as h2_frame_buf covers
+// both reads with room to spare.
+.equ h2_wait_buf_size, H2_WIRE_HEADER_LEN + H2_DEFAULT_MAX_FRAME_SIZE
 .equ h2_range_buf_size, 64  // copy of the request's Range header value
 .equ h2_cr_buf_size, 64     // scratch for the content-range value
 

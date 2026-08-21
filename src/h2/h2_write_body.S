@@ -36,6 +36,11 @@
 //   a large response — so the wait loop carries the connection loop's
 //   request-processing hook and serves it right there, recursively.
 //
+//   Frames read while waiting land in h2_wait_buf, never in `buf`: the
+//   connection loop parks bytes it has read but not yet parsed in `buf`,
+//   and overwriting them desynchronises the connection as soon as this
+//   response finishes. See src/h2/data.S for the reproducer.
+//
 // Input/Arguments:
 //   x0 — client fd
 //   x1 — response struct
@@ -180,17 +185,24 @@ h2_write_body:
     b.cs .Lh2wb_err
     str xzr, [sp, #88]
 .Lh2wb_wait_read:
-    // The 9-byte wire header lands at buf[0..8] and is parsed before the
-    // payload read overwrites it; the payload (≤ H2C_MAX_RX_FRAME_SIZE)
-    // fits buf. WINDOW_UPDATE replenishes the credit; anything else is
-    // still dispatched normally (SETTINGS, PING, ...). A dispatch error
-    // aborts the response.
+    // The 9-byte wire header lands at h2_wait_buf[0..8] and is parsed
+    // before the payload read overwrites it; the payload (≤
+    // H2C_MAX_RX_FRAME_SIZE) fits h2_wait_buf. WINDOW_UPDATE replenishes
+    // the credit; anything else is still dispatched normally (SETTINGS,
+    // PING, ...). A dispatch error aborts the response.
+    //
+    // h2_wait_buf, not `buf`: the connection loop holds bytes it has read
+    // but not yet parsed in `buf`, and reading over them desynchronises
+    // the connection once this response finishes — see src/h2/data.S.
+    // Nesting is safe on one buffer: after the dispatch and the request
+    // hook below, this frame is finished with, and .Lh2wb_loop reads a
+    // fresh one, so nothing of ours is live across the recursion.
     mov x0, x19
-    adr_l x1, buf
+    adr_l x1, h2_wait_buf
     mov x2, #H2_WIRE_HEADER_LEN
     bl h2_read_exact
     b.cs .Lh2wb_err
-    adr_l x0, buf
+    adr_l x0, h2_wait_buf
     adr_l x1, h2_frame_header
     bl h2_parse_frame_header
     adr_l x0, h2_frame_header
@@ -200,12 +212,12 @@ h2_write_body:
     adr_l x0, h2_frame_header
     ldr w8, [x0, #H2F_LENGTH]
     mov x0, x19
-    adr_l x1, buf
+    adr_l x1, h2_wait_buf
     mov x2, x8
     bl h2_read_exact
     b.cs .Lh2wb_err
     adr_l x0, h2_frame_header
-    adr_l x1, buf
+    adr_l x1, h2_wait_buf
     mov x2, x26
     bl h2_dispatch_frame
     b.cs .Lh2wb_dispatch_error

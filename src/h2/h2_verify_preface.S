@@ -20,18 +20,20 @@
 //     errno                  read() failed (ECONNRESET, ETIMEDOUT, ...)
 //
 // Clobbered Registers:
-//   x0-x3, x9 (via str_l), x16, x21
+//   x0-x3, x9 (via str_l), x16 (x19-x21 saved and restored)
 //
 // Stack Usage:
-//   32 bytes: stp x29, x30, [sp, #-32]!
+//   48 bytes: stp x29, x30, [sp, #-48]!; stp x19, x20, [sp, #16];
+//   str x21, [sp, #32]
 // ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 2
 .global h2_verify_preface
 h2_verify_preface:
-    stp x29, x30, [sp, #-32]!
+    stp x29, x30, [sp, #-48]!
     stp x19, x20, [sp, #16]
+    str x21, [sp, #32]
     mov x19, x0            // fd
     mov x20, x1            // buffer
     mov x21, #0            // bytes read so far
@@ -69,21 +71,24 @@ h2_verify_preface:
     mov x0, #CONNECTION_HTTP2
     str_l x0, connection_mode
     cmn xzr, xzr           // success — carry clear
+    ldr x21, [sp, #32]
     ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #32
+    ldp x29, x30, [sp], #48
     ret
 
 .Lh2_preface_read_failed:
     cmp x0, #EINTR
     b.eq .Lh2_preface_read  // interrupted — retry, nothing was read
     cmp xzr, xzr            // failure — carry set
+    ldr x21, [sp, #32]
     ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #32
+    ldp x29, x30, [sp], #48
     ret                     // x0 = errno
 
 .Lh2_preface_bad:
     cmp xzr, xzr            // failure — carry set
     mov x0, #H2_ERR_PROTOCOL_ERROR
+    ldr x21, [sp, #32]
     ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #32
+    ldp x29, x30, [sp], #48
     ret

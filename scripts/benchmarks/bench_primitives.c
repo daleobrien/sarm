@@ -9,14 +9,17 @@
 //
 // Why the calls go through an assembly trampoline
 // -----------------------------------------------
-// `aes128_encrypt` uses v8-v11 as round-key registers and does not
-// restore them (src/crypto/aes128/encrypt.S:47, and its own header says
-// so). AAPCS64 makes the low 64 bits of v8-v15 callee-saved, so C code
-// that keeps a `double` live across the call gets it corrupted — which
-// is exactly what happened to the first version of this file, and it
-// reported GCM costs of 1e86 ns rather than crashing. `bench_call` runs
-// the timing loop in inline assembly with v0-v31 declared clobbered, so
-// no floating-point value is ever live across the callee.
+// `aes128_encrypt` used to keep round keys in v8-v11 and never restore
+// them. AAPCS64 makes the low 64 bits of v8-v15 callee-saved, so C code
+// holding a `double` across the call got it corrupted — which is exactly
+// what happened to the first version of this file, and it reported GCM
+// costs of 1e86 ns rather than crashing. The round keys have since moved
+// to v1-v7 and v22-v25, all caller-saved, so that particular trap is
+// gone. `bench_call` still runs the timing loop in inline assembly with
+// v0-v31 declared clobbered, because the general point survives the fix:
+// a call into hand-written assembly should never have a floating-point
+// value live across it, and this file should not have to track which
+// registers each callee currently uses.
 //
 // x19-x28 were checked separately and *are* preserved by every function
 // timed here, which is what lets the loop counter live in one of them.

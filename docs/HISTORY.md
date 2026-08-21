@@ -79,6 +79,7 @@ transfer to Cortex/Neoverse.
 | `14e65c5` | Pre-forked accept workers on one shared socket (`Plan.md` Phase 3) | connections 5,043 → 15,449 conn/s |
 | `de62b76` | Multicore + mixed-workload stress harness (`Plan.md` Phase 4) | found the `SA_NOCLDWAIT` zombie bug |
 | `7ed82bb` | One `write` syscall per HTTP/2 response | **h2c +50%, h2+TLS +62%**; fixed a `writev` hang |
+| `70766a3` | Three correctness bugs: the flow-control wait loop's buffer, and two ABI violations | a desynchronised h2c connection, and two clobbers the checker had flagged |
 
 ---
 
@@ -107,6 +108,48 @@ Also fixed: settings stored with `str w7` into 8-byte fields left a stale
 
 **Learning:** the test client's generosity is part of the test. Scenarios that
 mimic real browser frame patterns found what conformance tools could not.
+
+### Three correctness bugs the docs had been carrying as open items
+
+All three had been written down and left. Writing them down is not fixing them.
+
+**The flow-control wait loop shared the connection loop's buffer.** When a
+response outgrows the peer's window, `h2_write_body` stops writing DATA and
+reads client frames until a WINDOW_UPDATE arrives. It read them into `buf` —
+which is where `h2_connection_loop` parks bytes it has read but not yet
+parsed, since one `read` can deliver several frames. The wait loop wrote over
+them, and the connection then parsed whatever had landed as its next frame
+header.
+
+Reproduced over h2c by sending the preface, SETTINGS and two HEADERS in a
+single segment, the first for a body larger than the 65535-byte connection
+window: serving it enters the wait path, the queued second request is
+destroyed where it sits, and the connection answers GOAWAY(FRAME_SIZE_ERROR).
+The failure needs the wait-path read to be long enough to reach the connection
+loop's parse cursor — a bare 13-byte WINDOW_UPDATE is not, which is why an
+ordinary browser never tripped it and why the first attempt at a reproducer
+passed. Fixed with a dedicated `h2_wait_buf`; `tests/test_h2_flow.sh` covers
+it, and reverting the one-line buffer change fails that check.
+
+**`aes128_encrypt` kept round keys in `v8`-`v11`.** AAPCS64 makes the low 64
+bits of `v8`-`v15` callee-saved, so the function destroyed a caller's saved
+value with no prologue to restore it — the bug that once made
+`bench_primitives.c` report GCM costs of 1e86 ns. Spilling `d8`-`d11` would
+have fixed the ABI at the cost of four memory ops in a 20-instruction function
+that runs once per AES block; moving the keys to `v1`-`v7` and `v22`-`v25`
+costs nothing. `v16`-`v21` were unavailable because the GCM callers legally
+hold the counter block, H', the accumulator and the nibble mask there across
+the call. Interleaved benchmark, eight rounds each: 1.296 vs 1.285 ns/block —
+unchanged, as intended.
+
+**`h2_verify_preface` wrote `x21` while saving only `x29`/`x30`/`x19`/`x20`.**
+The frame grew by 16 bytes and now saves it.
+
+The ABI checker had been reporting the last two the whole time. The lesson is
+in the rules above: a finding parked in a document is not a fixed bug, and the
+checker that found them was only trusted because
+`scripts/abi.py`'s "a load only restores from the stack" rule was itself
+written to catch exactly the `aes128_encrypt` case.
 
 ### Making the analysis tooling sound (`prompts/01`)
 
@@ -429,12 +472,6 @@ were measured; do not read the HTTP/1.1 row as current. See
 - **Roughly half a connection is kernel time** in `read`/`write`. The field-product
   change moved user CPU 120.8 → 111.7 µs while leaving total CPU inside the noise,
   which is what said the syscall path had become the thing setting connection cost.
-- `h2_write_body.S`'s flow-control wait loop reads frames into `buf`, the
-  connection loop's own buffer, clobbering unconsumed bytes. Latent over TLS
-  (leftovers live in the TLS stage buffer), live for cleartext h2c.
-- `aes128_encrypt` writes callee-saved `v8`–`v11` without restoring them, and
-  `h2_verify_preface` writes `x21` while saving only `x29`/`x30`/`x19`/`x20`.
-  Both reported by the ABI checker, both still open.
 - Constant-time claims throughout are **structural arguments about emitted
   instructions** — no dudect-style timing test exists in this repo and there is no
   PMU access on this machine.

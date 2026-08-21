@@ -29,7 +29,8 @@
 //
 // Clobbered Registers:
 //   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v11,
-//   v16-v21, NZCV
+//   v16-v25, NZCV (v22-v25 via aes128_encrypt, which holds four round
+//   keys there — this function's own live state stays in v16-v21)
 //
 // Stack Usage:
 //   352 bytes — same layout as aes_gcm_encrypt

@@ -36,6 +36,7 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_security.sh        # traversal, encoding, oversize, malformed input
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
 ./tests/test_keepalive.sh       # pipelining, fragmentation, keep-alive budget
+./tests/test_h2_flow.sh         # HTTP/2 flow-control wait path, over h2c
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
@@ -45,6 +46,16 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 test directory per assembly module. Many of the crypto test files are
 *generated* by the derivation scripts below and should be regenerated, not
 hand-edited.
+
+`tests/test_h2_flow.sh` (with `tests/h2_flow_checks.py`) drives raw h2c frames
+at the one place in the server where a request's I/O runs inside another's:
+`h2_write_body`'s flow-control wait loop, which reads and dispatches client
+frames — and serves requests that complete — while a response waits for
+window credit. Cleartext on purpose; over TLS the connection loop's unparsed
+bytes live in the TLS stage buffer, which is what kept the buffer-sharing bug
+it regresses latent there. It needs an embedded asset larger than the
+65535-byte default window and says so rather than passing vacuously if there
+isn't one.
 
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they

@@ -267,11 +267,12 @@ def effect(instruction: Instruction) -> dict:
             for operand in operands[:n_dest]:
                 loaded.extend(_regs(operand))
         # A load only *restores* a callee-saved register when it reads the
-        # stack. `ld1 {v5.16b, ..., v8.16b}, [x1], #64` in aes128_encrypt_block
-        # loads round keys from the caller's key schedule into v8-v11, which
-        # are callee-saved; treating any load as a restore made that clobber
-        # invisible and answered "safe" to a question whose real answer is
-        # "this violates AAPCS64".
+        # stack. The case that motivated this: `aes128_encrypt` did
+        # `ld1 {v5.16b, ..., v8.16b}, [x1], #64`, loading round keys from the
+        # caller's key schedule into the callee-saved v8-v11. Treating any
+        # load as a restore made that clobber invisible and answered "safe"
+        # to a question whose real answer was "this violates AAPCS64". The
+        # function has since been fixed; the rule is what caught it.
         address = " ".join(operands[n_dest:]) if not (
             operands and operands[0].startswith("{")) else " ".join(operands[1:])
         if re.search(r"\b(sp|x29)\b", address):

@@ -30,11 +30,14 @@ static uint64_t now_ns(void) {
 	return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-// aes128_encrypt uses v8-v11 as round-key registers and does not restore
-// them (encrypt.S's own header) -- AAPCS64 makes the low 64 bits of v8-v15
-// callee-saved, so C code that keeps a value live in that range across the
-// call risks corruption. The timing loop is inline asm with v0-v31
-// declared clobbered, matching bench_primitives.c's bench_call.
+// aes128_encrypt used to keep round keys in v8-v11 without restoring them,
+// which violates AAPCS64 (the low 64 bits of v8-v15 are callee-saved) and
+// could corrupt any C value live in that range across the call. Fixed --
+// the round keys now live in v1-v7 and v22-v25, all caller-saved. The
+// timing loop stays inline asm with v0-v31 declared clobbered anyway,
+// matching bench_primitives.c's bench_call: that is the honest clobber set
+// for a call into hand-written assembly, and it is what keeps this file
+// from silently depending on the callee's current register choices.
 static uint64_t timed_calls(const void *in, const void *rk, void *out,
                             uint64_t iters) {
 	uint64_t n = iters;

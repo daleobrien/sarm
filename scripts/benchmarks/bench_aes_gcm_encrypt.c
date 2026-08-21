@@ -46,11 +46,12 @@ static uint64_t now_ns(void) {
 // through a global array loaded inside the asm via one known register;
 // this reuses that pattern instead of inventing a second one.
 //
-// aes_gcm_encrypt also calls into aes128_encrypt, which leaves v8-v11 live
-// (encrypt.S's own header, and the ABI checker's "real ABI
-// violations" section) -- AAPCS64 makes those callee-saved, so any C
-// double/float kept live across the call is at risk. v0-v31 are declared
-// clobbered below so nothing FP-shaped is ever live across the callee.
+// aes_gcm_encrypt calls into aes128_encrypt, which used to leave v8-v11
+// dirty -- AAPCS64 makes those callee-saved, so any C double/float kept
+// live across the call was at risk. That is fixed (round keys moved to
+// v1-v7/v22-v25), but v0-v31 stay declared clobbered below: nothing
+// FP-shaped should ever be live across a call into hand-written assembly,
+// regardless of which registers the callee happens to use today.
 // Non-static: a `static` array with no C-visible reads is fair game for
 // the optimizer to drop (only the asm block below reads it, invisibly to
 // the compiler), the same reason bench_primitives.c's bargs/bret are

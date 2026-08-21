@@ -31,7 +31,22 @@
 //   x2 - 16-byte ciphertext stored to [x2]; no register return value
 //
 // Clobbered Registers:
-//   x1, v0..v11
+//   x1, v0-v7, v22-v25
+//
+//   The round keys deliberately avoid v8-v15. AAPCS64 makes the low 64
+//   bits of those (d8-d15) callee-saved, so a 16-byte round key written
+//   to v8-v11 — which this function used to do — destroys a caller's
+//   saved value with no prologue to restore it. Spilling d8-d11 around
+//   the body would fix the ABI at the cost of four memory ops in a
+//   function that is 20 instructions long and runs once per AES block;
+//   moving the keys to caller-saved registers costs nothing at all.
+//
+//   v16-v21 are avoided too, for a narrower reason: gcm_encrypt and
+//   gcm_decrypt hold the counter block, H', the accumulator and the
+//   nibble mask there across their `bl aes128_encrypt`. That is legal —
+//   they are caller-saved — so it is this function that has to stay off
+//   them, and any future caller wanting to hold state across the call
+//   should use v8-v15 or v26-v31.
 //
 // Stack Usage:
 //   0 bytes — leaf function, no stack frame
@@ -42,10 +57,13 @@ aes128_encrypt:
     // 1. Load the 16-byte input block into Neon register v0
     ld1 {v0.16b}, [x0]
 
-    // 2. Load all 11 Round Keys (16 bytes each) into Neon registers v1 to v11
+    // 2. Load all 11 Round Keys (16 bytes each): RK0-RK6 into v1-v7 and
+    //    RK7-RK10 into v22-v25. Split that way because ld1's multi-register
+    //    form needs consecutive registers and v8-v21 are unavailable — see
+    //    the clobber note above.
     ld1 {v1.16b, v2.16b, v3.16b, v4.16b}, [x1], #64
-    ld1 {v5.16b, v6.16b, v7.16b, v8.16b}, [x1], #64
-    ld1 {v9.16b, v10.16b, v11.16b}, [x1]
+    ld1 {v5.16b, v6.16b, v7.16b}, [x1], #48
+    ld1 {v22.16b, v23.16b, v24.16b, v25.16b}, [x1]
 
     // --- CRITICAL ARCHITECTURE NOTE ---
     // The ARMv8 `aese` instruction performs AddRoundKey FIRST,
@@ -76,17 +94,17 @@ aes128_encrypt:
     aese  v0.16b, v7.16b      // Round 7
     aesmc v0.16b, v0.16b
 
-    aese  v0.16b, v8.16b      // Round 8
+    aese  v0.16b, v22.16b      // Round 8
     aesmc v0.16b, v0.16b
 
-    aese  v0.16b, v9.16b      // Round 9
+    aese  v0.16b, v23.16b      // Round 9
     aesmc v0.16b, v0.16b
 
     // --- FINAL ROUND (ROUND 10) ---
     // The final AES round does NOT include MixColumns.
 
-    aese  v0.16b, v10.16b     // Round 10: AddRoundKey(RK9) + SubBytes + ShiftRows
-    eor   v0.16b, v0.16b, v11.16b // Final AddRoundKey(RK10) via standard Neon XOR
+    aese  v0.16b, v24.16b     // Round 10: AddRoundKey(RK9) + SubBytes + ShiftRows
+    eor   v0.16b, v0.16b, v25.16b // Final AddRoundKey(RK10) via standard Neon XOR
 
     // 3. Store the final 16-byte ciphertext block to output memory
     st1 {v0.16b}, [x2]

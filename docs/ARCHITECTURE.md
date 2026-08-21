@@ -292,6 +292,9 @@ before it is written as assembly — see [SCRIPTS.md](SCRIPTS.md) and
   runs out it reads and dispatches frames until a WINDOW_UPDATE arrives — and
   serves any request that completes while it waits, right there, recursively,
   because a browser's parallel page-load requests arrive exactly that way.
+  Those frames land in `h2_wait_buf`, not `buf`: the connection loop parks
+  bytes it has read but not yet parsed in `buf`, and reading over them
+  desynchronises the connection (`tests/test_h2_flow.sh`).
 - HPACK decode covers the RFC 7541 static table, Appendix B Huffman
   (`src/h2_huffman_table.S`, generated) and a real bounded dynamic table with
   FIFO eviction; SETTINGS advertises the default 4096-byte table size.

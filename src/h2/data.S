@@ -67,7 +67,25 @@ h2_streams:
 h2_frame_buf:
     .skip h2_frame_buf_size
 
+// h2_wait_buf — one *incoming* frame, for h2_write_body's flow-control
+// wait loop only. It cannot share `buf` with the connection loop: a
+// single read can deliver several frames, so h2_connection_loop routinely
+// holds bytes it has read but not yet parsed in `buf`, tracked by a
+// cursor and a count held in callee-saved registers across
+// h2_process_request. A wait loop reading into `buf` overwrites exactly
+// those bytes, and the connection loop then parses whatever landed there
+// as its next frame header — a desynchronised connection, not a lost
+// request. Reproduced over h2c by sending the preface, SETTINGS and two
+// HEADERS in one segment, the first for a body larger than the 65535-byte
+// connection window: serving it enters the wait loop, and the second
+// request is destroyed where it sits. Latent over TLS only because the
+// unparsed bytes live in the TLS stage buffer there instead.
+.align 4
+h2_wait_buf:
+    .skip h2_wait_buf_size
+
 .global h2_conn
 .global h2_frame_header
 .global h2_streams
 .global h2_frame_buf
+.global h2_wait_buf
