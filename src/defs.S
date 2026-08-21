@@ -502,6 +502,16 @@
 .equ filename_buf_size, 4096  // PATH_MAX-sized filename buffer
 .equ query_buf_size, 4096     // max query-string size
 
+// ── util module shared constants ─────────────────────────────────────
+// itoa (src/util/itoa.S) writes decimal digits backwards into a buffer
+// the *caller* owns, so the size has to be visible to every call site.
+// 20 bytes is the widest possible result: itoa divides with udiv, so the
+// input is unsigned and UINT64_MAX formats as 20 digits.
+// ITOA_BUF_STACK is that rounded up to the 16-byte stack alignment,
+// which is what a caller reserving frame space should use.
+.equ ITOA_BUF_SIZE,  20
+.equ ITOA_BUF_STACK, 32
+
 // ── Protocol-neutral response representation ─────────────────────────
 // The seam between response generation and the protocol encoders. A
 // handler (get/head/reply_status today, an HTTP/2 encoder later) fills

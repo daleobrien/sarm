@@ -1,11 +1,14 @@
 // Unit tests for src/util/itoa.S
 //
-// itoa(n) converts an integer to decimal digits, writing them backwards
-// into a static 20-byte buffer (itoa_buf) starting at its end, and
-// returns (ptr=x0, len=x1) — NOT NUL-terminated. The division is udiv
-// (unsigned), so the input is treated as a uint64_t bit pattern: a
-// negative int64_t input converts as its two's-complement value (e.g.
-// -1 → 18446744073709551615, exactly filling the 20-byte buffer).
+// itoa(n, buf) converts an integer to decimal digits, writing them
+// backwards into a CALLER-SUPPLIED 20-byte buffer starting at its end,
+// and returns (ptr=x0, len=x1) — NOT NUL-terminated. The buffer used to
+// be a process-global (itoa_buf); it is the caller's now, so nothing on
+// the response path shares formatting scratch (docs/MULTICORE-
+// BASELINE.md, Step 3, category D). The division is udiv (unsigned), so
+// the input is treated as a uint64_t bit pattern: a negative int64_t
+// input converts as its two's-complement value (e.g. -1 →
+// 18446744073709551615, exactly filling the 20-byte buffer).
 //
 // This suite used to live inside test_util.c; it was split out into its
 // own file so the asm itoa gets the same dedicated, exhaustive coverage
@@ -14,22 +17,40 @@
 #include "test_harness.h"
 
 // ── inline asm wrapper ─────────────────────────────────────────────
-// itoa(n=x0) → (ptr=x0, len=x1). Non-standard ABI: two return values.
-// n is passed as uint64_t to match the udiv-based unsigned division.
-// Clobbers match itoa.S: x0, x1, x2, x3, x4, x5.
-static inline void itoa_wrapper(uint64_t n, const char **out_ptr, int64_t *out_len) {
+// itoa(n=x0, buf=x1) → (ptr=x0, len=x1). Non-standard ABI: two return
+// values. n is passed as uint64_t to match the udiv-based unsigned
+// division. Clobbers match itoa.S: x0, x1, x2, x3, x4, x5.
+//
+// The scratch buffer belongs to the caller, so every test that keeps a
+// result alive has to keep its buffer alive too — which is exactly the
+// ownership the old global hid. `itoa_buf_shared` is this file's stand-in
+// for a caller that reuses one buffer across calls; the tests that need
+// two live results at once pass two distinct buffers.
+//
+// ITOA_BUF_SIZE mirrors the .equ of the same name in src/defs.S — the
+// asm can't be included from C, so the two have to be kept in step.
+#define ITOA_BUF_SIZE 20
+static char itoa_buf_shared[ITOA_BUF_SIZE];
+
+static inline void itoa_into(uint64_t n, char *buf, const char **out_ptr,
+                             int64_t *out_len) {
 	const char *ptr; int64_t len;
 	asm volatile(
 		"mov x0, %2\n"
+		"mov x1, %3\n"
 		"bl itoa\n"
 		"mov %0, x0\n"
 		"mov %1, x1\n"
 		: "=r"(ptr), "=r"(len)
-		: "r"(n)
+		: "r"(n), "r"(buf)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "memory"
 	);
 	*out_ptr = ptr;
 	*out_len = len;
+}
+
+static inline void itoa_wrapper(uint64_t n, const char **out_ptr, int64_t *out_len) {
+	itoa_into(n, itoa_buf_shared, out_ptr, out_len);
 }
 
 // ── reference conversion ───────────────────────────────────────────
@@ -157,7 +178,7 @@ static void test_itoa_powers_of_ten(void) {
 // ── tests: max values & negative-as-unsigned ───────────────────────
 // udiv treats x0 as unsigned, so large uint64_t values and negative
 // int64_t inputs (their two's-complement bit patterns) must convert
-// correctly, including the 20-digit values that fill itoa_buf exactly.
+// correctly, including the 20-digit values that fill the buffer exactly.
 
 static void test_itoa_max_values(void) {
 	TEST_SUITE("itoa max values & negatives-as-unsigned");
@@ -217,14 +238,15 @@ static void test_itoa_sweep(void) {
 	ASSERT_EQ("all 1000000 sweep cases", 1, ok);
 }
 
-// ── tests: shared buffer reuse & pointer invariant ─────────────────
-// itoa writes into one static 20-byte buffer, so the returned range
-// must be consistent across calls: ptr + len always equals the buffer
-// end, a short result must not leak digits from a previous longer call,
-// and repeated calls must be deterministic.
+// ── tests: buffer reuse & pointer invariant ────────────────────────
+// itoa writes into the 20-byte buffer the caller hands it, so for a
+// caller that reuses one buffer the returned range must be consistent
+// across calls: ptr + len always equals that buffer's end, a short
+// result must not leak digits from a previous longer call, and repeated
+// calls must be deterministic.
 
 static void test_itoa_shared_buffer(void) {
-	TEST_SUITE("itoa shared buffer & pointer invariant");
+	TEST_SUITE("itoa buffer reuse & pointer invariant");
 	const char *ptr; int64_t len;
 	const char *buf_end = NULL;
 	char expected[21];
@@ -262,6 +284,38 @@ static void test_itoa_shared_buffer(void) {
 	ASSERT_STR_EQ("deterministic (2nd)", "123456789", ptr, 9);
 }
 
+// ── tests: caller-owned buffers are independent ────────────────────
+// The property the old process-global itoa_buf could not have: two
+// callers formatting into their own buffers do not disturb each other,
+// and a result stays valid across an unrelated conversion. This is the
+// regression guard for ever reintroducing shared formatting scratch.
+
+static void test_itoa_independent_buffers(void) {
+	TEST_SUITE("itoa caller-owned buffers are independent");
+	char buf_a[ITOA_BUF_SIZE], buf_b[ITOA_BUF_SIZE];
+	const char *pa, *pb;
+	int64_t la, lb;
+
+	itoa_into(1234567890123456789ULL, buf_a, &pa, &la);
+	itoa_into(7, buf_b, &pb, &lb);
+
+	// the second conversion must not have touched the first result
+	ASSERT_EQ("first result length survives", 19, la);
+	ASSERT_STR_EQ("first result digits survive", "1234567890123456789", pa, la);
+	ASSERT_EQ("second result length", 1, lb);
+	ASSERT_EQ("second result digit", '7', pb[0]);
+
+	// each result lives inside its own buffer, ending at that buffer's end
+	ASSERT_EQ("first result ends at buf_a end",  1, pa + la == buf_a + ITOA_BUF_SIZE);
+	ASSERT_EQ("second result ends at buf_b end", 1, pb + lb == buf_b + ITOA_BUF_SIZE);
+
+	// a 20-digit value fills its buffer exactly and still leaves the
+	// other buffer's contents alone
+	itoa_into(UINT64_MAX, buf_b, &pb, &lb);
+	ASSERT_EQ("max fills buf_b", 20, lb);
+	ASSERT_STR_EQ("first result still intact", "1234567890123456789", pa, la);
+}
+
 // ── main ───────────────────────────────────────────────────────────
 
 int main(void) {
@@ -271,6 +325,7 @@ int main(void) {
 	test_itoa_max_values();
 	test_itoa_sweep();
 	test_itoa_shared_buffer();
+	test_itoa_independent_buffers();
 	test_summary();
 	return 0;
 }

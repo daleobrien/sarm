@@ -24,7 +24,14 @@
 //
 // Stack Usage:
 //   96 bytes when x1 != 0 (stp x29, x30, [sp, #-96]! ...), none when
-//   x1 == 0
+//   x1 == 0, plus ITOA_BUF_STACK bytes on both paths for the buffer
+//   `bl itoa` formats the status code into (itoa writes into the
+//   caller's buffer, not a global — see src/util/itoa.S). That scratch
+//   is allocated after the conditional prologue and released at
+//   sc_epilogue, so it is balanced on the `ret` path and on the
+//   `b http1_keepalive_continue` path alike — the latter loops back
+//   into child.S's read loop and would otherwise leak a frame's worth
+//   of stack per request on a kept-alive connection.
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -67,6 +74,12 @@ reply_status:
     // this is used to check if we should "b child_end", or "ret".
     mov x27, x1
 
+    // itoa scratch, allocated on both the framed and the frameless
+    // path, released at sc_epilogue. sp is stable from here until then
+    // (every call below restores it), so `mov x1, sp` at the itoa call
+    // site names this buffer.
+    sub sp, sp, #ITOA_BUF_STACK
+
     // make sure the error code is valid: not an error below 400, and we don't
     // support anything above 507 (currently).
     cmp x0, #400
@@ -94,6 +107,7 @@ reply_status:
 
     // itoa the error code
     mov x0, x19
+    mov x1, sp   // itoa scratch (this frame, not a global)
     bl itoa
 
     // bounds check
@@ -174,6 +188,7 @@ sc_err:
     bl http1_write_response
 
 sc_epilogue:
+    add sp, sp, #ITOA_BUF_STACK   // release the itoa scratch (both paths)
     cbnz x27, 3f // if x27 (x1) is nonzero, ret instead of continuing the connection
 2:
     b http1_keepalive_continue

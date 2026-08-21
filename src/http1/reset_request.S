@@ -21,7 +21,8 @@
 //
 //   Deliberately NOT touched:
 //   - `clientfd` — it names the connection, not the request.
-//   - `itoa_buf` — written before every read, per its own header comment.
+//   - formatting scratch — there is none to reset: `itoa` formats into
+//     a buffer its caller owns (src/util/itoa.S), not a global.
 //   - `buf`, `request_header_len` — the raw I/O buffer and the header
 //     length within it are managed by the read loop itself (Step 5's
 //     leftover-pipelined-bytes handling, and child.S's Lheader_found),

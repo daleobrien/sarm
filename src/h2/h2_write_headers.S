@@ -56,10 +56,12 @@
 //   x0-x5, x9-x11, x13, x19-x24 (saved/restored)
 //
 // Stack Usage:
-//   64 bytes: stp x19, x20, [sp, #-64]!; stp x21, x22, [sp, #16];
+//   96 bytes: stp x19, x20, [sp, #-96]!; stp x21, x22, [sp, #16];
 //   stp x23, x24, [sp, #32]; str x30, [sp, #48]
 //   ([sp, #56] holds the stage/write flag that picks the entry point's
-//   behaviour at the end of the shared encoder)
+//   behaviour at the end of the shared encoder; [sp, #64] is the
+//   ITOA_BUF_STACK scratch every `bl itoa` here formats into — itoa
+//   writes into the caller's buffer, not a global, see src/util/itoa.S)
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -82,7 +84,7 @@ h2_cr_buf:
 .align 2
 .global h2_stage_headers
 h2_stage_headers:
-    stp x19, x20, [sp, #-64]!
+    stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     str x30, [sp, #48]
@@ -92,7 +94,7 @@ h2_stage_headers:
 
 .global h2_write_headers
 h2_write_headers:
-    stp x19, x20, [sp, #-64]!
+    stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     str x30, [sp, #48]
@@ -119,6 +121,7 @@ h2_write_headers:
     strb w3, [x24, x23]
     add x23, x23, #1
     ldr x0, [x20, #RESP_STATUS]
+    add x1, sp, #64        // itoa scratch (this frame, not a global)
     bl itoa                // x0 -> digits, x1 = length
     mov x2, x1
     mov x1, x0
@@ -162,6 +165,7 @@ h2_write_headers:
     .Lh2wh_cl_total:
     	ldr x0, [x20, #RESP_CONTENT_LENGTH]
     .Lh2wh_cl_done:
+    	add x1, sp, #64    // itoa scratch (this frame, not a global)
     	bl itoa
     	mov x2, x1
     	mov x1, x0
@@ -185,6 +189,7 @@ h2_write_headers:
     	adr_l x10, h2_cr_buf
     	mov x11, x10
     	ldr x0, [x20, #RESP_RANGE_START]
+    	add x1, sp, #64    // itoa scratch (this frame, not a global)
     	bl itoa
     	mov x5, x1
     	mov x1, x0
@@ -196,6 +201,7 @@ h2_write_headers:
     	strb w3, [x11]
     	add x11, x11, #1
     	ldr x0, [x20, #RESP_RANGE_END]
+    	add x1, sp, #64    // itoa scratch (this frame, not a global)
     	bl itoa
     	mov x5, x1
     	mov x1, x0
@@ -207,6 +213,7 @@ h2_write_headers:
     	strb w3, [x11]
     	add x11, x11, #1
     	ldr x0, [x20, #RESP_CONTENT_LENGTH]
+    	add x1, sp, #64    // itoa scratch (this frame, not a global)
     	bl itoa
     	mov x5, x1
     	mov x1, x0
@@ -296,7 +303,7 @@ h2_write_headers:
     ldr x30, [sp, #48]
     ldp x23, x24, [sp, #32]
     ldp x21, x22, [sp, #16]
-    ldp x19, x20, [sp], #64
+    ldp x19, x20, [sp], #96
     ret
 
 // Append the RFC 7541 §5.2 string representation of (x1, length x2) to

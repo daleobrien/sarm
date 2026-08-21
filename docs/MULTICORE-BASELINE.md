@@ -1131,8 +1131,28 @@ Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,
 classified. Pure read-only constant tables (string literals, HPACK static
 table, `file_types_*`, HTTP status lines, P-256 curve constants, `K256`,
 `embedded.S`, `tls/cert_data.S`) are summarised rather than listed
-individually — they are ~200 of the ~280 writable-section symbols, and none is
+individually — they are 241 of the 339 writable-section symbols, and none is
 ever written at run time.
+
+**Re-verified 2026-08-21**, by re-enumerating every label emitted while a
+`.data`/`.bss` directive is in effect and diffing the result against the table
+below. The original pass landed in `0c8eaea`, and six commits had invalidated
+it since without touching this section:
+
+| Commit | Effect on this inventory |
+| --- | --- |
+| `91363dc` — HTTP/1 keep-alive (Phase 1) | +4 category C (`request_header_len`, `request_total_len`, `request_budget`, `keep_alive_decision`), +6 category A match strings |
+| `ffef67b` — fold `MSG_PEEK` into the real first read | −1 category C: `tls_peek_byte` deleted |
+| `b7549c6` — stage plaintext reads (Step 10) | +3 category F (`plain_read_stage_buf`/`_len`/`_pos`) |
+| `7ed82bb` — one write syscall per HTTP/2 response | +1 category F (`transport_writev_scratch`) |
+| `14e65c5` — pre-forked workers (Phase 3) | +3 category B (`worker_count`, `worker_pids`, `worker_pid_count`), +3 category A option strings |
+| `716ada9` — three correctness fixes | +1 category E (`h2_wait_buf`) |
+
+Not one of those is a large change, and none of their authors was wrong not to
+update a section three phases upstream — which is the point. **Redo the
+enumeration rather than trusting this table** whenever a phase adds state; it
+is a twenty-line script, and it is the only thing that keeps the table honest.
+The counts below are that script's, not the original hand count's.
 
 **Read this list as conditional.** Under fork-per-connection, everything in
 categories C–G is already private to one connection, because `fork()` copies
@@ -1147,14 +1167,16 @@ Emitted into `.data` (so technically writable) but never stored to:
 | --- | --- | --- |
 | Embedded content, paths, ETags, content types | `src/embedded.S` | Must stay single-copy (Plan.md "Keep embedded data read-only") |
 | TLS certificate DER + private key | `src/tls/cert_data.S` | Shared read-only; per-connection TLS state is category F |
-| P-256 constants: `p256_p`, `p256_mu`, `p256_n`, `p256_gx/gy/b`, `p256_comb_table`, `p256_scalar_inv_chain`, `p256_scalar_n0inv`, `p256_scalar_rr_n` | `src/crypto/p256*/` | |
+| P-256 constants: `p256_p`, `p256_mu`, `p256_p_minus_2`, `p256_n`, `p256_mu_n`, `p256_n_minus_2`, `p256_gx/gy/b`, `p256_comb_table`, `p256_scalar_inv_chain`, `p256_scalar_n0inv`, `p256_scalar_rr_n` | `src/crypto/p256*/` | |
 | SHA-256 round constants `K256`, IV `sha256_h256` | `src/crypto/sha256/data.S` | |
-| HPACK static table + all `hp_s_*` / `hp_v_*` strings | `src/hpack/h2_hpack_static_lookup.S` | |
+| HPACK static table `h2_hpack_static_table`, `hp_empty` + all `hp_s_*` / `hp_v_*` strings | `src/hpack/h2_hpack_static_lookup.S` | |
 | MIME table `file_types_*`, `unknown_ct` | `src/file/get_filetype.S` | |
 | HTTP status lines `header_2xx`–`header_5xx`, `status_table` | `src/http1/http_code/data.S` | |
-| HTTP/1 header fragments, `err_dir`, `err_ext` | `src/http1/` | |
-| Match strings: `host_match_str`, `range_match_str`, `bytes_match_str`, `header_end`, `www_prefix`, `default_file`, `h2_preface`, `get_req`/`head_req`/`options_req`/`brew_req`, `http_1_0`, `http_1_1` | `src/parse/`, `src/sarm/main.S` | |
-| TLS key-schedule labels `khs_label_*`, `as_label_*`, `fk_label_finished`, `cv_content_prefix`, `khs_empty_hash`, `x25519_basepoint9`, `tls_alpn_h2` | `src/tls/handshake/` | |
+| HTTP/1 header fragments `header_content_length`/`_type`/`_range`/`_encoding`, `header_etag`, `header_tail_close`/`_keep`, `err_dir`, `err_ext` | `src/http1/` | |
+| Keep-alive match strings `cl_match_str`, `te_match_str`, `conn_match_str`, `close_match_str`, `ka_match_str`, `http10_match_str` | `src/http1/keep_alive.S` | Added by Phase 1's keep-alive work |
+| Match strings: `host_match_str`, `host_str`, `range_match_str`, `bytes_match_str`, `header_end`, `www_prefix`, `default_file`, `h2_preface`, `get_req`/`head_req`/`options_req`/`brew_req`, `http_`, `http_1_0`, `http_1_1` | `src/parse/`, `src/sarm/` | |
+| CLI option strings `opt_workers` (`--workers`), `opt_auto` (`auto`), `hw_logicalcpu` (the sysctl name) | `src/sarm/main.S` | Added by `14e65c5`; parsed once at startup |
+| TLS key-schedule labels `khs_label_*`, `as_label_*`, `fk_label_finished`, `cv_content_prefix`, `khs_empty_hash`, `x25519_basepoint9`, `tls_alpn_h2` | `src/tls/handshake/`, `src/tls/data.S` | `tls_alpn_h2` sits in `tls/data.S` with the mutable TLS state but is the literal `"h2"`, never written |
 | `h2_frame_handlers`, `h2_stream_transitions`, `h2_settings_frame`, `h2_pseudo_*`, `h2_method_*`, `h2_bytes_name`, `h2_range_name`, `h2_gzip_str` | `src/h2/`, `src/h2/settings/` | |
 | `one` (the `setsockopt` int) | `src/sarm/data.S` | |
 
@@ -1162,15 +1184,21 @@ Emitted into `.data` (so technically writable) but never stored to:
 
 | Symbol | Where | Notes |
 | --- | --- | --- |
-| `sockfd` | `src/sarm/main.S` | The listening fd. **This is the one that becomes `worker[i].listen_fd` in Steps 10–13.** Note the child already `close()`s it, so any worker redesign has to revisit that ownership rule |
+| `sockfd` | `src/sarm/main.S` | The listening fd. **Phase 3 (`14e65c5`) settled its ownership the opposite way to what this section originally predicted:** every pre-forked worker inherits and `accept()`s on *one shared* listening socket, rather than each worker getting its own `listen_fd`. It stays a single shared read-only global |
 | `addr` | `src/sarm/main.S` | `sockaddr_in`; port patched from argv[1] before `bind` |
+| `worker_count` | `src/data.S` | How many accept workers to run. Clamped to [1, `MAX_WORKERS`] at parse time and never written again, so workers read it without re-checking. In `.data` (default `1`) rather than `.bss` because its default is nonzero |
+| `worker_pids` | `src/sarm/main.S` | `MAX_WORKERS * 8` = 512 B. **Parent-only**: written before the last fork, read only by the parent's shutdown path. A worker never touches it |
+| `worker_pid_count` | `src/sarm/main.S` | How many entries of `worker_pids` are live. Parent-only, same as above |
 | `no_fork` | `src/data.S` | Debug flag, set from argv[1] |
 | `rcv_timeout` | `src/sarm/child.S` | `struct timeval` for `SO_RCVTIMEO`, never written |
 
 Written before any connection exists, so they stay shared and read-only after
-startup under either process model.
+startup under either process model. `worker_pids`/`worker_pid_count` are the
+one pair that is not merely read-only-after-startup but *parent-only*: a
+threaded worker model would need them to stay the supervisor's, not become
+per-worker.
 
-### C. Mutable connection state — HTTP/1 and dispatch
+### C. Mutable connection and request state — HTTP/1 and dispatch
 
 | Symbol | Where | Size |
 | --- | --- | --- |
@@ -1180,7 +1208,20 @@ startup under either process model.
 | `resource_type` | `src/data.S` | 16 |
 | `embedded_content`, `embedded_ct`, `embedded_ct_len`, `embedded_etag`, `embedded_etag_len`, `embedded_gzip` | `src/data.S` | 16 each — resolved-asset pointers for the request in flight |
 | `header_len` | `src/data.S` | 16 |
-| `tls_peek_byte` | `src/sarm/main.S` | 1 — `MSG_PEEK` protocol-detection scratch, written in the child after the fork |
+| `request_header_len` | `src/data.S` | 16 — length of the raw request header in `buf` (Phase 1, Step 3) |
+| `request_total_len` | `src/data.S` | 16 — bytes in `buf` at header terminator; the excess is the next pipelined request (Phase 1, Step 5) |
+| `request_budget` | `src/data.S` | 16 — requests left on this keep-alive connection (Phase 1, Step 6) |
+| `keep_alive_decision` | `src/data.S` | 16 — the close/continue decision the encoder just made (Phase 1, Step 3) |
+
+The last four are the keep-alive work's per-*request* state, and are the
+reason `http1_reset_request` exists: within one connection they are already
+reset between requests, by one routine, in one auditable place. That routine
+is the model for what categories C–G would need at connection granularity
+under a threaded worker.
+
+`tls_peek_byte` used to be listed here. It is gone: `ffef67b` replaced the
+`MSG_PEEK` protocol probe with a real read into `buf`, and deleted the byte of
+scratch along with it.
 
 ### D. Temporary buffers (per-connection scratch)
 
@@ -1194,13 +1235,26 @@ startup under either process model.
 | `filename_buf`, `query_buf`, `authority_buf` | `src/parse/data.S` | |
 | `range_buf` | `src/parse/parse_range.S` | 19 → 32 |
 | `h2_range_buf`, `h2_cr_buf` | `src/h2/h2_build_request.S`, `h2_write_headers.S` | |
-| `itoa_buf` | `src/util/itoa.S` | 20 — **shared formatting scratch, called from every path** |
 
-`itoa_buf` deserves a flag: it is a single global used by an ordinary utility
-that every response path calls. Fork hides it completely today. Under threads
-it is the most likely source of silent, intermittent, hard-to-attribute
-corruption, because nothing about `itoa`'s call sites suggests connection
-ownership.
+**`itoa_buf` used to be the twelfth entry here, and it is now gone.** It was a
+single 20-byte global that `itoa` formatted into and returned a pointer into,
+called from every HTTP/1 and HTTP/2 response path — the one object whose call
+sites gave no hint that it carried connection-owned data, and so the most
+likely source of silent, intermittent, hard-to-attribute corruption under any
+threaded worker model. `itoa` now takes the buffer as an argument
+(`ITOA_BUF_SIZE` bytes, `x1`) and each of its ten call sites passes stack space
+in a frame it already owns — one `add` per call and 32 bytes of frame, no extra
+syscalls, no extra memory traffic, no new callee-saved register saved or
+restored. **Throughput was not re-measured for it**; the static cost is small
+enough to state from the instruction counts, and this file's own benchmark
+sections are the standard for what a measured claim looks like. Removing it was
+independent of the worker-primitive decision, and it is the one item from this
+inventory worth doing before Step 12 rather than after.
+
+The pattern generalises to categories D and G: shared *scratch* — as opposed to
+shared connection *state* — is usually convertible to caller-provided storage
+one function at a time, with no design commitment, because the caller always
+has a frame and the lifetime is always "until the next thing overwrites it".
 
 ### E. HTTP/2 connection and stream state
 
@@ -1209,12 +1263,18 @@ ownership.
 | `h2_conn` | `src/h2/data.S` | Connection struct — flow-control windows, settings, state |
 | `h2_streams` | `src/h2/data.S` | Stream table |
 | `h2_frame_header`, `h2_frame_buf` | `src/h2/data.S` | Frame scratch |
+| `h2_wait_buf` | `src/h2/data.S` | One *incoming* frame, for `h2_write_body`'s flow-control wait loop. Separate from `h2_frame_buf` precisely because reusing that one destroyed an already-buffered request while a large body waited on window credit — a bug latent over TLS only because the unparsed bytes lived in the TLS stage buffer instead |
 | `h2_hpack_fields`, `h2_hpack_str_buf`, `h2_hpack_str_off` | `src/hpack/data.S` | HPACK decode scratch |
 | `h2_hpack_dyn_entries`, `h2_hpack_dyn_bytes`, `h2_hpack_dyn_count`, `h2_hpack_dyn_size`, `h2_hpack_dyn_used`, `h2_hpack_dyn_max`, `h2_hpack_dyn_tail` | `src/hpack/dynamic_table/data.S` | **HPACK dynamic table — per-connection by protocol definition (RFC 7541 §2.3.2).** Sharing it across connections does not merely race; it corrupts the compression context and yields wrong header values, not obviously garbled ones |
 
-### F. TLS state
+`h2_wait_buf` is worth reading as a warning about this whole category: the two
+frame buffers had to be split because one connection's *own* two uses of the
+shared buffer collided. Every entry here has that failure mode waiting at
+connection granularity.
 
-All of `src/tls/data.S`, all per-connection:
+### F. TLS and transport state
+
+All of `src/tls/data.S` except the `tls_alpn_h2` literal, all per-connection:
 
 `tls_fd`, `tls_state`, `tls_hs_state`, `tls_client_random`, `tls_server_random`,
 `tls_session_id`, `tls_session_id_len`, `tls_sni_hostname`, `tls_alpn`,
@@ -1225,32 +1285,51 @@ All of `src/tls/data.S`, all per-connection:
 `tls_client_app_key`/`_iv`, `tls_server_app_key`/`_iv`,
 `tls_client_seq`, `tls_server_seq`, `tls_hs_msg_buf` (2 KiB),
 `tls_hs_record_buf` (16 448 B), `tls_transcript_ctx` (+ `_state`, `_bitlen`,
-`_buf`, `_buflen`), `tls_transcript_hash_field`.
+`_buf`, `_buflen`), `tls_transcript_hash_field` — 35 symbols, ~18.7 KiB.
 
-Transport layer, `src/transport/data.S`, also per-connection:
+Transport layer, `src/transport/data.S`, also per-connection — 10 symbols,
+~80.4 KiB:
 `transport_mode`, `tls_read_raw_buf` (16 448 B), `tls_read_stage_buf`
 (16 384 B), `tls_read_stage_len`, `tls_read_stage_pos`,
-`tls_write_record_buf` (16 448 B).
+`tls_write_record_buf` (16 448 B), `plain_read_stage_buf` (16 384 B),
+`plain_read_stage_len`, `plain_read_stage_pos`, `transport_writev_scratch`
+(16 672 B).
 
-Three things to carry into Phase 5:
+Four things to carry into Phase 5:
 
 1. **`tls_client_seq` / `tls_server_seq` are AEAD record sequence numbers.**
    Sharing them across concurrent connections is nonce reuse in AES-128-GCM —
    a confidentiality failure, not a correctness annoyance. First thing to make
    connection-local.
-2. **`main.S` already contains a fork-model artefact here.** The
-   `Lmain_tls_close` path resets `transport_mode` to `TRANSPORT_PLAIN` before
-   branching to `child_end`, commented as necessary because it "is a single
-   global (one connection in flight at a time, PLAN.MD's connection-per-loop
-   model)". In the forking build that reset is dead code on the child path —
-   the child exits immediately afterwards — and it only does anything under
-   `no_fork`. It is a leftover from the pre-fork design and a good marker for
-   the reset-shared-state pattern that a worker model has to replace rather
-   than extend.
-3. **TLS state is ~66 KiB of buffers per connection.** Worth knowing before
-   choosing per-worker vs per-connection allocation, since there is no heap.
-   Under fork this is copy-on-write and mostly never faulted in; under threads
-   it has to be real, statically reserved memory times the worker count.
+2. **TLS + transport state is ~99 KiB of declared bytes per connection**, not
+   the ~66 KiB this section first recorded. The difference is Phase 2's
+   staging work: `plain_read_stage_buf` and `transport_writev_scratch` are 32
+   KiB of buffers that did not exist when the first count was taken. Worth
+   knowing before choosing per-worker vs per-connection allocation, since
+   there is no heap. Under fork this is copy-on-write and mostly never faulted
+   in; under threads it has to be real, statically reserved memory times the
+   worker count — and it grew by 50% in one phase, so budget for it growing
+   again.
+3. **The `no_fork` resets are the shape of the work, and they are already
+   scattered across three files.** `main.S`'s `Lmain_tls_close` resets
+   `transport_mode`; `tls_server_handshake` resets `tls_client_seq`/
+   `tls_server_seq` and the TLS stage buffer; `h2_connection_loop` resets
+   `h2_conn`, `h2_streams`, the HPACK dynamic table and the plain stage
+   buffer. Each is correct and each carries a comment explaining why. Note
+   that `main.S`'s is *not* dead code, despite serving one connection per
+   forked child: under `no_fork` the same process accepts again, and the next
+   connection may well be plaintext. Taken together they are an unnamed
+   `connection_reset` spread over three call sites — the routine a worker
+   model has to make explicit, in the way `http1_reset_request` already is at
+   request granularity.
+4. **Every reset above was found by a bug, not by an audit.** `tls/server/
+   README.md` records three handshake bugs — two of them exactly this
+   category's failure mode, sequence numbers not reset at an epoch boundary
+   and then not reset across connections — and records all three as found by
+   driving the real handshake against Python's `ssl` and LibreSSL `curl`,
+   after every underlying primitive already passed its unit tests. That is the
+   evidence standard this category needs. The inventory is a map, not a
+   proof.
 
 ### G. Cryptographic scratch
 
@@ -1262,38 +1341,55 @@ A shared crypto scratch object already exists — harmless under fork, unusable
 under threads. It is
 *separate* from `tls_transcript_ctx`, which carries its own copy of the same
 layout, so the TLS transcript is already insulated from general SHA-256 use.
-Only the general context is shared.
+Only the general context is shared. `tls_transcript_ctx` is also the proof that
+the caller-provided-context form works here: converting `sha256_ctx` to it is
+the same move `itoa` just made in category D, one size up.
 
 `src/crypto/random.S` declares no writable globals (entropy comes from
 `getentropy(2)` straight into caller storage), so the RNG needs no work.
 
 ### H. Counters / statistics
 
-**None.** There are no global counters or statistics anywhere in `src/`.
-"Keep statistics out of the hot path" is satisfied by construction; there is
-nothing to remove, and nothing should be added to measure this work — the
-benchmark script measures from outside the process.
+**No hot-path counters.** Nothing in the request, response, or handshake path
+increments a global. "Keep statistics out of the hot path" is satisfied by
+construction, and nothing should be added to measure this work — the benchmark
+script measures from outside the process.
+
+The one global that counts anything is `worker_pid_count` (category B), and it
+counts forks at startup, in the parent, before any connection exists. It is not
+a statistic and it is not on any path a connection touches.
 
 ---
 
 ## Summary for Phase 1
 
-Writable-section symbols, by category:
+Writable-section symbols, by category (re-enumerated 2026-08-21):
 
 | Category | Count | Today (fork) | If workers become threads |
 | --- | ---: | --- | --- |
-| A — read-only in practice | ~200 | Shared, never written | Stays shared |
-| B — startup-only server state | 4 | Set pre-fork, then read-only | `sockfd` → per-worker; rest stays shared |
-| C — connection state | 13 | Private via COW | Per-connection |
-| D — scratch buffers | 12 | Private via COW | Per-connection (`itoa_buf` is the sleeper) |
-| E — HTTP/2 state | 13 | Private via COW | Per-connection (HPACK dynamic table mandatory) |
-| F — TLS + transport state | 39 | Private via COW | Per-connection (~66 KiB; seq numbers security-critical) |
+| A — read-only in practice | 241 | Shared, never written | Stays shared |
+| B — startup-only server state | 7 | Set pre-fork, then read-only | Stays shared; `worker_pids`/`_count` stay the supervisor's |
+| C — connection + request state | 15 | Private via COW | Per-connection |
+| D — scratch buffers | 11 | Private via COW | Per-connection |
+| E — HTTP/2 + HPACK state | 15 | Private via COW | Per-connection (HPACK dynamic table mandatory) |
+| F — TLS + transport state | 45 | Private via COW | Per-connection (~99 KiB; seq numbers security-critical) |
 | G — crypto scratch | 5 | Private via COW | Per-connection or caller-provided |
 | H — counters | 0 | — | — |
+| **total** | **339** | | **98 mutable** |
 
-Roughly **86 writable globals** must become worker- or connection-local if
-workers become threads; **zero** need to while workers remain forked processes.
-That ratio is the main argument for deciding the worker primitive (Step 12)
-before doing any of the Phase 5 state work, rather than after.
+**98 writable globals** must become worker- or connection-local if workers
+become threads; **zero** need to while workers remain forked processes. That
+ratio is still the main argument for deciding the worker primitive before doing
+the Phase 5 state work rather than after.
 
-No code was changed in Steps 1–3.
+It also moves. The original pass put the figure at "roughly 86" — and its own
+per-category counts did not quite add up to its own lists, which is what a hand
+count gets you. Six commits across Phases 1-3 then added and removed symbols
+without anyone revisiting this section. Treat 98 as today's machine-derived number, not a
+fixed cost to plan against: it is a reason to decide the worker primitive
+early, while the set is still small enough to enumerate in a script.
+
+Steps 1 and 2 changed no code. Step 3 changed one thing: `itoa` no longer
+formats into a process-global buffer (category D above). That was the only
+item in this inventory whose fix was both free and independent of the
+worker-primitive decision — everything else here waits on Step 12.

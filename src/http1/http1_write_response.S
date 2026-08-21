@@ -29,8 +29,10 @@
 //   x0–x5, x9–x11, x13–x14, x16 (x19–x24 saved and restored)
 //
 // Stack Usage:
-//   64 bytes frame (stp x29, x30, [sp, #-64]! ...) plus 32 transient
-//   bytes for the writev iovec array
+//   96 bytes frame (stp x29, x30, [sp, #-96]! ...) plus 32 transient
+//   bytes for the writev iovec array. [sp, #64] is the ITOA_BUF_STACK
+//   scratch every `bl itoa` here formats into — itoa writes into the
+//   caller's buffer, not a global (see src/util/itoa.S).
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -93,7 +95,7 @@ header_tail_keep:
 // clobbers x0–x7, x9–x15
 .global http1_write_response
 http1_write_response:
-    stp x29, x30, [sp, #-64]!
+    stp x29, x30, [sp, #-96]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
     stp x23, x24, [sp, #48]
@@ -158,6 +160,7 @@ Lhw_content_length:
     ldr x0, [x19, #RESP_CONTENT_LENGTH]
 
 2:
+    add x1, sp, #64        // itoa scratch (this frame, not a global)
     bl itoa
     // copy content-length string into header_buf
     mov x2, x1  // content_length_len (length of string)
@@ -183,6 +186,7 @@ Lhw_content_length:
 
     // start range
     mov x0, x22
+    add x1, sp, #64        // itoa scratch (this frame, not a global)
     bl itoa
 
     mov x2, x1
@@ -202,6 +206,7 @@ Lhw_content_length:
 
     // end range
     mov x0, x23
+    add x1, sp, #64        // itoa scratch (this frame, not a global)
     bl itoa
 
     mov x2, x1
@@ -221,6 +226,7 @@ Lhw_content_length:
 
     // total size
     ldr x0, [x19, #RESP_CONTENT_LENGTH]
+    add x1, sp, #64        // itoa scratch (this frame, not a global)
     bl itoa
 
     mov x2, x1  // content_length_len (length of string)
@@ -378,5 +384,5 @@ Lhw_epilogue:
     ldp x23, x24, [sp, #48]
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
-    ldp x29, x30, [sp], #64
+    ldp x29, x30, [sp], #96
     ret
