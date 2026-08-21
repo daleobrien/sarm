@@ -1079,6 +1079,50 @@ pass. The browser simulator matters here specifically: its `no-credit` scenario
 drives the wait-path flush, and its 76 KB asset drives the multi-chunk DATA
 path where only the first chunk carries staged headers.
 
+## 2026-08-21 — do the correctness fixes cost anything? No
+
+The three fixes in `716ada9` touch two hot paths: `aes128_encrypt`'s round
+keys moved out of `v8`-`v11` (every TLS record), and `h2_write_body`'s wait
+loop moved off `buf` onto `h2_wait_buf` (every flow-controlled response). The
+question is whether either shows up end to end.
+
+Interleaved against `7ed82bb` (the commit before the fixes) in a worktree,
+same certs, same harness, `make production` each. Six rounds, order alternated
+between rounds, `--repeat 3` inside each, `-c6 -t4`, 5 s, path `/`.
+
+| median of 6 rounds | before (`7ed82bb`) | after (`716ada9`) | change |
+| --- | ---: | ---: | ---: |
+| HTTP/1.1 | 109,422 | 109,542 | +0.1% |
+| HTTP/2 h2c | 443,697 | 447,392 | +0.8% |
+| HTTP/2 + TLS | 398,985 | 399,411 | +0.1% |
+
+No change on any protocol. `aes128_encrypt` on its own agrees: interleaved,
+eight rounds each, 1.296 -> 1.285 ns/block.
+
+**The first two rounds looked like a 2-7% regression, and were not.** The
+`after` binary had just been built, so its first two runs paid cold code pages
+while the `before` binary had already been exercised:
+
+| round | h2c before | h2c after |
+| ---: | ---: | ---: |
+| 1 | 444,359 | 425,697 |
+| 2 | 440,595 | 412,672 |
+| 3 | 441,376 | 448,394 |
+| 4 | 447,424 | 449,083 |
+| 5 | 446,313 | 448,171 |
+| 6 | 443,035 | 446,613 |
+
+Alternating the order did not catch it, because the effect follows the binary's
+age rather than the position in the round — the same failure mode as the
+"HTTP/2 regression" further down this file, in a new disguise. HTTP/1.1 showed
+it too, at 2.2% with a 0.2% spread, which is what gave it away: nothing in
+`716ada9` is on the HTTP/1 path at all. **Discard the first round or two after
+a build, or run enough rounds that they cannot set the median.**
+
+These figures are also ~4% below the `459,227` / `414,023` recorded in the
+section above, measured on a different day. That is drift, not a change: both
+binaries were measured here together and agree.
+
 ---
 
 ## Step 3 — Inventory of process-global mutable state
