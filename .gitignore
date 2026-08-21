@@ -17,6 +17,7 @@ src/tls/cert_data.S
 www_gz/
 *.o
 tests/unit/_obj/
+tests/security/_obj/
 scripts/benchmarks/_bench_obj/
 scripts/benchmarks/_bench_bin/
 IMPROVEMENTS-3.md

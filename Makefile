@@ -38,9 +38,19 @@ src/tls/cert_data.S: certs/embed_cert.sh $(call rwildcard,certs,*)
 
 .PHONY: clean
 clean:
+	@$(MAKE) -s -C tests/security clean
 	rm -f sarm src/embedded.S
 	rm -f sarm src/tls/cert_data.S
 	rm -rf build www_gz www/err
+
+.PHONY: test-security
+# The security test suite (docs/SECURITY.md). Links no part of the
+# server and needs no built binary — it tests the security test
+# infrastructure itself (guard pages, Step 2) and, from Step 3 on,
+# individual assembly routines against guarded buffers. Kept as its own
+# target so it can be run alone, and folded into `make test` below.
+test-security:
+	@$(MAKE) -s -C tests/security
 
 .PHONY: test
 test: sarm
@@ -54,3 +64,4 @@ test: sarm
 	@./tests/test_multicore.sh --no-build --quiet --workers 2 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 4 --iterations 2 --stress-seconds 5
 	@$(MAKE) -s -C tests/unit
+	@$(MAKE) -s -C tests/security

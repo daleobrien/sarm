@@ -1,6 +1,6 @@
 ---
 name: sarm-build-test
-description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
+description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, the tests/security guard-page suite (make test-security), and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
 ---
 
 # Building and testing sarm
@@ -24,8 +24,9 @@ step needed for a normal build.
 ```bash
 make test                       # everything: unit + files + security + protocols
 make -C tests/unit              # unit suite alone (~4,300 assertions, C drivers vs the real .S files)
+make test-security              # tests/security — guard-page-backed bounds tests (docs/SECURITY.md)
 ./tests/test_files.sh           # asset integrity, ranges, MIME, ETag, gzip
-./tests/test_security.sh        # traversal, encoding, oversize, malformed input
+./tests/test_security.sh        # traversal, encoding, oversize, malformed input (live binary, curl)
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
@@ -40,6 +41,14 @@ settings, and the long soaks are run by hand.
 source change. The individual `test_*.sh` scripts accept `--no-build
 --quiet` to reuse an existing binary — that's what `make test` passes
 internally.
+
+`tests/security/` is the newer, lower-level suite: guarded (guard-page)
+buffers around individual assembly routines, so an out-of-bounds access traps
+in hardware rather than silently landing in the next global. It links no part
+of the server and needs no built binary. Don't confuse it with
+`tests/test_security.sh`, which probes a *running* server with `curl`. See
+[tests/security/README.md](../../../tests/security/README.md) and
+[docs/security/threat-model.md](../../../docs/security/threat-model.md).
 
 `tests/unit/` is generated in large part by the `scripts/*_derivation.py`
 crypto scripts — see [verified-asm-crypto](../verified-asm-crypto/SKILL.md)
