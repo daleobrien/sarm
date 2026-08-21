@@ -65,6 +65,10 @@ curl -k --http2 https://127.0.0.1:8080/
 
 - GET, HEAD, OPTIONS (and `BREW` → 418). No PUT/DELETE/CGI/directory listing —
   those existed once and were removed; see the git history.
+- HTTP/1.1 keep-alive and pipelining, bounded by a per-connection request
+  budget (`HTTP1_KEEPALIVE_BUDGET`) and the receive timeout. The server closes
+  when the request carries a body it cannot skip, when the parser lost sync,
+  or when the client asks it to.
 - HTTP/2: frames, streams, flow control, HPACK (static + dynamic table),
   GOAWAY/RST_STREAM.
 - TLS 1.3: `TLS_AES_128_GCM_SHA256`, X25519 key exchange, ECDSA P-256
@@ -85,6 +89,7 @@ It is a fun project written by hand in assembly. Assume it has vulnerabilities.
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the server is put together — modules, seams, request lifecycle |
 | [docs/HISTORY.md](docs/HISTORY.md) | What was changed, what it measured, and what was learned doing it |
+| [docs/MULTICORE-BASELINE.md](docs/MULTICORE-BASELINE.md) | The throughput work in order: what was measured, on what, and the noise band around it |
 | [docs/SCRIPTS.md](docs/SCRIPTS.md) | The tooling: tests, profilers, benchmarks, analyzers, the optimisation harness |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | `config.S` options, MIME table, status codes, certificates |
 | [docs/PLAN.MD](docs/PLAN.MD) | The phase plan the TLS work followed — source comments cite its phase numbers |

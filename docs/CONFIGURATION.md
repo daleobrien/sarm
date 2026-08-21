@@ -12,6 +12,7 @@ rebuild.
 | `DEFAULT_FILE` | `"index.html"` | Served for `GET /`. |
 | `RESPONSE_HEADER_SIZE` | 512 | Max response header bytes; overflow is a 500. |
 | `RECV_TIMEOUT` | 10 | Seconds without data before the connection is closed with 408. Also the total header timeout. |
+| `HTTP1_KEEPALIVE_BUDGET` | 100 | Requests served on one kept-alive HTTP/1 connection before sarm sends `Connection: close` and ends it. A kept-alive connection is a held process, so this bounds how long one child can occupy a process slot; `RECV_TIMEOUT` bounds how long it may sit idle. |
 | `TRANSPORT_MODE` | `TRANSPORT_PLAIN` | Compile-time default for the runtime `transport_mode` global. TLS is selected per connection by first-byte detection, so this normally stays PLAIN. |
 | `MAX_WORKERS` | 64 | Upper bound on `--workers N` — the number of pre-forked processes sitting in `accept()` on the shared listening socket. A larger count is clamped to this, not rejected. Replaced the vestigial `MAX_PROCS`, which bounded nothing. Nothing bounds *concurrent connections* today except the system process limit. |
 | `ALLOW_DIR_LISTING` | 1 | **Vestigial** — directory listing was removed, read by nothing. |

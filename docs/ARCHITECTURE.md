@@ -23,14 +23,18 @@ accept()
    │
    ├─ first read ───────┬─ 0x16 ──► TLS 1.3 handshake ──► HTTP/2 over TLS
    │                    ├─ "PRI " ─► HTTP/2 cleartext (h2c)
-   │                    └─ else ───► HTTP/1.1
+   │                    └─ else ───► HTTP/1.1 ──┐
+   │                                  ▲         │ keep-alive:
+   │                                  └─────────┘ reset and read again
    │
    └──────────────────────────► embedded asset table ──► response
 ```
 
 One process per connection, no threads, no heap, no libc. A worker does
 nothing but `accept` and `fork`; each child serves its one connection to
-completion and exits.
+completion and exits. "One connection" is not "one request": HTTP/1 keep-alive
+and HTTP/2 multiplexing both mean a child may serve many requests before it
+exits.
 
 The workers are the only thing `--workers` adds (Plan.md Phase 3): they share
 one listening socket rather than owning one each, because macOS
@@ -77,7 +81,7 @@ roughly 86 writable globals worker- or connection-local first. See
 | `src/crypto/` | `sha256/`, `hmac.S`, `hkdf/`, `aes128/`, `gcm/`, `x25519/`, `p256/` (field), `p256_scalar/`, `p256_point/`, `p256_ecdsa/`, `random.S` |
 | `src/h2/` | HTTP/2 (RFC 9113): connection loop, frame parse/validate/dispatch, stream engine, flow control, response encoders |
 | `src/hpack/` | HPACK (RFC 7541): integer/string/field/block decode, Huffman, static + `dynamic_table/` |
-| `src/http1/` | HTTP/1 method handlers, response encoder, status table, error pages |
+| `src/http1/` | HTTP/1 method handlers, response encoder, status table, error pages, the keep-alive close rule and per-request reset |
 | `src/parse/` | Request line, headers, path, query, `Range:` |
 | `src/file/` | Embedded lookup, MIME detection, `%XX` decode, path-safety checks |
 | `src/util/` | `write_all`, `memcpy`, `strlen`, `streqn`, `streqn_i`, `itoa`, `atoi`, `atoi_n` |
@@ -147,6 +151,43 @@ completes → 400, `ETIMEDOUT` → 408, peer reset → silent close),
 `verify_http_version` (HTTP/1.1 must carry `Host:`; bare `HTTP/` → 505),
 `parse_request`, then dispatch on method: GET, HEAD, OPTIONS, `BREW` → 418,
 anything else → 501.
+
+## HTTP/1 keep-alive (`src/http1/keep_alive.S`, `src/sarm/child.S`)
+
+A child does not close after one HTTP/1 response. Every handler tail-branches
+to `http1_keepalive_continue` instead of falling into `child_end`, and that
+routine reads the decision `http1_write_response` already made:
+
+- **`http1_should_keep_alive`** is a pure predicate over the raw request
+  buffer, the method id and the status about to be sent — it touches no
+  per-connection state, so the `Connection:` header it drives and the loop
+  decision it drives are the same computation. It closes when no request was
+  observed at all, when the method is not GET/HEAD/OPTIONS, when the status
+  says the parser lost sync (400, 408, 413, 431, 500), when the request
+  carries `Content-Length` or `Transfer-Encoding` (sarm never reads a request
+  body, so it cannot skip one to find the next request line), when an
+  HTTP/1.0 request does not ask for keep-alive, and when the request says
+  `Connection: close`. Otherwise it keeps the connection.
+- **`http1_reset_request`** is the one audited place that clears per-request
+  state: `request`, `response`, the filename/query/authority/range/header
+  buffers, the `embedded_*` globals, `resource_type`; `file_des` back to `-1`.
+  It deliberately leaves `clientfd` (it names the connection, not the
+  request), `itoa_buf`, and `buf`/`request_header_len` (owned by the read
+  loop) alone.
+- **Pipelining** is the reason the loop re-enters at `Lcheck_leftover` rather
+  than at `read()`. A read can deliver more than one request; after each
+  response the bytes past the current request's end are shifted to the front
+  of `buf` and tested for a complete `\r\n\r\n` first, so a request already
+  in hand is served without blocking. `Lcheck_leftover` skips the `h2_probe`
+  on purpose — a connection that started as HTTP/1 never becomes HTTP/2.
+- **`HTTP1_KEEPALIVE_BUDGET`** (`config.S`, 100) bounds requests per
+  connection; `RECV_TIMEOUT` bounds how long an idle one may sit there. Both
+  exist because a kept-alive connection is a held process.
+
+Keep-alive is the single largest measured change in the project's history —
+15,593 to 164,150 req/s on HTTP/1 — and not because any path got faster. It
+removes a `fork` and a TCP setup from every request after the first on a
+connection. See `docs/MULTICORE-BASELINE.md`.
 
 ## The two protocol-neutral structs
 
@@ -238,8 +279,19 @@ before it is written as assembly — see [SCRIPTS.md](SCRIPTS.md) and
 - `h2_write_headers` is the whole response-side HPACK encoder — it builds
   `:status`, content-type/length/range/encoding in literal-with-indexed-name
   form directly into the frame buffer, stamps the frame header, one `write_all`.
+  `h2_stage_headers` is the same encoder with the write held back: it leaves
+  the finished frame in `h2_frame_buf` and returns its length, so
+  `h2_write_body` can build the first DATA header *behind* it and send HEADERS
+  + DATA header + body in one `writev` — one write syscall per response
+  instead of two, worth ~50–60% on this machine (`docs/MULTICORE-BASELINE.md`).
+  Three things bound it: `H2_HEADERS_STAGE_MAX` (a frame too large to fold is
+  simply sent on its own), the credit-wait path flushes staged bytes before
+  anything can re-enter the shared buffer, and `transport_writev_scratch` is
+  sized for the folded worst case.
 - `h2_write_body` chunks DATA to the connection and stream windows; when credit
-  runs out it reads and dispatches frames until a WINDOW_UPDATE arrives.
+  runs out it reads and dispatches frames until a WINDOW_UPDATE arrives — and
+  serves any request that completes while it waits, right there, recursively,
+  because a browser's parallel page-load requests arrive exactly that way.
 - HPACK decode covers the RFC 7541 static table, Appendix B Huffman
   (`src/h2_huffman_table.S`, generated) and a real bounded dynamic table with
   FIFO eviction; SETTINGS advertises the default 4096-byte table size.
@@ -274,8 +326,13 @@ type from the table, else `get_filetype` on the extension). Then:
   (`RESPONSE_HEADER_SIZE`; overflow → 500): status line from `find_http_code`,
   `Content-Length`, `Content-Range` for 206, `Content-Type`,
   `Content-Encoding: gzip` and `ETag` when the embedded entry has them, then a
-  fixed tail (`Connection: close`, `X-Frame-Options: DENY`, `Referrer-Policy`,
-  `Allow`, `Accept-Ranges`, `Server`). Header and body go out as **one `writev`**.
+  fixed tail (`X-Frame-Options: DENY`, `Referrer-Policy`, `Allow`,
+  `Accept-Ranges`, `Server`). There are two copies of that tail, one opening
+  `Connection: close` and one `Connection: keep-alive`; which one is appended
+  is `http1_should_keep_alive`'s answer for *this* response, and the same
+  answer is stashed in `keep_alive_decision` so the header sent and the socket
+  behaviour can never disagree. Header and body go out as **one `writev`**,
+  looped on partial writes.
 - **HTTP/2** — `h2_write_headers` + `h2_write_body` as above.
 - **Errors** — `reply_status(code, ret)` assembles `ERR_DIR + code + ".html"` and
   looks it up in the embedded table; found → serve that page, otherwise

@@ -111,11 +111,25 @@ that one instance. Use duration mode (`-D`, the default here) not `-n`:
 fixed-request-count mode undercounts when more clients are configured than
 requests needed.
 
-Read the HTTP/1.1 number with care. sarm has no HTTP/1 keep-alive, so every
-request costs a new connection and a `fork()`, and `wrk` — which runs
-keep-alive — reports socket read errors for the closes it did not expect. The
-figure is roughly an order of magnitude below h2c for that reason alone, not
-because the HTTP/1 path is slower per request.
+Two caveats that used to sit here are gone as of Phase 1. sarm now speaks
+HTTP/1 keep-alive, so `wrk` no longer reports socket read errors for closes it
+did not expect, and the order-of-magnitude HTTP/1-to-h2c gap has closed — both
+were consequences of forking per *request*, not of the HTTP/1 path being
+slower per request. h2c still leads HTTP/1.1, but by roughly 3x rather than
+10x — see `docs/MULTICORE-BASELINE.md` for figures at a stated concurrency.
+
+Two caveats that remain, and matter more:
+
+- **`--connections` above the machine's logical CPU count measures
+  scheduling, not the server.** One process per connection means `-c50` on 12
+  cores is 50 runnable processes; h2c falls from 282k req/s at `-c4` to 93k at
+  `-c50` with no code change at all, and past the core count the metric is
+  bimodal (6 P-cores + 6 E-cores), so a single run lands in one of two modes
+  regardless of build. The script warns when you cross that line.
+- **A single run is not a measurement.** Use `--repeat N` (median plus
+  spread), interleave the builds you are comparing rather than running all of
+  A then all of B, and keep an unchanged protocol in the table as a control.
+  `--workers N` sets the server's worker count.
 
 ## Static analysis
 

@@ -74,6 +74,11 @@ transfer to Cortex/Neoverse.
 | `ba0c612` | P-256: fixed-base comb for `k*G` | `k*G` 8.3x, handshake 2.04x, +66 KB binary |
 | `d1afdd3` | P-256: Montgomery scalar mul + addition chain for `k⁻¹` | `p256_scalar_inv` 8.5x, signing 1.89x |
 | `bc35e00` | P-256: unrolled 4×4 field product; entropy via `getentropy(2)` | `p256_fe_mul` 1.97x, `crypto_random_bytes` 11.2x |
+| `91363dc` | HTTP/1 keep-alive (`Plan.md` Phase 1) | **HTTP/1 15,593 → 164,150 req/s (10.5x)** |
+| `ffef67b`…`467114c` | Syscall reduction: backlog, duplicate `SO_RCVTIMEO`, `MSG_PEEK` fold, staged plaintext reads, `writev` (`Plan.md` Phase 2) | fewer syscalls per connection; correctness fix under burst |
+| `14e65c5` | Pre-forked accept workers on one shared socket (`Plan.md` Phase 3) | connections 5,043 → 15,449 conn/s |
+| `de62b76` | Multicore + mixed-workload stress harness (`Plan.md` Phase 4) | found the `SA_NOCLDWAIT` zombie bug |
+| `7ed82bb` | One `write` syscall per HTTP/2 response | **h2c +50%, h2+TLS +62%**; fixed a `writev` hang |
 
 ---
 
@@ -265,6 +270,52 @@ That loop was mutation-tested: breaking the pointer advance between chunks fails
 3 assertions, which matters because a skipped chunk leaves 256 bytes of a key
 buffer predictable while every 32-byte test still passes.
 
+### Throughput — HTTP/1 keep-alive, then one write per HTTP/2 response
+
+Everything above this point made a *connection* cheaper. This made requests
+cheaper, and it is where the largest numbers in the project came from.
+
+**Keep-alive (`91363dc`).** sarm forked once per request because it closed
+after every response. Adding a close rule, a per-request state reset and a
+loop back to the header scan turned that into a fork per *connection*:
+**15,593 → 164,150 req/s, 10.5x**, mean latency 2.25 ms → ~230 µs. Nothing
+after it moves HTTP/1 at all. The mechanism is not a faster path, it is one
+less `fork` and one less TCP setup per request.
+
+**One `write` per HTTP/2 response (`7ed82bb`).** Profiling said 82% of the
+CPU spent on a request was system time, and the loopback carried 1.6% of its
+bandwidth — so the cost was per-syscall, not per-byte, and the lever was the
+syscall count. HTTP/2 sent HEADERS and DATA as two writes; `h2_stage_headers`
+leaves the encoded HEADERS frame in the buffer and `h2_write_body` builds the
+DATA header behind it, so one `writev` carries the whole response.
+
+| `-c6 -t4`, median of 3 | before | after | |
+| --- | ---: | ---: | ---: |
+| HTTP/1.1 | 109,909 | 109,877 | control, unchanged |
+| HTTP/2 h2c | 306,206 | **459,227** | +50% |
+| HTTP/2 + TLS | 255,311 | **414,023** | +62% |
+
+Marginal CPU per request 11.80 → 9.20 µs, of which system time 21.28 → 16.01
+ms over the sample — the profiler agreeing with the mechanism, not just with
+the outcome. It also uncovered a live hang: `raw_writev_all` spun forever on
+an all-zero-length iovec array, which every empty-body HTTP/2 response over
+cleartext produced.
+
+**Workers (`14e65c5`) do not appear in either table, and should not.** `wrk`
+and `h2load` hold persistent connections, so there is no connection setup left
+to parallelise; Phase 3's gain is a connection *rate*, 5,043 → 15,449 conn/s.
+The right reading is that workers cost nothing here, not that they do nothing.
+
+**What the benchmark taught, twice.** An apparent 30% Phase 2 HTTP/2
+regression, bisected to a specific commit, was the harness: `rps_bench.sh`
+defaulted to 50 connections on a 12-core machine, and one process per
+connection makes that a measurement of scheduling. h2c falls 282k → 93k req/s
+across `-c4` → `-c50` with no code change at all. The A/B that "proved" the
+regression had non-overlapping ranges and was still wrong. Full write-up in
+`docs/MULTICORE-BASELINE.md`.
+
+---
+
 ---
 
 ## Changes deliberately *not* made
@@ -349,19 +400,24 @@ HTTP/1.1's figure includes socket read errors under concurrent keep-alive load
 (~10k over ~90k requests) that don't appear on the HTTP/2 paths; `wrk` nets them
 out of the number.
 
-**Explained since.** sarm has no HTTP/1 keep-alive: every response carries
-`Connection: close` and the server closes immediately, while `wrk` runs in
-keep-alive mode and intends to reuse the connection. The errors are `wrk`
-observing closes it did not expect. They are a subset rather than one per
-request (~10k of ~90k), which fits a timing race — the close landing after
-`wrk` has already written the next request — rather than every close being
-counted. The HTTP/2 paths are unaffected because those connections are
-genuinely persistent.
+**Explained, then fixed.** The explanation was that sarm had no HTTP/1
+keep-alive: every response carried `Connection: close` and the server closed
+immediately, while `wrk` ran in keep-alive mode and intended to reuse the
+connection. The errors were `wrk` observing closes it did not expect — a
+subset rather than one per request (~10k of ~90k), which fits a timing race,
+the close landing after `wrk` has already written the next request, rather
+than every close being counted. The HTTP/2 paths were unaffected because those
+connections are genuinely persistent. It was the same reason the HTTP/1.1
+figure sat an order of magnitude below h2c on the same server and asset:
+without keep-alive, every request cost a fresh connection and a fresh
+`fork()`.
 
-This is also why the HTTP/1.1 figure sits an order of magnitude below h2c on
-the same server and asset: without keep-alive, every request costs a fresh
-connection and a fresh `fork()`. See `docs/MULTICORE-BASELINE.md` and `Plan.md`
-Phase 1.
+Plan.md Phase 1 added keep-alive and both symptoms went with it — the read
+errors are gone, and HTTP/1 moved 15,593 → 164,150 req/s, a 10.5x change and
+the largest single measured gain in this file. The gap to h2c is now about 3x,
+which is the protocols' real difference. The figures above are kept as they
+were measured; do not read the HTTP/1.1 row as current. See
+`docs/MULTICORE-BASELINE.md`.
 
 ---
 
