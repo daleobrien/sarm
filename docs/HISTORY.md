@@ -79,7 +79,7 @@ transfer to Cortex/Neoverse.
 | `14e65c5` | Pre-forked accept workers on one shared socket (`Plan.md` Phase 3) | connections 5,043 → 15,449 conn/s |
 | `de62b76` | Multicore + mixed-workload stress harness (`Plan.md` Phase 4) | found the `SA_NOCLDWAIT` zombie bug |
 | `7ed82bb` | One `write` syscall per HTTP/2 response | **h2c +50%, h2+TLS +62%**; fixed a `writev` hang |
-| `70766a3` | Three correctness bugs: the flow-control wait loop's buffer, and two ABI violations | a desynchronised h2c connection, and two clobbers the checker had flagged |
+| `716ada9` | Three correctness bugs: the flow-control wait loop's buffer, and two ABI violations | a desynchronised h2c connection, and two clobbers the checker had flagged |
 
 ---
 
