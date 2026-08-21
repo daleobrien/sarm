@@ -112,11 +112,18 @@ size_t guard_page_size(void);
 // ── fault probes ────────────────────────────────────────────────────
 // guard_probe() result codes.
 enum {
-    GUARD_PROBE_OK    = 0,   // fn returned normally, no fault
-    GUARD_PROBE_FAULT = 1,   // fn took SIGSEGV/SIGBUS — the guard fired
-    GUARD_PROBE_ERROR = -1,  // fork/waitpid failed, or the child died
-                             //   some other way (a test bug, not a result)
+    GUARD_PROBE_OK      = 0,   // fn returned normally, no fault
+    GUARD_PROBE_FAULT   = 1,   // fn took SIGSEGV/SIGBUS — the guard fired
+    GUARD_PROBE_TIMEOUT = 2,   // fn did not return within GUARD_PROBE_SECS
+    GUARD_PROBE_ERROR   = -1,  // fork/waitpid failed, or the child died
+                               //   some other way (a test bug, not a result)
 };
+
+// How long a probe may run before it is treated as non-terminating.
+// Generous next to any single assembly call: the routines under test
+// are measured in nanoseconds, so anything still running after this is
+// looping, not slow.
+#define GUARD_PROBE_SECS 10
 
 // Run fn(ctx) in a forked child and report whether it faulted. The
 // child installs SIGSEGV/SIGBUS handlers that _exit immediately, so an
@@ -127,5 +134,20 @@ enum {
 // The child inherits the parent's memory, so allocate the guarded
 // buffer before calling and pass it through ctx.
 int guard_probe(void (*fn)(void *ctx), void *ctx);
+
+// As guard_probe, but a clean exit also reports the child's exit code
+// through *exit_code, so the probe function can return a verdict of its
+// own without needing a second channel back to the parent. Step 3's
+// bounds tests use this to answer both of the questions the step asks
+// in one run: the return value says whether the routine stayed inside
+// its buffers (the guard pages), and *exit_code says whether what it
+// produced matched the reference implementation (the child compares
+// and exits 0 or 1).
+//
+// Returns GUARD_PROBE_OK (exit_code set), GUARD_PROBE_FAULT, or
+// GUARD_PROBE_ERROR. The exit code GUARD_CHILD_FAULTED (77) is
+// reserved by the fault handler and must not be used as a verdict.
+#define GUARD_CHILD_FAULTED 77
+int guard_probe_status(void (*fn)(void *ctx), void *ctx, int *exit_code);
 
 #endif // SARM_GUARD_PAGES_H

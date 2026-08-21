@@ -20,7 +20,7 @@
 .PHONY: all test build clean
 
 CC      := cc
-CFLAGS  := -g -O1 -arch arm64 -Wall -Wextra
+CFLAGS  := -g -O1 -arch arm64 -Wall -Wextra -Wno-unused-function
 LDFLAGS := -arch arm64
 
 # -O1, not -O2: these tests deliberately dereference out-of-bounds
@@ -29,15 +29,32 @@ LDFLAGS := -arch arm64
 # probes are all `volatile`, but a lower optimisation level keeps the
 # generated code close to what was written, so a passing test means the
 # access really happened.
+#
+# -Wno-unused-function because crypto_ref.h and bounds_common.h are
+# header libraries of static functions: each suite uses the subset it
+# needs, and every suite would otherwise warn about the rest.
 
 OBJ_DIR := _obj
 
-HELPERS := guard_pages.h
+HELPERS := guard_pages.h crypto_ref.h bounds_common.h
 COMMON_OBJS := $(OBJ_DIR)/guard_pages.o
 
-TEST_GUARD_PAGES := $(OBJ_DIR)/test_guard_pages
+# ── assembly under test ─────────────────────────────────────────────
+# The bounds suites (Step 3) call the real .S files, assembled here
+# rather than reused from tests/unit/_obj so the two suites cannot get
+# out of step with each other. Same pattern rule shape as
+# tests/unit/Makefile.
+ASFLAGS := -g -O2 -arch arm64 -I ../../src
 
-TESTS := $(TEST_GUARD_PAGES)
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
+crypto_srcs := $(call rwildcard,../../src/crypto,*.S)
+crypto_objs := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_srcs))
+
+TEST_GUARD_PAGES  := $(OBJ_DIR)/test_guard_pages
+BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildcard test_bounds_*.c))
+
+TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS)
 
 all: test
 
@@ -80,15 +97,28 @@ build: $(TESTS)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-$(OBJ_DIR)/guard_pages.o: guard_pages.c $(HELPERS) | $(OBJ_DIR)
+$(OBJ_DIR)/guard_pages.o: guard_pages.c guard_pages.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+.SECONDARY: $(crypto_objs)
+
+$(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Every suite includes tests/unit/test_harness.h, so a change there must
 # rebuild them, exactly as in tests/unit/Makefile.
 HARNESS := ../unit/test_harness.h
 
-$(OBJ_DIR)/test_%: test_%.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) | $(OBJ_DIR)
+$(OBJ_DIR)/test_guard_pages: test_guard_pages.c guard_pages.h $(HARNESS) $(COMMON_OBJS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(LDFLAGS) -o $@
+
+# The bounds suites link the crypto module in full: one .S file per
+# function means every suite drags in its module's neighbours anyway
+# (hkdf calls hmac calls sha256), and linking the lot keeps the rule
+# to one line.
+$(OBJ_DIR)/test_bounds_%: test_bounds_%.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(crypto_objs) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

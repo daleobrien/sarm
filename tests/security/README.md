@@ -73,6 +73,21 @@ child and reports `GUARD_PROBE_OK` / `_FAULT` / `_ERROR`. The child installs
 no macOS crash report and no core file, and the test binary survives to assert
 about it.
 
+### guard_probe and non-terminating code
+
+`guard_probe(fn, ctx)` runs a function in a forked child that installs
+`SIGSEGV`/`SIGBUS` handlers **and its own `alarm`**, so three outcomes are
+distinguishable: the routine returned, it trapped on a guard page, or it never
+returned at all (`GUARD_PROBE_TIMEOUT`). The third case is not hypothetical —
+the first run of the Step 3 suite hung the whole binary and orphaned a child on
+`x25519_fe_sqr_times(out, a, 0)`. A harness for hand-written assembly has to
+survive the assembly not terminating.
+
+`guard_probe_status(fn, ctx, &verdict)` additionally reports the child's exit
+code, which is how the bounds suites answer both of Step 3's questions in one
+run: the return value says whether the routine stayed in its buffers, the
+verdict says whether its output matched the reference.
+
 ### Why the helper has its own self-test
 
 `test_guard_pages.c` contains four deliberately broken functions — read before,
@@ -91,3 +106,72 @@ helper and re-running:
 
 If you change `guard_pages.c`, repeat that: a green suite is only evidence when
 it can go red.
+
+## test_bounds_* — every crypto primitive at its length boundaries (Step 3)
+
+```
+0, 1, block-1, block, block+1, large, maximum supported
+        -> no crash, and reference output matches
+```
+
+Both halves are answered in one run. Every pointer the routine touches gets a
+guarded buffer sized to *exactly* what its header comment declares, and the
+call runs inside `guard_probe_status`:
+
+| outcome | reported as |
+|---|---|
+| touched memory outside a declared buffer | `OUT OF BOUNDS` |
+| never returned | `DID NOT TERMINATE` |
+| output disagreed with the C reference | `output differs from the reference` |
+| none of the above | pass |
+
+The fork per case is what makes the suite survivable *and* diagnostic. An
+out-of-bounds access in-process would take the binary down at the first bad
+length and hide every case after it; here one run reports all of them, which is
+the difference between "GHASH is broken somewhere" and "GHASH is broken at 17,
+33 and 49 — one past each block".
+
+| suite | covers |
+|---|---|
+| `test_bounds_sha256` | `sha256`, `sha256_init/update/final`, `crypto_random_bytes` |
+| `test_bounds_hmac_hkdf` | `hmac_sha256`, `hkdf_extract`, `hkdf_expand`, `hkdf_expand_label` |
+| `test_bounds_gcm` | `aes128_key_expand`, `aes128_encrypt`, `gf_mult_128`, `ghash`, `aes_gcm_encrypt`, `aes_gcm_decrypt` |
+| `test_bounds_ecc` | `x25519` + field ops, `p256_fe_*`, `p256_reduce`, `p256_bn_mul`, `p256_scalar_*`, `p256_point_*`, `p256_ecdsa_*` |
+
+### crypto_ref.h — the second implementation
+
+"Reference output matches" needs an implementation that is not the one under
+test, or the assertion is that the assembly agrees with itself. `crypto_ref.h`
+is that: SHA-256, HMAC, HKDF, HkdfLabel, AES-128, GHASH and AES-128-GCM, all
+written for obviousness — byte at a time, block at a time, a bitwise GF(2^128)
+multiply, no SIMD, no vectorised tails. That is the point. The bug class being
+hunted is "the fast path handles a partial tail differently from the slow
+path", and a reference sharing the same trick shares the same bug.
+
+Each suite runs `ref_selfcheck_*` **first**, pinning the reference to published
+vectors (FIPS 180-4, FIPS 197, RFC 4231, RFC 5869, SP 800-38D) before it is
+used to judge anything.
+
+The fixed-size routines (X25519, P-256) have no length argument, so their
+boundary question is "does it stay inside the size its header declares?" — a
+guarded buffer of exactly that size answers it. Correctness there is checked by
+algebraic identity (`a - a == 0`, `a * a^-1 == 1`, `P + P == 2P`,
+`k*G` by comb == `k*G` by ladder, sign-then-verify, tamper-then-reject) rather
+than by a reference; the full random-vector comparison is Step 4's job.
+
+### Sweeps stop at the documented contract
+
+Two sweeps deliberately stop where the routine's header says its contract does,
+and both stopped there *after* the suite ran past the line and found what
+happens:
+
+- `hkdf_expand` info length stops at 607 (`32 + infolen + 1 <= 640`, a stack
+  buffer). Past it, the frame is silently overrun.
+- `x25519_fe_sqr_times` count starts at 1. At 0 the do-while wraps to 2^64-1
+  iterations and never returns.
+
+Neither is reachable from the network today — every caller passes a
+compile-time constant — and both are recorded in
+[docs/security/threat-model.md](../../docs/security/threat-model.md) §9 as
+unchecked preconditions rather than fixed here, because Step 3 is a test step.
+If you widen either sweep, expect the failure, and read that section first.

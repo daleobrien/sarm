@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+extern unsigned int alarm(unsigned int seconds);
+
 // ─────────────────────────────────────────────────────────────────────
 // guard_page_size — sysconf(_SC_PAGESIZE), cached.
 //
@@ -143,8 +145,11 @@ void guard_fill(const struct guarded_buffer *gb, uint8_t byte)
 // death by SIGSEGV/SIGBUS — so the probe reports GUARD_PROBE_FAULT even
 // where signal delivery is arranged differently.
 // ─────────────────────────────────────────────────────────────────────
-#define GUARD_CHILD_FAULTED 77   // not 0/1/2: distinguishable from a
-                                 // clean return and from libc's own codes
+// GUARD_CHILD_FAULTED (77) is defined in guard_pages.h — deliberately
+// not 0/1/2, so it cannot collide with a verdict a probe function
+// returns through guard_probe_status.
+
+#define GUARD_CHILD_TIMEDOUT 78
 
 static void guard_child_fault_handler(int sig)
 {
@@ -152,7 +157,24 @@ static void guard_child_fault_handler(int sig)
     _exit(GUARD_CHILD_FAULTED);
 }
 
+static void guard_child_alarm_handler(int sig)
+{
+    (void)sig;
+    _exit(GUARD_CHILD_TIMEDOUT);
+}
+
 int guard_probe(void (*fn)(void *ctx), void *ctx)
+{
+    int exit_code = 0;
+    const int r = guard_probe_status(fn, ctx, &exit_code);
+    if (r == GUARD_PROBE_OK && exit_code != 0)
+        return GUARD_PROBE_ERROR;   // a plain probe has no verdict to
+                                    // report; a non-zero exit is a bug
+                                    // in the probe function
+    return r;
+}
+
+int guard_probe_status(void (*fn)(void *ctx), void *ctx, int *exit_code)
 {
     fflush(stdout);   // never let the child inherit buffered output it
                       // could duplicate (it _exits, so it never flushes,
@@ -166,6 +188,9 @@ int guard_probe(void (*fn)(void *ctx), void *ctx)
     if (pid == 0) {
         signal(SIGSEGV, guard_child_fault_handler);
         signal(SIGBUS,  guard_child_fault_handler);
+        signal(SIGALRM, guard_child_alarm_handler);
+        alarm(GUARD_PROBE_SECS);   // the routine under test may not
+                                   // terminate; the child must
         fn(ctx);
         _exit(0);     // no fault
     }
@@ -180,16 +205,19 @@ int guard_probe(void (*fn)(void *ctx), void *ctx)
     }
 
     if (WIFEXITED(status)) {
-        if (WEXITSTATUS(status) == 0)
-            return GUARD_PROBE_OK;
         if (WEXITSTATUS(status) == GUARD_CHILD_FAULTED)
             return GUARD_PROBE_FAULT;
-        return GUARD_PROBE_ERROR;
+        if (WEXITSTATUS(status) == GUARD_CHILD_TIMEDOUT)
+            return GUARD_PROBE_TIMEOUT;
+        *exit_code = WEXITSTATUS(status);
+        return GUARD_PROBE_OK;
     }
     if (WIFSIGNALED(status)) {
         const int sig = WTERMSIG(status);
         if (sig == SIGSEGV || sig == SIGBUS)
             return GUARD_PROBE_FAULT;
+        if (sig == SIGALRM)
+            return GUARD_PROBE_TIMEOUT;
     }
     return GUARD_PROBE_ERROR;
 }

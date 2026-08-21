@@ -480,7 +480,26 @@ on by Step 1.
    serving nested requests, `H2S_FLAG_SERVING` guarding double-send) is the
    densest state region and deserves targeted state fuzzing rather than only
    byte-level fuzzing. → Step 7.
-9. **`no_fork` mode reuses one process across connections** without clearing
+9. **Two documented preconditions have no runtime check, and violating
+   them fails catastrophically rather than gracefully.** Both were found
+   by the Step 3 bounds suite, and neither is reachable today — but the
+   failure mode is what makes them worth recording:
+   - `hkdf_expand` assembles `[T(i-1)] || info || counter` in a 640-byte
+     stack buffer, so its header requires `infolen <= 607`. Past that it
+     silently overruns the frame (the suite trapped on the guard page at
+     1023). Its only caller is `hkdf_expand_label`, whose HkdfLabel
+     buffer caps info at 520 octets by construction.
+   - `x25519_fe_sqr_times` runs a do-while (`subs`/`b.ne`), so
+     `count == 0` wraps to 2^64-1 iterations and never returns. The
+     header says "count >= 1 in practice"; all eleven call sites pass
+     compile-time constants >= 1.
+
+   The shared shape is a precondition enforced by documentation, whose
+   violation is a stack smash or a hang rather than a wrong answer. Both
+   are internal routines with in-tree callers only, so today they are
+   contract notes, not defects; they become live the moment any caller
+   derives one of those values from network input. → Step 5.
+10. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
 
