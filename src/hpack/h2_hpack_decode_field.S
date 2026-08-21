@@ -22,8 +22,19 @@
 //   block (zero-copy), into h2_hpack_str_buf (Huffman-decoded), or —
 //   for a dynamic-table hit — into the table's own byte arena.
 //
+//   Every read this function makes is bounded by `end` (Step 5): the
+//   integer and string decoders it delegates to take the bound as an
+//   argument and refuse before reading, rather than letting
+//   h2_hpack_decode_block detect the overrun after the fact. That
+//   ordering matters most on the incremental-indexing path, where
+//   h2_hpack_dyn_insert copies the decoded name and value into the
+//   table arena the moment they are known — a name length larger than
+//   the block used to be copied out of adjacent memory first and
+//   rejected second.
+//
 // Input/Arguments:
 //   x0 — first octet of the field
+//   x1 — one past the last readable octet of the enclosing header block
 //
 // Output/Returns:
 //   x0 — next octet after the field
@@ -40,7 +51,7 @@
 // Stack Usage:
 //   80 bytes: stp x19, x20, [sp, #-80]!; stp x21, x22, [sp, #16];
 //     stp x23, x24, [sp, #32]; stp x25, x26, [sp, #48];
-//     str x30, [sp, #64]
+//     str x30, [sp, #64]; str x27, [sp, #72]
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -52,12 +63,17 @@ h2_hpack_decode_field:
     stp x23, x24, [sp, #32]
     stp x25, x26, [sp, #48]
     str x30, [sp, #64]
+    str x27, [sp, #72]
     mov x21, x0                 // input ptr — survives the sub-calls
+    mov x27, x1                 // end — survives the sub-calls
+    cmp x21, x27
+    b.hs .Lhpack_field_bad      // nothing to read
     ldrb w6, [x0]               // first octet
     tbz w6, #7, .Lhpack_field_not_indexed
 
     // ── indexed header field (§6.1) ────────────────────────────────
     mov x1, #7
+    mov x2, x27
     bl h2_hpack_decode_int
     b.cs .Lhpack_field_err
     cbz x0, .Lhpack_field_bad   // index 0 is never valid (§6.1)
@@ -78,6 +94,7 @@ h2_hpack_decode_field:
     // inserted into the dynamic table once the value is known (below);
     // the name index uses a 6-bit prefix ──
     mov x1, #6
+    mov x2, x27
     bl h2_hpack_decode_int
     b.cs .Lhpack_field_err
     mov x6, x1                  // prefix bytes consumed
@@ -95,6 +112,7 @@ h2_hpack_decode_field:
     // the name string's input start first
     add x22, x21, x6
     add x0, x21, x6             // the name string follows the index
+    mov x1, x27
     bl h2_hpack_decode_string
     b.cs .Lhpack_field_err
     mov x19, x0                 // name ptr
@@ -106,6 +124,7 @@ h2_hpack_decode_field:
     tbz w6, #5, .Lhpack_field_literal
     // ── dynamic table size update (§6.3) ──
     mov x1, #5
+    mov x2, x27
     bl h2_hpack_decode_int
     b.cs .Lhpack_field_err
     mov x9, #H2_HPACK_HEADER_TABLE_SIZE
@@ -127,6 +146,7 @@ h2_hpack_decode_field:
     // ── literal without indexing (§6.2.2) / never indexed (§6.2.3) ──
     // 4-bit name index; 0 means a new name string follows
     mov x1, #4
+    mov x2, x27
     bl h2_hpack_decode_int
     b.cs .Lhpack_field_err
     mov x6, x1                  // prefix bytes consumed
@@ -144,6 +164,7 @@ h2_hpack_decode_field:
     // the name string's input start first
     add x22, x21, x6
     add x0, x21, x6             // the name string follows the index
+    mov x1, x27
     bl h2_hpack_decode_string
     b.cs .Lhpack_field_err
     mov x19, x0                 // name ptr
@@ -154,6 +175,7 @@ h2_hpack_decode_field:
     // decode may put a Huffman-expanded value in h2_hpack_str_buf, so
     // `next` must come from the input position, never the value pointer
     mov x22, x0
+    mov x1, x27
     bl h2_hpack_decode_string
     b.cs .Lhpack_field_err
     // decode_string: x0 -> value, x1 = value len, x2 = consumed — stash
@@ -176,6 +198,7 @@ h2_hpack_decode_field:
     mov x2, x20                 // name len
 
 .Lhpack_field_ok:
+    ldr x27, [sp, #72]
     ldr x30, [sp, #64]
     ldp x25, x26, [sp, #48]
     ldp x23, x24, [sp, #32]
@@ -188,6 +211,7 @@ h2_hpack_decode_field:
     cmp xzr, xzr                // failure — carry set
     mov x0, #H2_ERR_COMPRESSION_ERROR
 .Lhpack_field_err:
+    ldr x27, [sp, #72]
     ldr x30, [sp, #64]
     ldp x25, x26, [sp, #48]
     ldp x23, x24, [sp, #32]

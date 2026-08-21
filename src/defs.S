@@ -42,6 +42,47 @@
     b.\cond \l
 .endm
 
+// ── Checked length arithmetic (docs/SECURITY.md §3, Step 5) ──────────
+// Bounds in this tree are enforced by comparing against a pre-computed
+// end pointer, which is sound only while the sum that produced the
+// compared value cannot wrap. These three macros make that reasoning
+// local instead of global: the check sits on the instruction that does
+// the arithmetic, so a reviewer does not have to re-derive the width of
+// every input to know the result is trustworthy.
+//
+// docs/security/length-audit.md classifies every wire-derived length
+// site in the tree and says which of them use these.
+
+// ckadd — d = a + b, branching away on unsigned wraparound.
+//   The `adds`/`b.cs` idiom from docs/SECURITY.md §3 "Integer overflow
+//   in length arithmetic". Use for any sum of two attacker-influenced
+//   lengths, whatever their nominal widths.
+.macro ckadd d, a, b, l
+    adds \d, \a, \b
+    b.cs \l
+.endm
+
+// ckrange — d = base + len, branching away if that wraps *or* runs past
+//   end. The whole "does this field fit?" question in one place: the
+//   wrap check makes the comparison meaningful even when len is not
+//   width-limited, which is exactly the case a length taken from the
+//   wire stops guaranteeing the moment it is composed with anything.
+//   `end` is one past the last readable byte, so base + len == end is
+//   the largest field that fits.
+.macro ckrange d, base, len, end, l
+    adds \d, \base, \len
+    b.cs \l
+    cmp \d, \end
+    b.hi \l
+.endm
+
+// ckfits — like ckrange but discards the sum: "len bytes fit between
+//   base and end" as a pure predicate, for the cases that only need to
+//   validate before reading and do not want the cursor yet.
+.macro ckfits base, len, end, l, s=x9
+    ckrange \s, \base, \len, \end, \l
+.endm
+
 // ── Platform-specific syscall helpers ─────────────────────────
 
 #ifdef __linux__
@@ -1001,4 +1042,15 @@
 .equ SHA256_CTX_BUF,     40  // 64 B — partial block (0..63 valid bytes)
 .equ SHA256_CTX_BUFLEN,  104 // u64 — valid bytes in BUF
 .equ SHA256_CTX_SIZE,    112
+
+// ── HKDF input limits (RFC 5869 §2.3, RFC 8446 §7.1) ────────────────
+// The bounds hkdf_expand and hkdf_expand_label enforce at runtime
+// (Step 5). Each is a property of a fixed stack buffer or of a
+// single-octet wire field, not a tuning knob: changing one means
+// changing the buffer it protects.
+.equ HKDF_EXPAND_MAX_INFO,  607  // 32 + info + 1 must fit the 640-byte
+                                 //   assembled HMAC input buffer
+.equ HKDF_EXPAND_MAX_OKM,   8160 // 255 * 32 — the counter is one octet
+.equ HKDF_LABEL_MAX_LABEL,  249  // 6 + label must fit one octet
+.equ HKDF_LABEL_MAX_CONTEXT, 255 // context length is one octet
 

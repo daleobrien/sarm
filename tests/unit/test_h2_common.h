@@ -540,49 +540,78 @@ static inline int64_t h2_send_settings_wrapper(int64_t fd, int64_t *carry_out) {
 
 // ── Stage 7 wrappers for asm functions (h2_hpack.S) ────────────────
 
-// h2_hpack_decode_int(ptr=x0, n=x1) → (value=x0, consumed=x1, carry)
-static inline int64_t h2_hpack_decode_int_wrapper(const uint8_t *p, int64_t n,
-                                                  int64_t *consumed_out,
-                                                  int64_t *carry_out) {
+// The HPACK decoders take the end of the enclosing header block and
+// refuse to read past it (Step 5, docs/security/length-audit.md). The
+// _end wrappers below pass a real bound; the plain wrappers pass an
+// unbounded one, so the Stage 7 tests keep asking exactly what they
+// asked before the bound existed. The bound itself is what
+// tests/security/test_overflow_hpack.c is for — with a guard page just
+// past the block, so a read that escapes it faults instead of passing.
+#define HPACK_NO_BOUND ((const uint8_t *)~(uintptr_t)0)
+
+// h2_hpack_decode_int(ptr=x0, n=x1, end=x2) → (value=x0, consumed=x1, carry)
+static inline int64_t h2_hpack_decode_int_end_wrapper(const uint8_t *p, int64_t n,
+                                                      const uint8_t *end,
+                                                      int64_t *consumed_out,
+                                                      int64_t *carry_out) {
 	int64_t value, consumed, carry;
 	asm volatile(
 		"cmp xzr, xzr\n"
 		"mov x0, %3\n"
 		"mov x1, %4\n"
+		"mov x2, %5\n"
 		"bl h2_hpack_decode_int\n"
 		"mov %0, x0\n"
 		"mov %1, x1\n"
 		"cset %2, cs\n"
 		: "=r"(value), "=r"(consumed), "=r"(carry)
-		: "r"(p), "r"(n)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "memory");
+		: "r"(p), "r"(n), "r"(end)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "memory");
 	*consumed_out = consumed;
 	*carry_out = carry;
 	return value;
 }
 
-// h2_hpack_decode_string(ptr=x0) → (str=x0, len=x1, consumed=x2, carry)
-static inline const uint8_t *h2_hpack_decode_string_wrapper(const uint8_t *p,
-                                                            int64_t *len_out,
-                                                            int64_t *consumed_out,
-                                                            int64_t *carry_out) {
+static inline int64_t h2_hpack_decode_int_wrapper(const uint8_t *p, int64_t n,
+                                                  int64_t *consumed_out,
+                                                  int64_t *carry_out) {
+	return h2_hpack_decode_int_end_wrapper(p, n, HPACK_NO_BOUND,
+	                                       consumed_out, carry_out);
+}
+
+// h2_hpack_decode_string(ptr=x0, end=x1) → (str=x0, len=x1, consumed=x2, carry)
+static inline const uint8_t *h2_hpack_decode_string_end_wrapper(const uint8_t *p,
+                                                                const uint8_t *end,
+                                                                int64_t *len_out,
+                                                                int64_t *consumed_out,
+                                                                int64_t *carry_out) {
 	const uint8_t *s;
 	int64_t len, consumed, carry;
 	asm volatile(
 		"cmp xzr, xzr\n"
 		"mov x0, %4\n"
+		"mov x1, %5\n"
 		"bl h2_hpack_decode_string\n"
 		"mov %0, x0\n"
 		"mov %1, x1\n"
 		"mov %2, x2\n"
 		"cset %3, cs\n"
 		: "=r"(s), "=r"(len), "=r"(consumed), "=r"(carry)
-		: "r"(p)
-		: "x0", "x1", "x2", "x3", "x4", "x19", "x30", "memory");
+		: "r"(p), "r"(end)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
+		  "x19", "x20", "x21", "x22", "x30", "memory");
 	*len_out = len;
 	*consumed_out = consumed;
 	*carry_out = carry;
 	return s;
+}
+
+static inline const uint8_t *h2_hpack_decode_string_wrapper(const uint8_t *p,
+                                                            int64_t *len_out,
+                                                            int64_t *consumed_out,
+                                                            int64_t *carry_out) {
+	return h2_hpack_decode_string_end_wrapper(p, HPACK_NO_BOUND, len_out,
+	                                          consumed_out, carry_out);
 }
 
 // h2_hpack_static_lookup(idx=x0) → (name=x0, name_len=x1, value=x2,
@@ -616,17 +645,19 @@ static inline const uint8_t *h2_hpack_static_lookup_wrapper(int64_t idx,
 
 // h2_hpack_decode_field(ptr=x0) → (next=x0, name=x1, name_len=x2,
 //                                  value=x3, value_len=x4, carry)
-static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
-                                                           const uint8_t **name_out,
-                                                           int64_t *name_len_out,
-                                                           const uint8_t **value_out,
-                                                           int64_t *value_len_out,
-                                                           int64_t *carry_out) {
+static inline const uint8_t *h2_hpack_decode_field_end_wrapper(const uint8_t *p,
+                                                               const uint8_t *end,
+                                                               const uint8_t **name_out,
+                                                               int64_t *name_len_out,
+                                                               const uint8_t **value_out,
+                                                               int64_t *value_len_out,
+                                                               int64_t *carry_out) {
 	const uint8_t *next, *name, *value;
 	int64_t name_len, value_len, carry;
 	asm volatile(
 		"cmp xzr, xzr\n"
 		"mov x0, %6\n"
+		"mov x1, %7\n"
 		"bl h2_hpack_decode_field\n"
 		"mov %0, x0\n"
 		"mov %1, x1\n"
@@ -636,15 +667,27 @@ static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
 		"cset %5, cs\n"
 		: "=r"(next), "=r"(name), "=r"(name_len), "=r"(value),
 		  "=r"(value_len), "=r"(carry)
-		: "r"(p)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x9",
-		  "x19", "x20", "x21", "x30", "memory");
+		: "r"(p), "r"(end)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
+		  "x30", "memory");
 	*name_out = name;
 	*name_len_out = name_len;
 	*value_out = value;
 	*value_len_out = value_len;
 	*carry_out = carry;
 	return next;
+}
+
+static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
+                                                           const uint8_t **name_out,
+                                                           int64_t *name_len_out,
+                                                           const uint8_t **value_out,
+                                                           int64_t *value_len_out,
+                                                           int64_t *carry_out) {
+	return h2_hpack_decode_field_end_wrapper(p, HPACK_NO_BOUND, name_out,
+	                                         name_len_out, value_out,
+	                                         value_len_out, carry_out);
 }
 
 // h2_hpack_dyn_reset() — resets the dynamic table to empty, max restored

@@ -186,6 +186,14 @@
 
 .global x25519_fe_sqr_times
 x25519_fe_sqr_times:
+    // count == 0 — a^(2^0) = a (Step 5, docs/security/length-audit.md).
+    // The squaring loop is a do-while (subs/b.ne), so a zero count would
+    // fall in and run 2^64 times: a hang, not a wrong answer. Every call
+    // site in the tree passes a compile-time constant >= 1, so this is a
+    // precondition made explicit, not a bug being fixed — but a
+    // precondition whose violation never returns is one worth spending
+    // three instructions on.
+    cbz     x2, .Lx25519_sqr_zero
     sub     sp, sp, #32
     str     x0, [sp]                   // save out pointer
     str     x2, [sp, #8]               // save count
@@ -333,6 +341,18 @@ x25519_fe_sqr_times:
     str     x7, [x0, #32]
     ldr     x19, [sp, #16]            // restore callee-saved x19
     add     sp, sp, #32
+    ret
+
+.Lx25519_sqr_zero:
+    // No frame has been set up yet — copy in to out and return. out may
+    // alias in, which is why all five limbs are read before any is
+    // written.
+    ldp     x3, x4, [x1]
+    ldp     x5, x6, [x1, #16]
+    ldr     x7, [x1, #32]
+    stp     x3, x4, [x0]
+    stp     x5, x6, [x0, #16]
+    str     x7, [x0, #32]
     ret
 
 // ─────────────────────────────────────────────────────────────────────

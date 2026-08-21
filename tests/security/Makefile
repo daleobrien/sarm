@@ -36,7 +36,7 @@ LDFLAGS := -arch arm64
 
 OBJ_DIR := _obj
 
-HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h
+HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h overflow_common.h
 COMMON_OBJS := $(OBJ_DIR)/guard_pages.o
 
 # ── assembly under test ─────────────────────────────────────────────
@@ -51,11 +51,21 @@ rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(
 crypto_srcs := $(call rwildcard,../../src/crypto,*.S)
 crypto_objs := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_srcs))
 
+# The HPACK overflow suite (Step 5) drives the real decoders, which
+# reach the dynamic table and memcpy — the hpack module plus the one
+# util routine it calls, and nothing else. Deliberately not the whole
+# h2 stack: the point of a standalone harness is that a failure names
+# HPACK rather than "the server".
+hpack_srcs := $(call rwildcard,../../src/hpack,*.S)
+hpack_objs := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(hpack_srcs))
+util_memcpy_obj := $(OBJ_DIR)/util_memcpy.o
+
 TEST_GUARD_PAGES  := $(OBJ_DIR)/test_guard_pages
 BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildcard test_bounds_*.c))
 DIFF_TESTS        := $(patsubst test_diff_%.c,$(OBJ_DIR)/test_diff_%,$(wildcard test_diff_*.c))
+OVERFLOW_TESTS    := $(patsubst test_overflow_%.c,$(OBJ_DIR)/test_overflow_%,$(wildcard test_overflow_*.c))
 
-TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS)
+TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS) $(OVERFLOW_TESTS)
 
 all: test
 
@@ -107,6 +117,16 @@ $(OBJ_DIR)/crypto_%.o: ../../src/crypto/%.S | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+.SECONDARY: $(hpack_objs) $(util_memcpy_obj)
+
+$(OBJ_DIR)/hpack_%.o: ../../src/hpack/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/util_%.o: ../../src/util/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 # Every suite includes tests/unit/test_harness.h, so a change there must
 # rebuild them, exactly as in tests/unit/Makefile.
 HARNESS := ../unit/test_harness.h
@@ -127,6 +147,16 @@ $(OBJ_DIR)/test_bounds_%: test_bounds_%.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $
 # bounds suites do, so the reason for -O1 does not apply.
 $(OBJ_DIR)/test_diff_%: test_diff_%.c $(HELPERS) $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -O2 $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# The overflow suites (Step 5) feed a hostile corpus to the real
+# parsers with a guard page immediately after the input, so a read that
+# leaves the block faults instead of returning plausible bytes. Built
+# at the default -O1 for the same reason the bounds suites are.
+$(OBJ_DIR)/test_overflow_hpack: test_overflow_hpack.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(hpack_objs) $(util_memcpy_obj) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(hpack_objs) $(util_memcpy_obj) $(LDFLAGS) -o $@
+
+$(OBJ_DIR)/test_overflow_crypto: test_overflow_crypto.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(crypto_objs) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

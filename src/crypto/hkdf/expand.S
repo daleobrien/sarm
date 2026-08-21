@@ -23,6 +23,18 @@
 //   OKM (no-op). An okmlen of 0 with a NULL okm is fine; otherwise
 //   okm must hold okmlen bytes.
 //
+//   Both of those limits are now checked rather than merely documented
+//   (Step 5, docs/security/length-audit.md). They were the clearer of
+//   the two cases the Step 3 bounds suite found where a documented
+//   precondition, if violated, fails catastrophically instead of
+//   gracefully: infolen past 607 walks the assembled HMAC input off the
+//   end of the 640-byte stack buffer and over the saved registers and
+//   return address — the suite trapped on the guard page at 1023. The
+//   only caller passes an info bounded to 520 octets by construction,
+//   so the check has never fired and cannot fire today; it is here so
+//   that a future caller deriving infolen from the wire gets an error
+//   return instead of a smashed frame.
+//
 // Input/Arguments:
 //   x0 — pointer to the PRK (the HMAC key)
 //   x1 — PRK length in bytes (RFC 5869 wants >= 32; hmac_sha256
@@ -33,7 +45,8 @@
 //   x5 — OKM length in bytes (0..8160)
 //
 // Output/Returns:
-//   none (void) - okmlen bytes written to [x4].
+//   carry clear — okmlen bytes written to [x4]
+//   carry set   — infolen > 607 or okmlen > 8160; nothing is written
 //
 // Clobbered Registers:
 //   x0-x10, x13, w11, x19-x27 (saved/restored), x30 (saved/restored),
@@ -51,6 +64,13 @@
 .align 2
 .global hkdf_expand
 hkdf_expand:
+    // ── preconditions, checked before a single byte is written ──
+    mov     x6, #HKDF_EXPAND_MAX_INFO
+    cmp     x3, x6
+    b.hi    .Lexpand_refuse        // info would overrun the stack buffer
+    mov     x6, #HKDF_EXPAND_MAX_OKM
+    cmp     x5, x6
+    b.hi    .Lexpand_refuse        // more blocks than the 1-octet counter
     cbz     x5, .Lexpand_done      // okmlen == 0: empty OKM, no-op
     sub     sp, sp, #768
     stp     x19, x20, [sp]
@@ -127,6 +147,10 @@ hkdf_expand:
     ldp     x19, x20, [sp]
     add     sp, sp, #768
 .Lexpand_done:
+    cmn     xzr, xzr               // success — carry clear
+    ret
+.Lexpand_refuse:
+    cmp     xzr, xzr               // failure — carry set, okm untouched
     ret
 
 // ─────────────────────────────────────────────────────────────────────

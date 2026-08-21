@@ -8,7 +8,10 @@
 //   h2_hpack_decode_field call; size updates are skipped. The
 //   consumption of every representation is checked against the block
 //   length, so a truncated block is a decoding error instead of being
-//   partially accepted, and the fixed output area bounds the field
+//   partially accepted; since Step 5 the end of the block is also
+//   handed *down* to h2_hpack_decode_field, so an oversized field is
+//   refused before it is read rather than after
+//   (docs/security/length-audit.md). The fixed output area bounds the field
 //   count — a block that needs more than H2_HPACK_MAX_FIELDS is also a
 //   decoding error. On error the fields decoded so far remain readable,
 //   but the caller must treat the whole connection as failed
@@ -24,11 +27,11 @@
 //   x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
-//   x0, x7, x9 (x19-x22, x30 saved and restored)
+//   x0-x4, x7, x9 (x19-x23, x30 saved and restored)
 //
 // Stack Usage:
 //   48 bytes: stp x19, x30, [sp, #-48]!, stp x20, x21, [sp, #16],
-//     str x22, [sp, #32]
+//     str x22, [sp, #32], str x23, [sp, #40]
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -38,8 +41,10 @@ h2_hpack_decode_block:
     stp x19, x30, [sp, #-48]!
     stp x20, x21, [sp, #16]
     str x22, [sp, #32]
+    str x23, [sp, #40]
     mov x19, x0                 // cursor
     mov x21, x1                 // bytes remaining
+    ckadd x23, x0, x1, .Lhpack_block_bad  // one past the last block octet
     adr_l x22, h2_hpack_fields
     mov x20, #0                 // field count
     // a fresh Huffman output area for this block
@@ -48,6 +53,7 @@ h2_hpack_decode_block:
 .Lhpack_block_loop:
     cbz x21, .Lhpack_block_done
     mov x0, x19
+    mov x1, x23                 // the bound every nested read is checked against
     bl h2_hpack_decode_field
     b.cs .Lhpack_block_err
     sub x7, x0, x19             // bytes this representation consumed
@@ -67,6 +73,7 @@ h2_hpack_decode_block:
     b .Lhpack_block_loop
 .Lhpack_block_done:
     mov x0, x20
+    ldr x23, [sp, #40]
     ldr x22, [sp, #32]
     ldp x20, x21, [sp, #16]
     ldp x19, x30, [sp], #48
@@ -76,6 +83,7 @@ h2_hpack_decode_block:
     cmp xzr, xzr                // failure — carry set
     mov x0, #H2_ERR_COMPRESSION_ERROR
 .Lhpack_block_err:
+    ldr x23, [sp, #40]
     ldr x22, [sp, #32]
     ldp x20, x21, [sp, #16]
     ldp x19, x30, [sp], #48

@@ -358,7 +358,8 @@ x25519_fe_mul:
 //   forms d0 = 2r0, d1 = 2r1, d2 = 38r2, d419 = 19r4, d4 = 2*19*r4.
 //   The limbs stay in registers across the do-while loop, exactly like
 //   the reference; the same carry chain as x25519_fe_mul finishes each
-//   pass. (The loop always runs at least once, matching the C.)
+//   pass. (The loop always runs at least once, matching the C — a zero
+//   count is intercepted before it, Step 5.)
 //
 //   The 51-bit mask is held in x19 across the whole loop. x19 is
 //   callee-saved, so it is pushed on entry and popped on exit; keeping
@@ -371,7 +372,8 @@ x25519_fe_mul:
 // Input/Arguments:
 //   x0 — pointer to the 40-byte output field element
 //   x1 — pointer to the 40-byte input field element
-//   x2 — number of squarings (count >= 1 in practice)
+//   x2 — number of squarings (0 returns a copy of the input, which is
+//        what a^(2^0) means; the loop itself is a do-while)
 //
 // Output/Returns:
 //   none (void) - out is written to [x0]; out may alias in

@@ -164,10 +164,19 @@ The classic `ptr + len` wrap is therefore not reachable from a single wire
 field; the residual risk lives in *sums* — `cursor + field_len` inside the
 ClientHello and HPACK walks, `header + payload` in the h2 loop, and the
 staging-offset triples in §3.2 — and in any future field whose length is
-composed from more than one wire value. There is no `adds`/`b.cs` checked-add
-idiom in the tree today; bounds are enforced by comparison against a
-pre-computed end pointer instead. Step 5 of the programme is the audit that
-decides whether that is sufficient everywhere.
+composed from more than one wire value.
+
+**Audited in Step 5: `docs/security/length-audit.md`.** The verdict, site by
+site, is that the width argument holds for the ClientHello walk, the h2 frame
+loop (which keeps separate cursors rather than summing) and the HTTP/1 request
+path, and that it did *not* hold in HPACK. Three defects were found and fixed
+there — a 32-bit bound that tested a single bit, continuation octets read past
+the block, and string lengths validated only after `h2_huffman_decode` had
+already expanded them — along with three crypto preconditions that were
+enforced by documentation only (§9.9 below). `src/defs.S` now carries
+`ckadd`/`ckrange`/`ckfits`, the `adds`/`b.cs` idiom `docs/SECURITY.md` §3 asks
+for, used wherever an operand's width is not visible at the instruction or a
+length crosses a function boundary before being used.
 
 ---
 
@@ -462,10 +471,14 @@ on by Step 1.
 3. **Key material is adjacent to attacker-filled record buffers** within
    `src/tls/`. This raises the value of over-read testing specifically at the
    `tls_hs_record_buf` / `tls_hs_msg_buf` boundaries. → Steps 2, 3, 10.
-4. **Bounds are enforced by comparison against an end pointer, never by a
-   checked-add idiom.** Sound for single 16/24-bit wire fields in 64-bit
-   registers; the audit target is composed sums (ClientHello and HPACK cursor
-   walks, the staging offset triples). → Step 5.
+4. ~~**Bounds are enforced by comparison against an end pointer, never by a
+   checked-add idiom.**~~ **Audited and partly fixed in Step 5**
+   (`docs/security/length-audit.md`). The end-pointer comparison is sound
+   everywhere its operands are visibly narrow, which is most of the tree; the
+   HPACK decoders were the exception and now take the block end as an argument
+   and check with `ckrange` before reading. Residual: the width argument is
+   still a human reading two functions, and nothing in the build re-derives it
+   when a field changes size. → Steps 6-8 attack the same question empirically.
 5. **Fail-closed entropy handling is asserted by construction, not by test.**
    No test forces `crypto_random_bytes` to fail and checks that the handshake
    aborts. → Steps 3, 10.
@@ -498,7 +511,13 @@ on by Step 1.
    violation is a stack smash or a hang rather than a wrong answer. Both
    are internal routines with in-tree callers only, so today they are
    contract notes, not defects; they become live the moment any caller
-   derives one of those values from network input. → Step 5.
+   derives one of those values from network input. **Closed in Step 5**:
+   both now check, as does `hkdf_expand_label` (whose 520-byte HkdfLabel
+   buffer has the same shape and was not previously noted). The two HKDF
+   routines return carry set with the output untouched; `sqr_times`
+   returns a copy of its input, which is what `a^(2^0)` means. The
+   fifteen key-schedule call sites are deliberately not rewired to check
+   the flag — see `length-audit.md` §3.4 for why.
 10. **The exported `ghash` symbol has no caller in the server, and the GCM
    length block is assembled in three separate places.** The absorb core is
    shared — `.Lgcm_ghash_run` in `src/crypto/gcm/data.S` is the single

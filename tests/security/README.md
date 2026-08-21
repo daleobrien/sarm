@@ -262,3 +262,60 @@ That last row is a finding, not a pass. `aes_gcm_encrypt` and
 `[len(A)] || [len(C)]` block themselves. Nothing outside `tests/` calls
 `ghash` at all. See
 [docs/security/threat-model.md](../../docs/security/threat-model.md) §9.
+
+---
+
+## test_overflow_* — the integer-overflow corpus (Step 5)
+
+Step 5 audits every length calculation an attacker can influence and asks the
+`adds`/`b.cs` question of each: *can this sum wrap, and does anything notice?*
+The audit itself, site by site with a verdict for each, is
+[docs/security/length-audit.md](../../docs/security/length-audit.md). These two
+suites are its test half.
+
+| suite | covers |
+|---|---|
+| `test_overflow_hpack.c` | RFC 7541 §5.1 integers at every prefix width, string lengths that leave the header block, dynamic-table inserts and size updates, and every truncation of a valid block |
+| `test_overflow_crypto.c` | `hkdf_expand`'s info and output limits, `hkdf_expand_label`'s label and context limits, and `x25519_fe_sqr_times` with a zero count |
+
+The suites run in about a second and need no environment variables.
+
+### Rejected, not merely survived
+
+Every input is copied into a buffer placed flush against a `PROT_NONE` page, so
+`end` is a hardware boundary rather than a number the parser is hoped to be
+comparing against. That makes each case assert two things at once:
+
+* the routine returns its error rather than accepting the value or looping, and
+* it does so **without reading a byte outside the input it was given**.
+
+A parser that reads past the end and complains afterwards is reported as
+`OUT OF BOUNDS` whatever it would eventually have returned. That distinction is
+the point: three of the four Step 5 findings were exactly that shape — the
+overrun was always detected, but only after `h2_huffman_decode` had expanded
+2.5 KB of adjacent memory, or after `h2_hpack_dyn_insert` had copied it into
+the dynamic table.
+
+Each case runs in a forked child (`guard_probe_status`), so one run reports
+every failing case instead of dying on the first, and a routine that hangs is
+reported as `DID NOT TERMINATE` rather than taking the run with it.
+
+Every rejection case is paired with the largest value that must still be
+**accepted**. A check that rejects 608 and also rejects 607 has not made the
+routine safer, and only the second half of the pair notices.
+
+### Verified by sabotage
+
+Each fix was reverted in turn and the corpus re-run:
+
+| break | result |
+|---|---|
+| `lsr x3, x2, #32 / cbnz` → `tbnz x2, #32` | 8 failures — every value above bit 32 accepted |
+| remove `decode_int`'s per-octet end check | 3 failures, all `OUT OF BOUNDS` |
+| remove `decode_string`'s `ckrange` | 9 failures, 6 of them `OUT OF BOUNDS` |
+| remove `hkdf_expand`'s infolen check | 10 failures, 8 of them `OUT OF BOUNDS` |
+| remove `hkdf_expand_label`'s label check | 3 failures, 2 of them `OUT OF BOUNDS` |
+| remove `x25519_fe_sqr_times`'s zero guard | 2 failures, both `DID NOT TERMINATE` |
+
+The `OUT OF BOUNDS` rows are the MMU, not the test, confirming the
+pre-Step-5 code really did read past the buffer it was given.

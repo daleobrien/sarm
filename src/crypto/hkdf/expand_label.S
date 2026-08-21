@@ -19,6 +19,17 @@
 //   A zero-length context is valid (e.g. the "key" / "finished"
 //   derivations); its pointer is then ignored.
 //
+//   Those constraints are checked, not assumed (Step 5,
+//   docs/security/length-audit.md). The 520-byte HkdfLabel buffer is
+//   sized for the maxima exactly, so an over-long label or context
+//   would run the assembly off the end of the frame — and the length
+//   octet it writes would silently truncate on the way, producing a
+//   label the peer never sent rather than an error. Every one of the
+//   fifteen call sites in the TLS key schedule passes compile-time
+//   constant lengths, so the check cannot fire today; it is here so
+//   that stops being something a reader has to verify call site by
+//   call site.
+//
 // Input/Arguments:
 //   x0 — pointer to the 32-octet secret (PRK)
 //   x1 — pointer to the bare label (no "tls13 " prefix), e.g. "key"
@@ -29,7 +40,10 @@
 //   x6 — output length in bytes (the HkdfLabel `length` field)
 //
 // Output/Returns:
-//   none (void) - outlen bytes written to [x5].
+//   carry clear — outlen bytes written to [x5]
+//   carry set   — label_len > 249, context_len > 255, or hkdf_expand
+//                 refused the derived info/output lengths; nothing is
+//                 written
 //
 // Clobbered Registers:
 //   x0-x10, x13, w11, v0-v7, v16, v18, v19, NZCV, x19-x26
@@ -47,6 +61,13 @@
 .align 2
 .global hkdf_expand_label
 hkdf_expand_label:
+    // ── preconditions, checked before the buffer is touched ──
+    mov     x7, #HKDF_LABEL_MAX_LABEL
+    cmp     x2, x7
+    b.hi    .Lexpand_label_refuse  // 6 + label_len must fit one octet
+    mov     x7, #HKDF_LABEL_MAX_CONTEXT
+    cmp     x4, x7
+    b.hi    .Lexpand_label_refuse  // context_len must fit one octet
     sub     sp, sp, #608
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -104,7 +125,7 @@ hkdf_expand_label:
     mov     x3, x7
     mov     x4, x24                // out
     mov     x5, x25                // outlen
-    bl      hkdf_expand
+    bl      hkdf_expand            // its carry is this function's carry
 
     ldr     x30, [sp, #64]
     ldp     x25, x26, [sp, #48]
@@ -112,6 +133,9 @@ hkdf_expand_label:
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp]
     add     sp, sp, #608
+    ret
+.Lexpand_label_refuse:
+    cmp     xzr, xzr               // failure — carry set, out untouched
     ret
 
 // ─────────────────────────────────────────────────────────────────────
