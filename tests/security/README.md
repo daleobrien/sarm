@@ -175,3 +175,90 @@ compile-time constant — and both are recorded in
 [docs/security/threat-model.md](../../docs/security/threat-model.md) §9 as
 unchecked preconditions rather than fixed here, because Step 3 is a test step.
 If you widen either sweep, expect the failure, and read that section first.
+
+## test_diff_* — random-vector differential testing (Step 4)
+
+Step 3 asks whether the assembly survives the edges someone thought to name.
+Step 4 asks whether it is *right everywhere*, by running each routine and its
+reference over hundreds of thousands of random inputs at random lengths and
+requiring the two to agree byte for byte.
+
+```bash
+make -C tests/security                       # ~5s, ~430k vectors
+SARM_DIFF_ITERS=100 make -C tests/security   # 100x that, for a long soak
+SARM_DIFF_SEED=0x1234 ./_obj/test_diff_gcm   # replay a specific run
+```
+
+| suite | covers |
+|---|---|
+| `test_diff_hash` | `sha256` compression, one-shot and streaming digests, `hmac_sha256`, `hkdf_extract/expand/expand_label` |
+| `test_diff_gcm` | `aes128_key_expand`, `aes128_encrypt`, `gf_mult_128`, `ghash`, `aes_gcm_encrypt`, `aes_gcm_decrypt` incl. random-bit forgery attempts |
+| `test_diff_ecc` | X25519 field ops + full scalar mult, `p256_fe_*`, `p256_reduce`, `p256_bn_mul`, `p256_scalar_*`, `p256_point_*`, `p256_ecdsa_sign_with_k` |
+
+Every vector comes from one 64-bit seed, so a failure is replayable rather than
+a ghost: the suite prints its seed on every run, each routine draws from its
+own stream (adding a case to one does not renumber another's vectors), and a
+failure report names the iteration, the per-vector seed and the first byte that
+differed.
+
+The default seed is fixed rather than taken from the clock. A suite that tests
+different vectors every run is a suite that fails on someone else's machine and
+passes on yours; sweeping the space is what `SARM_DIFF_ITERS` and Step 14's
+continuous fuzzing are for.
+
+### Not guarded, and why
+
+These suites do not use `guard_pages.h`. Step 3 already proved each routine
+stays inside its declared buffers with a forked probe per case, and forking a
+million times to re-prove it would cost exactly the vector count that is the
+point of this step. Instead every output buffer carries a 32-byte poison tail
+that must come back untouched — a gross overwrite is still caught, without a
+syscall per vector.
+
+### refbn.h and refcurve.h — a reference for the curves
+
+Step 3 checked the ECC routines by identity because identities need no second
+implementation. They are also narrow: a field multiplier that reduces modulo
+the wrong prime still satisfies `a * a^-1 == 1` in the wrong field. Step 4
+needs the actual value, so it needs an actual reference:
+
+- **`refbn.h`** — 32-bit limbs, schoolbook multiplication, reduction by
+  shift-and-subtract long division one bit at a time. No Montgomery form, no
+  Solinas fold, no lazy carries, no 64-bit limbs: every trick the assembly
+  uses is absent on purpose.
+- **`refcurve.h`** — P-256 in *homogeneous projective* coordinates
+  (`x = X/Z`), against assembly that works in *Jacobian* (`x = X/Z^2`).
+  Different denominators, different intermediates, different special cases.
+  Comparing across the two needs no inversion at all: a Jacobian `(X, Y, Z)`
+  denotes affine `(x, y)` iff `X == x*Z^2` and `Y == y*Z^3`, so the check
+  multiplies up rather than dividing down.
+
+There is no published projective-coordinate vector to pin `refcurve.h` to, so
+`refcurve_selfcheck()` pins it structurally instead: G is on the curve,
+`n*G` is the point at infinity, and `(a+b)*G == a*G + b*G`. A mistyped
+doubling formula does not survive `n*G == O`.
+
+The counts per routine are deliberately uneven. The reference reduces modulo a
+256-bit prime one bit at a time, so a scalar multiplication costs thousands of
+those — and the field operations, where the carry bugs actually live, are the
+ones getting the vectors.
+
+### Verified by sabotage
+
+A green differential suite is the easiest thing in the world to fake, so each
+comparison was checked by breaking the assembly and confirming the suite went
+red:
+
+| break | result |
+|---|---|
+| one SHA-256 round constant, `0xc67178f2` → `f3` | every sha256, hmac and hkdf sweep failed |
+| `x25519_fe_mul` carry chain, `lsl #13` → `#12` | fe_mul, fe_recip and full x25519 failed |
+| `p256_point_dbl`, one `fe_add` → `fe_sub` | point dbl/add, point mul and ECDSA failed |
+| `ghash` length block, `lsl #3` → `#4` | the `ghash` sweep failed — **and nothing else did** |
+
+That last row is a finding, not a pass. `aes_gcm_encrypt` and
+`aes_gcm_decrypt` do not call the exported `ghash`: they share its absorb core
+(`.Lgcm_ghash_run`, `src/crypto/gcm/data.S`) but assemble the final
+`[len(A)] || [len(C)]` block themselves. Nothing outside `tests/` calls
+`ghash` at all. See
+[docs/security/threat-model.md](../../docs/security/threat-model.md) §9.

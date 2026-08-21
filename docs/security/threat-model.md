@@ -499,7 +499,21 @@ on by Step 1.
    are internal routines with in-tree callers only, so today they are
    contract notes, not defects; they become live the moment any caller
    derives one of those values from network input. → Step 5.
-10. **`no_fork` mode reuses one process across connections** without clearing
+10. **The exported `ghash` symbol has no caller in the server, and the GCM
+   length block is assembled in three separate places.** The absorb core is
+   shared — `.Lgcm_ghash_run` in `src/crypto/gcm/data.S` is the single
+   implementation, called by all three — but the final
+   `[len(A)]_64 || [len(C)]_64` block is built independently in
+   `src/crypto/gcm/ghash.S:72`, `src/crypto/gcm/encrypt.S:140` and
+   `src/crypto/gcm/decrypt.S`. `aes_gcm_encrypt` and `aes_gcm_decrypt` never
+   call `ghash`; nothing outside `tests/` does. Found in Step 4 by sabotage:
+   corrupting the length block inside `ghash.S` broke the `ghash` sweep and
+   left every GCM sweep green, which is only possible because they do not
+   share that code. Nothing is wrong today — all three agree with the
+   reference — but a security-critical routine that is exercised only by its
+   own tests will drift from the two copies that are exercised for real. →
+   Step 13.
+11. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
 

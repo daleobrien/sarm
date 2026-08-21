@@ -36,7 +36,7 @@ LDFLAGS := -arch arm64
 
 OBJ_DIR := _obj
 
-HELPERS := guard_pages.h crypto_ref.h bounds_common.h
+HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h
 COMMON_OBJS := $(OBJ_DIR)/guard_pages.o
 
 # ── assembly under test ─────────────────────────────────────────────
@@ -53,8 +53,9 @@ crypto_objs := $(patsubst ../../src/crypto/%.S,$(OBJ_DIR)/crypto_%.o,$(crypto_sr
 
 TEST_GUARD_PAGES  := $(OBJ_DIR)/test_guard_pages
 BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildcard test_bounds_*.c))
+DIFF_TESTS        := $(patsubst test_diff_%.c,$(OBJ_DIR)/test_diff_%,$(wildcard test_diff_*.c))
 
-TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS)
+TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS)
 
 all: test
 
@@ -119,6 +120,13 @@ $(OBJ_DIR)/test_guard_pages: test_guard_pages.c guard_pages.h $(HARNESS) $(COMMO
 # to one line.
 $(OBJ_DIR)/test_bounds_%: test_bounds_%.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(crypto_objs) $(LDFLAGS) -o $@
+
+# The differential suites (Step 4) run millions of vectors through the
+# same objects, so they are built at -O2: the reference is the slow
+# side, and nothing here deliberately reads out of bounds the way the
+# bounds suites do, so the reason for -O1 does not apply.
+$(OBJ_DIR)/test_diff_%: test_diff_%.c $(HELPERS) $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(crypto_objs) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)
