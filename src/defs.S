@@ -593,6 +593,18 @@
 .equ h2_range_buf_size, 64  // copy of the request's Range header value
 .equ h2_cr_buf_size, 64     // scratch for the content-range value
 
+// H2_HEADERS_STAGE_MAX — the largest complete HEADERS frame (9-byte wire
+// header + HPACK block) that h2_stage_headers will leave sitting in
+// h2_frame_buf for h2_write_body to send in front of the first DATA
+// frame, turning two write syscalls per response into one. A response's
+// block is a few dozen bytes (:status, content-type, content-length, and
+// at most content-range + content-encoding), so this is a ceiling that
+// normal traffic never approaches; anything above it is written on its
+// own, exactly as before. The bound is what lets h2_frame_buf hold
+// HEADERS + the DATA header at once, and what keeps the TLS path's
+// transport_writev_scratch sized (see src/transport/data.S).
+.equ H2_HEADERS_STAGE_MAX, 256
+
 // parsed frame header struct (16 bytes) — filled by h2_parse_frame_header
 .equ H2F_LENGTH,     0   // u32 payload length
 .equ H2F_TYPE,       4   // u32 frame type

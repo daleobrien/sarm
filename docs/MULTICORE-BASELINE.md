@@ -993,6 +993,94 @@ Steps 11-12, and with an 82% sys share that is where the headroom is.
 
 ---
 
+## 2026-08-21 — one write syscall per HTTP/2 response
+
+Acting on the lever identified above: an HTTP/2 GET used to leave in two write
+syscalls, a HEADERS frame from `h2_write_headers` and a DATA frame from
+`h2_write_body`. It now leaves in one.
+
+### The change
+
+`h2_write_headers` gained a second entry point, `h2_stage_headers`, that runs
+the same encoder but *leaves* the finished frame in `h2_frame_buf` and returns
+its length instead of writing it. `h2_write_body` takes that length in x3 and
+builds the first DATA frame header immediately behind the staged bytes, so its
+existing `transport_writev` sends HEADERS + DATA header + body chunk in one
+call. `h2_process_request` uses the staged path for GET; HEAD is unchanged
+(END_STREAM rides on its HEADERS frame, and there is no body to fold into).
+
+Three things bound it:
+
+- **`H2_HEADERS_STAGE_MAX` (256 bytes, `defs.S`).** A response block is a few
+  dozen bytes, but the cap is what lets `h2_frame_buf` hold both frames and
+  keeps the TLS path's `transport_writev_scratch` sized. A frame above the cap
+  is written on its own and 0 is returned, so the DATA write starts at
+  `h2_frame_buf[0]` exactly as before.
+- **The flow-control wait path flushes first.** `.Lh2wb_wait` dispatches client
+  frames while waiting for WINDOW_UPDATE, and a nested `h2_process_request`
+  re-encodes into the same buffer — staged bytes would be destroyed. They are
+  written before the wait begins, so a credit-starved response degrades to the
+  old two-syscall behaviour instead of corrupting the connection.
+- **`transport_writev_scratch` grew** 16416 -> 16672 bytes, for the TLS path's
+  contiguous copy of a 256-byte staged frame + 9-byte header + 16 KiB chunk.
+
+### A latent hang found on the way in
+
+`raw_writev_all` spun forever on a trailing zero-length iovec: `writev(2)` on
+an all-empty array returns 0, which consumes nothing and decrements nothing, so
+the drain loop never terminated. `h2_write_body`'s terminal empty DATA frame
+passes exactly that shape (9-byte header, zero-length body), so **any
+empty-body HTTP/2 response over plaintext already hung the connection process
+at 100% CPU** — the fold only made the shape more common. `raw_writev_all` now
+drops leading zero-length iovecs before issuing the syscall. Reproduced with a
+3-second alarm around a direct call; the fix returns 9 and exits.
+
+### Measured
+
+Interleaved, order alternated between rounds, `--repeat 3` (median of 3, ± full
+spread), 5 s, path `/`. HTTP/1.1 is the control — the change is HTTP/2-only.
+
+Single connection (`-c1 -t1`), the cleanest signal:
+
+| | before | after | change |
+| --- | ---: | ---: | ---: |
+| HTTP/1.1 | 36,342 / 36,350 | 36,344 / 36,382 | none (control) |
+| HTTP/2 h2c | 138,163 / 137,893 | 222,335 / 223,348 | **+61%** |
+| HTTP/2 + TLS | 121,200 / 120,859 | 176,521 / 176,487 | **+46%** |
+
+Six connections (`-c6 -t4`):
+
+| | before | after | change |
+| --- | ---: | ---: | ---: |
+| HTTP/1.1 | 109,909 / 112,162 | 109,877 / 112,308 | none (control) |
+| HTTP/2 h2c | 306,206 / 308,182 | 459,227 / 465,394 | **+50%** |
+| HTTP/2 + TLS | 255,311 / 258,111 | 414,023 / 422,916 | **+62%** |
+
+Every spread was 0.0-3.2%, both orderings agree to within it, and HTTP/1.1 sits
+still across all of it — so this is the change, not machine drift.
+
+`profile_workload.py request` confirms the mechanism is the one intended:
+
+| | before | after |
+| --- | ---: | ---: |
+| marginal cost | 11.80 us/request | **9.20 us/request** |
+| sys (size 2000) | 21.28 ms | **16.01 ms** |
+| user (size 2000) | 4.75 ms | 4.40 ms |
+| sys share | 82% | 78% |
+
+Kernel time fell 25% while user time barely moved, which is what removing one
+syscall per request should look like. Syscalls still dominate at 78%.
+
+### Tests
+
+`make test` (4,349 unit assertions plus files/security/protocols/keepalive/
+workers/multicore at 1, 2 and 4 workers) and `tests/h2_browser_sim.py all` all
+pass. The browser simulator matters here specifically: its `no-credit` scenario
+drives the wait-path flush, and its 76 KB asset drives the multi-chunk DATA
+path where only the first chunk carries staged headers.
+
+---
+
 ## Step 3 — Inventory of process-global mutable state
 
 Every symbol emitted into a writable section (`.data` / `.bss`) across `src/`,

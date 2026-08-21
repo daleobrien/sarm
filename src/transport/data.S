@@ -40,9 +40,9 @@
 //     assembles the header + body here before handing the whole thing
 //     to transport_write, exactly what a caller doing its own
 //     copy-then-write_all did before transport_writev existed. Sized
-//     for a small frame header plus one full TLS_MAX_PLAINTEXT chunk —
-//     transport_writev's only caller today (h2_write_body) never asks
-//     for more than that.
+//     for one full TLS_MAX_PLAINTEXT chunk plus the largest header part
+//     h2_write_body can hand over: a 9-byte DATA frame header, behind a
+//     staged HEADERS frame of at most H2_HEADERS_STAGE_MAX bytes.
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -85,4 +85,5 @@ plain_read_stage_buf: .skip 16384
 
 .align 4
 .global transport_writev_scratch
-transport_writev_scratch: .skip 16416  // small header + TLS_MAX_PLAINTEXT, rounded
+transport_writev_scratch: .skip 16672  // H2_HEADERS_STAGE_MAX(256) + header(9)
+                                       // + TLS_MAX_PLAINTEXT(16384), rounded

@@ -24,7 +24,8 @@
 //   x0 -> file descriptor
 //   x1 -> header pointer, x2 -> header length
 //   x3 -> body pointer, x4 -> body length (x2 + x4 must fit
-//         transport_writev_scratch_size)
+//         transport_writev_scratch — see src/transport/data.S for how it
+//         is sized against h2_write_body's largest header part)
 //
 // Output/Returns:
 //   x0 -> total number of bytes written on success (carry clear)

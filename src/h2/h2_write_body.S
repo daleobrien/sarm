@@ -8,6 +8,20 @@
 //   carries END_STREAM. An empty body sends a single empty DATA frame
 //   with END_STREAM.
 //
+// Staged HEADERS (x3): when the caller used h2_stage_headers instead of
+//   h2_write_headers, the encoded HEADERS frame is still sitting at the
+//   front of h2_frame_buf and x3 is its length. The first DATA frame
+//   header is then built *behind* it, and the one writev sends HEADERS +
+//   DATA header + body chunk together — the whole response in a single
+//   write syscall rather than two. x3 = 0 is the old behaviour and the
+//   only thing every other caller has to pass.
+//
+//   The staged bytes must reach the wire before anything else touches
+//   h2_frame_buf, so the wait-for-credit path below flushes them first:
+//   it dispatches client frames, and a nested request would re-encode
+//   into the same buffer. After the first chunk goes out the staged
+//   length is cleared, so later chunks build their header at offset 0.
+//
 // Stage 11 — flow control (§5.2): every DATA chunk is bounded by
 //   min(connection window, stream window, remaining), and both windows
 //   are drained by the octets sent. When the body still has data but a
@@ -26,6 +40,8 @@
 //   x0 — client fd
 //   x1 — response struct
 //   x2 — stream id
+//   x3 — bytes of a staged HEADERS frame at the front of h2_frame_buf to
+//        send ahead of the first DATA frame, or 0 for none
 //
 // Output/Returns:
 //   x0 — 0 on success (carry clear); errno on failure (carry set), or
@@ -36,7 +52,9 @@
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; stp x27, x30, [sp, #64]
-//   ([sp, #80] holds x27 across the nested h2_process_request call)
+//   ([sp, #80] holds x27 across the nested h2_process_request call;
+//   [sp, #88] holds the staged HEADERS length, which the send path
+//   clears once those bytes are on the wire)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -51,6 +69,7 @@ h2_write_body:
     mov x19, x0             // fd
     mov x20, x1             // response
     mov x21, x2             // stream id
+    str x3, [sp, #88]       // staged HEADERS bytes at h2_frame_buf[0]
     ldr x22, [x20, #RESP_BODY]
     ldr x23, [x20, #RESP_BODY_LENGTH]
     adr_l x26, h2_conn
@@ -91,8 +110,10 @@ h2_write_body:
     b.ne 1f
     mov w25, #H2_FLAG_END_STREAM
 1:
-    // frame header at h2_frame_buf
+    // frame header at h2_frame_buf, behind any staged HEADERS frame
+    ldr x12, [sp, #88]      // staged HEADERS length (0 when none)
     adr_l x13, h2_frame_buf
+    add x13, x13, x12
     mov w3, w24
     lsr w4, w3, #16
     strb w4, [x13, #0]
@@ -115,13 +136,17 @@ h2_write_body:
     // already lives in the response body, so there's nothing to gain by
     // copying it next to the header first, the way http1_write_response
     // already avoids copying the body for HTTP/1.
+    // x12 (staged HEADERS length) is still live from the frame header
+    // above — adr_l only writes its destination register, and nothing
+    // between here and the call touches x12.
     mov x0, x19
     adr_l x1, h2_frame_buf
-    mov x2, #H2_WIRE_HEADER_LEN
+    add x2, x12, #H2_WIRE_HEADER_LEN
     mov x3, x22
     mov x4, x24
     bl transport_writev
     b.cs .Lh2wb_err
+    str xzr, [sp, #88]      // staged HEADERS are on the wire now
     // the DATA octets drain both windows (§5.2)
     ldr x8, [x26, #H2C_WINDOW]
     sub x8, x8, x24
@@ -141,6 +166,20 @@ h2_write_body:
     b .Lh2wb_done
 .Lh2wb_wait:
     // ── out of credit, body remaining — read a frame and dispatch it ──
+    // Flush any staged HEADERS first. Everything below re-encodes into
+    // h2_frame_buf (and a nested h2_process_request encodes a whole
+    // response into it), so bytes still staged here would be destroyed —
+    // and the peer needs our HEADERS anyway before it can sensibly
+    // decide to grant more credit.
+    ldr x12, [sp, #88]
+    cbz x12, .Lh2wb_wait_read
+    mov x0, x19
+    adr_l x1, h2_frame_buf
+    mov x2, x12
+    bl write_all
+    b.cs .Lh2wb_err
+    str xzr, [sp, #88]
+.Lh2wb_wait_read:
     // The 9-byte wire header lands at buf[0..8] and is parsed before the
     // payload read overwrites it; the payload (≤ H2C_MAX_RX_FRAME_SIZE)
     // fits buf. WINDOW_UPDATE replenishes the credit; anything else is

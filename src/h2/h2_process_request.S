@@ -9,9 +9,11 @@
 //   h2_build_request) and serve it the way HTTP/1 does — lookup_embedded
 //   resolves the path, the embedded_* globals are stored exactly as
 //   get_setup stores them, create_response fills the protocol-neutral
-//   response struct, and the HTTP/2 encoder (h2_write_headers +
-//   h2_write_body) sends it. GET sends headers + body; HEAD sends
-//   headers only (END_STREAM on the HEADERS frame); OPTIONS is 204 when
+//   response struct, and the HTTP/2 encoder sends it. GET stages the
+//   HEADERS frame (h2_stage_headers) and lets h2_write_body put it in
+//   front of the first DATA frame, so the whole response leaves in one
+//   write syscall; HEAD sends headers only, written on their own
+//   (END_STREAM on the HEADERS frame); OPTIONS is 204 when
 //   the path resolves and 404 otherwise; BREW is 418; any unknown
 //   method is 501. A failed resource lookup is a 404. A path the server
 //   refuses (REQ_FORBIDDEN) is a 403; a satisfiable Range on a GET is a
@@ -31,7 +33,8 @@
 //
 // Stack Usage:
 //   96 bytes: stp x19, x20, [sp, #-96]!; ...; str x30, [sp, #64]
-//   ([sp, #72]/[sp, #80] hold the response range window)
+//   ([sp, #72]/[sp, #80] hold the response range window; [sp, #88] holds
+//   the staged HEADERS length across the h2_write_body call)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -203,17 +206,26 @@ h2_process_request:
     mov x2, x19
     mov x3, #0
     cmp x21, #HEAD_ID
-    b.ne 1f
-    mov x3, #H2_FLAG_END_STREAM
-1:
-    bl h2_write_headers
+    b.eq .Lh2pr_head
+    // GET — stage the HEADERS frame instead of writing it, so
+    // h2_write_body can send it in front of the first DATA frame in one
+    // writev. x0 comes back as the staged length (0 if it was written
+    // after all) and is handed straight to h2_write_body.
+    bl h2_stage_headers
     b.cs .Lh2pr_500
-    cmp x21, #HEAD_ID
-    b.eq .Lh2pr_done
+    str x0, [sp, #88]
     mov x0, x20
     adr_l x1, response
     mov x2, x19
+    ldr x3, [sp, #88]
     bl h2_write_body
+    b.cs .Lh2pr_500
+    b .Lh2pr_done
+.Lh2pr_head:
+    // HEAD — END_STREAM rides on the HEADERS frame, there is no body to
+    // fold it into, so it is written on its own.
+    mov x3, #H2_FLAG_END_STREAM
+    bl h2_write_headers
     b.cs .Lh2pr_500
     b .Lh2pr_done
 

@@ -838,7 +838,9 @@ static inline int64_t h2_write_headers_wrapper(int64_t fd, const response_t *res
 	return carry;
 }
 
-// h2_write_body(fd=x0, resp=x1, stream_id=x2) → (carry)
+// h2_write_body(fd=x0, resp=x1, stream_id=x2, staged=x3) → (carry).
+// staged is the length of a HEADERS frame already sitting in
+// h2_frame_buf; these tests exercise the body on its own, so it is 0.
 static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
                                            int64_t stream_id) {
 	int64_t carry;
@@ -847,6 +849,7 @@ static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
 		"mov x0, %1\n"
 		"mov x1, %2\n"
 		"mov x2, %3\n"
+		"mov x3, #0\n"
 		"bl h2_write_body\n"
 		"cset %0, cs\n"
 		: "=r"(carry)

@@ -45,7 +45,20 @@ raw_writev_all:
 .Lrwa_loop:
     // carry = 0, in case we exit with cbz without ever calling writev().
     cmn     xzr, xzr
+.Lrwa_skip_empty:
     cbz     x27, .Lrwa_done
+    // Drop leading zero-length iovecs. A writev(2) whose whole array is
+    // empty returns 0, which consumes nothing and decrements nothing —
+    // the retry loop below would spin on it forever. h2_write_body's
+    // terminal empty DATA frame passes exactly that (a 9-byte frame
+    // header plus a zero-length body), so this is reachable, not
+    // theoretical.
+    ldr     x9, [x26, #8]
+    cbnz    x9, .Lrwa_issue
+    add     x26, x26, #16
+    sub     x27, x27, #1
+    b       .Lrwa_skip_empty
+.Lrwa_issue:
 
     SCWINUM SYS_writev
     mov     x0, x25

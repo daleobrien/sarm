@@ -1,7 +1,7 @@
 #include "../defs.S"
 
 // ─────────────────────────────────────────────────────────────────────
-// Function Name: h2_write_headers
+// Function Name: h2_write_headers / h2_stage_headers
 //
 // Description: Encode the response struct as a HEADERS frame. The HPACK
 //   block carries :status, content-type and content-length — plus
@@ -10,6 +10,26 @@
 //   the same headers). The block is built into h2_frame_buf right after
 //   the 9-byte frame header and the whole frame is written in one
 //   write_all, so a partial write can't split the frame.
+//
+//   Two entry points share that encoder:
+//
+//   h2_write_headers — builds the frame and writes it. Unchanged.
+//
+//   h2_stage_headers — builds the frame and *leaves it in h2_frame_buf*,
+//     returning its length, so h2_write_body can put the first DATA
+//     frame header immediately behind it and send both frames plus the
+//     body chunk in one writev. That is the whole point: a response used
+//     to cost two write syscalls (HEADERS here, DATA there) and now
+//     costs one, which matters because ~82% of sarm's per-request CPU is
+//     kernel time (docs/MULTICORE-BASELINE.md). Staging only happens for
+//     a frame of at most H2_HEADERS_STAGE_MAX bytes; a larger one is
+//     written here and 0 is returned, so the caller's DATA write starts
+//     at h2_frame_buf[0] exactly as it always did.
+//
+//   A staged frame is a promise the caller must keep: h2_frame_buf is
+//   shared, so whoever staged it has to get it onto the wire before
+//   anything else can encode a frame. h2_write_body is the only caller
+//   and flushes it before it can block (see its .Lh2wb_wait).
 //
 // HPACK notes: :status 200 is a static-table index (0x88); any other
 // status is a literal with the indexed name ":status" (static 8).
@@ -25,8 +45,12 @@
 //   x3 — extra frame flags (H2_FLAG_END_STREAM for a bodyless response)
 //
 // Output/Returns:
-//   x0 — 0 on success (carry clear); errno on failure (carry set), or
-//     H2_ERR_INTERNAL_ERROR if the header block doesn't fit the buffer
+//   x0 — h2_write_headers: 0 on success (carry clear).
+//   x0 — h2_stage_headers: the number of bytes left staged in
+//     h2_frame_buf on success (carry clear), or 0 if the frame was too
+//     large to stage and has already been written.
+//   x0 — either: errno on failure (carry set), or H2_ERR_INTERNAL_ERROR
+//     if the header block doesn't fit the buffer
 //
 // Clobbered Registers:
 //   x0-x5, x9-x11, x13, x19-x24 (saved/restored)
@@ -34,6 +58,8 @@
 // Stack Usage:
 //   64 bytes: stp x19, x20, [sp, #-64]!; stp x21, x22, [sp, #16];
 //   stp x23, x24, [sp, #32]; str x30, [sp, #48]
+//   ([sp, #56] holds the stage/write flag that picks the entry point's
+//   behaviour at the end of the shared encoder)
 // ─────────────────────────────────────────────────────────────────────
 
 .data
@@ -54,12 +80,24 @@ h2_cr_buf:
 
 .text
 .align 2
+.global h2_stage_headers
+h2_stage_headers:
+    stp x19, x20, [sp, #-64]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    str x30, [sp, #48]
+    mov x9, #1
+    str x9, [sp, #56]       // stage the frame if it is small enough
+    b .Lh2wh_entry
+
 .global h2_write_headers
 h2_write_headers:
     stp x19, x20, [sp, #-64]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     str x30, [sp, #48]
+    str xzr, [sp, #56]      // always write
+.Lh2wh_entry:
     mov x19, x0             // fd
     mov x20, x1             // response
     mov x21, x2             // stream id
@@ -224,15 +262,29 @@ h2_write_headers:
     strb w4, [x13, #7]
     strb w3, [x13, #8]
 
+    // x23 = HPACK block length; the whole frame is 9 bytes more
+    add x23, x23, #H2_WIRE_HEADER_LEN
+
+    // ── stage, or write ──
+    // A staged frame stays in h2_frame_buf and rides out with the first
+    // DATA frame in h2_write_body's writev — one syscall for the whole
+    // response instead of two.
+    ldr x9, [sp, #56]
+    cbz x9, .Lh2wh_flush
+    cmp x23, #H2_HEADERS_STAGE_MAX
+    b.hi .Lh2wh_flush       // too big to fold — send it on its own
+    cmn xzr, xzr            // success — carry clear
+    mov x0, x23             // bytes left staged in h2_frame_buf
+    b .Lh2wh_done
+.Lh2wh_flush:
     // ── one write — header + block can't be split by a partial write ──
     mov x0, x19
     adr_l x1, h2_frame_buf
-    mov x2, #H2_WIRE_HEADER_LEN
-    add x2, x2, x23
+    mov x2, x23
     bl write_all
     b.cs .Lh2wh_err
     cmn xzr, xzr            // success — carry clear
-    mov x0, #0
+    mov x0, #0              // nothing staged
     b .Lh2wh_done
 .Lh2wh_too_big:
     cmp xzr, xzr            // failure — carry set
