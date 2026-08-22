@@ -77,6 +77,26 @@ transport_raw_obj := $(OBJ_DIR)/transport_raw_read.o
 # only be a way of pretending the driver has fewer dependencies than
 # it has. src/data.S (the HTTP buffers) is still not linked: the TLS
 # module deliberately keeps its own scratch buffers.
+# The HTTP/1 request fuzzer (Step 8) drives the parse module, the path
+# filters and the keep-alive predicate. Named file by file, like the
+# record fuzzer and for the same reason: a failure should name
+# parse_path, not "the server". src/data.S comes along because
+# parse_request fills the `request` struct that lives in it, and
+# src/parse/data.S because filename_buf/query_buf/authority_buf are the
+# buffers the invariants are about. src/parse/parse_h2_path.S is
+# deliberately left out — it belongs to the HTTP/2 side of the seam.
+http_parse_srcs := parse_request.S parse_path.S parse_header_end.S \
+                   get_header_field.S parse_range.S data.S
+http_parse_objs := $(patsubst %.S,$(OBJ_DIR)/httpparse_%.o,$(http_parse_srcs))
+http_file_srcs  := decode_url.S check_path_safety.S check_path_traversal.S
+http_file_objs  := $(patsubst %.S,$(OBJ_DIR)/httpfile_%.o,$(http_file_srcs))
+http_misc_objs  := $(OBJ_DIR)/httpsarm_verify_http_version.o \
+                   $(OBJ_DIR)/http1_keep_alive.o \
+                   $(OBJ_DIR)/httptop_data.o \
+                   $(OBJ_DIR)/util_streqn_i.o $(OBJ_DIR)/util_atoi_n.o
+http_objs := $(http_parse_objs) $(http_file_objs) $(http_misc_objs) \
+             $(util_memcpy_obj)
+
 tls_all_srcs   := $(call rwildcard,../../src/tls,*.S)
 tls_all_objs   := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tlsmod_%.o,$(tls_all_srcs))
 transport_srcs := $(call rwildcard,../../src/transport,*.S)
@@ -160,6 +180,28 @@ $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+.SECONDARY: $(http_objs)
+
+$(OBJ_DIR)/httpparse_%.o: ../../src/parse/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/httpfile_%.o: ../../src/file/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/httpsarm_%.o: ../../src/sarm/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/http1_%.o: ../../src/http1/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/httptop_%.o: ../../src/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 .SECONDARY: $(tls_all_objs)
 
 $(OBJ_DIR)/tlsmod_%.o: ../../src/tls/%.S | $(OBJ_DIR)
@@ -213,6 +255,14 @@ $(OBJ_DIR)/test_fuzz_tls_record: test_fuzz_tls_record.c $(HELPERS) $(HARNESS) $(
 # precisely so the two are not the same code.
 $(OBJ_DIR)/test_fuzz_tls_handshake: test_fuzz_tls_handshake.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) $(LDFLAGS) -o $@
+
+# The HTTP/1 fuzzer links its own reply_status (test_fuzz_http.c): four
+# of the routines under test answer some malformed inputs by tail-
+# branching to it rather than returning, and in the server that call
+# ends the connection. The harness's version records the status and
+# unwinds, which is what turns those escapes into checkable outcomes.
+$(OBJ_DIR)/test_fuzz_http: test_fuzz_http.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(http_objs) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(http_objs) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

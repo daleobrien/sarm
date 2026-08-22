@@ -49,11 +49,14 @@ suites that run each crypto routine and an independent C reference over
 hundreds of thousands of random vectors, and overflow suites that feed a
 hostile length corpus to the real HPACK and HKDF entry points with a guard page
 immediately after the input, and fuzzers that run millions of generated TLS
-records through the record layer and millions of generated ClientHellos,
-flights and client Finished messages through the handshake and its driver. The differential suites take a seed and a
+records through the record layer, millions of generated ClientHellos,
+flights and client Finished messages through the handshake and its driver, and
+millions of generated HTTP/1 request headers through the parse module, the path
+filters and the keep-alive predicate. The differential suites take a seed and a
 multiplier — `SARM_DIFF_SEED=0x1234` to replay a run, `SARM_DIFF_ITERS=100 make
 test-security` for a long soak; the overflow suites need no environment at all.
-The fuzz suites (`test_fuzz_tls_record`, `test_fuzz_tls_handshake`) take
+The fuzz suites (`test_fuzz_tls_record`, `test_fuzz_tls_handshake`,
+`test_fuzz_http`) take
 `SARM_FUZZ_MULT=100` for a long soak, `SARM_FUZZ_STATS=1`
 for the outcome histogram that shows which branches the corpus is reaching, and
 `SARM_FUZZ_SEED=<s> SARM_FUZZ_CASE=<i>` to replay one case in-process under a

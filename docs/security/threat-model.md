@@ -160,7 +160,7 @@ failure. It is the second-highest-value fuzz target.
 |---|---|---|---|
 | request bytes read | `src/sarm/child.S:127-137` | `BUF_SIZE` (16384); buffer full without `\r\n\r\n` → 431 | `buf` (16385 B, rounded) |
 | header terminator scan | `src/parse/parse_header_end.S` | bounded by bytes read | — |
-| path | `src/parse/parse_path.S` | 4096 cap → 414; `DOCROOT` prefix prepended; repeated slashes collapsed | `filename_buf` (4097 B) |
+| path | `src/parse/parse_path.S` | 4096 cap → 414; `DOCROOT` prefix prepended; repeated slashes collapsed; reads bounded by the length argument (three off-by-ones fixed in Step 8, observation 16) | `filename_buf` (4097 B) |
 | query string | `parse_path.S` | `query_buf_size` (4096) | `query_buf` |
 | `Host:` / `:authority` | `get_header_field.S`, `h2_build_request.S` | `AUTHORITY_BUF_SIZE` (256) | `authority_buf` (257 B) |
 | `Range:` value | `parse_range.S`, `h2_parse_range.S`, `atoi_n.S` | resolved against the embedded entry size by `h2_resolve_range.S` | `response` range fields |
@@ -173,7 +173,9 @@ Path safety is four sequential filters — `parse_path` → `decode_url` →
 (a segment exactly `..` is rejected; `foo..txt` and `...` are allowed). Because
 lookup is a scan of an embedded table and never an `open`, traversal failure is
 a 404-class outcome rather than a filesystem escape — but the filters are still
-the tested contract (`tests/test_security.sh`).
+the tested contract (`tests/test_security.sh`, and since Step 8 the `filters`
+and `front_door` campaigns, which check each filter against a reference and
+then assert that nothing surviving all three carries a `..` segment).
 
 ### 3.5 Length arithmetic notes
 
@@ -436,8 +438,15 @@ did not ask for keep-alive, or the request said `Connection: close`.
 Refusing any request with a body or `Transfer-Encoding` on a kept-alive
 connection is what keeps request smuggling out of scope structurally rather
 than by parsing carefully — there is no second interpretation of a message
-boundary to disagree about. Step 8's smuggling corpus should confirm that
-rather than assume it.
+boundary to disagree about. **Confirmed in Step 8**: the `keepalive` campaign
+in `tests/security/test_fuzz_http.c` checks the whole rule above as an iff
+against a reference, and separately asserts on every kept-alive verdict that a
+reference scan of the same buffer finds neither `Content-Length` nor
+`Transfer-Encoding`. The `header_end` campaign covers the other half of the
+question — that the request boundary the server computes is the first
+`\r\n\r\n` and not some later one. See `fuzzing.md` §§15-22, and
+observation 17 for the one thing the predicate does that its header comment
+does not admit to.
 
 `http1_reset_request` is the single audited place clearing per-request state:
 `request`, `response`, the filename/query/authority/range/header buffers, the
@@ -590,7 +599,34 @@ on by Step 1.
    before the client's Finished (RFC 8446 Appendix D.4 requires tolerating
    them and sets no limit). A peer can hold a handshake open indefinitely with
    6-byte records. → Step 12.
-15. **`no_fork` mode reuses one process across connections** without clearing
+16. **`parse_path` read one byte past its length argument, in three
+    places.** Found in Step 8 by the `path` campaign, case 38, against a guard
+    page, and fixed in the same step. The filename copy loop's bound was
+    `b.hi` where `x23` is the index of the byte about to be loaded; the
+    "if / is the last char in the header" check had the same off-by-one; and
+    the `" /"` search window is 17 bytes wide (the 16-byte test is made after
+    the load) while the minimum length it required was 16. Not reachable from
+    `parse_request` — `child.S` NUL-terminates `buf` past the header, and a
+    header ends `\r\n\r\n` so the copy loop stops at the `\r` — but both
+    reasons are properties of the caller, not of the routine. → fixed; see
+    `fuzzing.md` §16.
+17. **`http1_should_keep_alive` is not the pure predicate its header says it
+    is**, and the order of its checks is load-bearing. It calls
+    `get_header_field`, which answers a header name that is a strict prefix of
+    the one it wants (`Content-Lengths:` while looking for `Content-Length`) by
+    branching to `reply_status(400)` — from the middle of
+    `http1_write_response`, which is encoding a response at the time. The
+    client still receives exactly one response, because the decision is made
+    before the `writev`. What stops the 400's own encode from escaping again is
+    that the status check (400/408/413/431/500 → close) runs *before* the
+    header lookups; reorder those two blocks and the request becomes an
+    infinite loop. → recorded; see `fuzzing.md` §17.
+18. **`decode_url` requires a length of at least 1.** Its loop loads the first
+    byte before consulting the length and tests the decremented length for
+    equality with zero, so 0 underflows past the test. Every caller passes at
+    least the 4-byte docroot; the precondition is now in the routine's header
+    comment. → recorded, no action.
+19. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
 

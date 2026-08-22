@@ -12,7 +12,13 @@
 //
 // Input/Arguments:
 //   x0 -> encoded string
-//   x1 -> length of encoded string
+//   x1 -> length of encoded string, which must be >= 1. The loop loads
+//         the first byte before consulting the length and then tests
+//         the decremented length for equality with zero, so a length of
+//         0 underflows past the test and keeps decoding in place until
+//         it meets a NUL byte or a '%'. Every caller passes at least
+//         the 4-byte docroot; recorded in docs/security/fuzzing.md §17
+//         rather than checked here.
 //
 // Output/Returns:
 //   x0 -> decoded string (decoded in-place), or 0 on rejection

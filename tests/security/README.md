@@ -441,3 +441,65 @@ one that is accepted.
 | `TLS_HS_FAILED` computed but not stored | `flight`: *failed without leaving tls_hs_state at TLS_HS_FAILED* |
 | `tls_parse_client_hello` drops its `cipher_suites` bounds check | `client_hello`: **CRASH: SIGBUS** at case 79 of 2,000,000 — the guard page |
 | `tls_record_decrypt` accepts inner type 24 | `inner_plaintext`: *accepted an inner plaintext with no valid content type* — and **none** of the six Step 6 campaigns notice |
+
+## test_fuzz_http — HTTP/1 request parsing (Step 8)
+
+Seven campaigns, in `test_fuzz_http.c`. Steps 6 and 7 fuzzed what a peer says
+before the server knows who they are; this fuzzes what they say afterwards —
+which on the plaintext port is the first thing they say. The design and the
+evidence are in [docs/security/fuzzing.md](../../docs/security/fuzzing.md)
+§§15–22.
+
+| campaign | target |
+|---|---|
+| `header_end` | `parse_header_end` against a reference: the index it returns must be the first `\r\n\r\n` and nothing else — it is where every downstream length comes from |
+| `header_field` | `get_header_field` against a reference — the line walk, the `:` rule, the whitespace skip, and the three shapes it answers with 400 |
+| `front_door` | the whole entry path as `child.S` drives it: `parse_header_end` → `verify_http_version` → `parse_request`, checked against the output contract and the three `.bss` buffers behind it |
+| `path` | `parse_path` against a reference, over request lines whose length is *not* tied to a terminator, ending flush against a guard page |
+| `filters` | `decode_url` → `check_path_safety` → `check_path_traversal`, each against a reference, plus the property the three of them exist to provide |
+| `range` | `parse_range`, the one place an HTTP/1 header value becomes an integer |
+| `keepalive` | `http1_should_keep_alive` as an iff against the rule in `src/http1/README.md` — where the smuggling argument in `threat-model.md` §7.3 lives |
+
+```bash
+./tests/security/_obj/test_fuzz_http                    # ~1.6M cases, ~5 s
+SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_http # 160M cases
+SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_http # outcome histogram
+```
+
+### Two things this target needs that the TLS ones did not
+
+**A `reply_status` of its own.** `parse_path`, `get_header_field` and
+`verify_http_version` answer some malformed inputs by tail-branching to
+`reply_status` rather than returning — in the server that call writes an error
+page and ends the connection. The suite links its own `reply_status`, the only
+one in the binary: it records the status and `longjmp`s back to the case loop,
+which turns "which inputs escape, with which code" into an outcome the
+campaign checks and the histogram counts. Every campaign requires its escapes
+to still happen; a change that stopped 414 from being reachable would fail as
+`VACUOUS`.
+
+**Poison canaries instead of a guard page on the output side.**
+`filename_buf`, `query_buf` and `authority_buf` are the server's own globals,
+so the harness cannot place them against `PROT_NONE`. Each is allocated larger
+than the bound its writer enforces; the slack is filled with 0xA5 before every
+case and checked after. The input side still gets the guard page.
+
+### Verified by sabotage
+
+| break | result |
+|---|---|
+| `parse_header_end` drops the `\r` restart in its scan | `header_end`: *index is not the first \r\n\r\n*, case 50 |
+| `get_header_field` accepts a name not followed by `:` | `header_field`: *returned where the reference replied 400*; `front_door`: *an authority with no Host header* |
+| `parse_path`'s copy-loop bound put back to `b.hi` (the defect this step found) | `path`: **CRASH: SIGBUS** at case 38 — the guard page |
+| `parse_path`'s filename bound widened past `filename_buf` | `front_door`: *wrote past filename_buf…*; `path`: *returned where the reference escaped* |
+| `decode_url` allows a decoded NUL byte | `filters`: *accepted an escape the reference rejected*, case 5 |
+| `check_path_traversal` looks for three dots instead of two | `filters`: *verdict differs from the reference*; `front_door`: *accepted a path with a ".." segment* |
+| `parse_range`'s 19-digit cap raised to 31 | `range`: *wrote past range_buf* — the canary |
+| `http1_should_keep_alive` stops looking for `Transfer-Encoding` | `keepalive`: *verdict differs from the rule in src/http1/README.md*, case 14 |
+| `parse_request`'s authority bound widened past `authority_buf` | `front_door`: *wrote past … authority_buf …* |
+
+Nine breaks, nine catches, across five mechanisms: a differential verdict, a
+guard-page fault, a `.bss` canary, a contract invariant on the parsed request,
+and the escape status. The authority row is the reason the generator emits Host
+values around 256 bytes — it was **missed** on the first attempt, because
+nothing in the corpus was long enough to reach the truncation branch at all.

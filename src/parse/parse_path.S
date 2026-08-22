@@ -12,7 +12,10 @@
 //
 // Input/Arguments:
 //   x0 -> HTTP header from client ("GET /...")
-//   x1 -> length of header
+//   x1 -> length of header. Every read this routine makes is inside
+//         [x0, x0 + x1); a header shorter than 17 bytes is answered 400
+//         without being read past, since the " /" search window is 17
+//         bytes wide (docs/security/fuzzing.md §16).
 //   x2 -> boolean: 1 = default to "index.html", 0 = no default filename
 //
 // Output/Returns:
@@ -41,7 +44,11 @@ parse_path:
     mov x22, x1 // save header length in x22
     mov x20, x2 // save bool option in x20.
 
-    cmp x22, #16 // make sure the header is at least 16 bytes long
+    // The scan below examines indices 0 through 16 — the 16-byte test
+    // is made *after* the load — so 17 is the shortest header whose
+    // whole window is inside the buffer the caller gave us. Anything
+    // shorter is answered here rather than read past.
+    cmp x22, #17
     b.lo L400
 
     mov x25, #0
@@ -83,10 +90,13 @@ Lchar_found:
     cmp w2, #' '
     b.ne Lno_match
 
-    // if / is the last char in the header, it's deffo malformed.
+    // if / is the last char in the header, it's deffo malformed —
+    // b.hs, not b.hi: at x23 == x22 there is no byte after the '/' to
+    // read, which is exactly the case this rejects. (The asterisk form
+    // below re-checks the same byte for itself, so it is unaffected.)
     add x23, x23, #1
     cmp x23, x22
-    b.hi Lno_match
+    b.hs Lno_match
 
     cmp w3, #'*'
     b.eq Lasterisk
@@ -148,9 +158,11 @@ Lfilename_loop:
     add x23, x23, #1 // increment the total index
 
 2:
-    // bounds check!
+    // bounds check! x23 is the index of the byte Lfilename_loop is about
+    // to load, so the length is reached at x23 == x22 and not one later
+    // — b.hs, not b.hi.
     cmp x23, x22
-    b.hi Lno_match
+    b.hs Lno_match
 
     b Lfilename_loop
 
