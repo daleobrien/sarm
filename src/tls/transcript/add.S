@@ -56,15 +56,13 @@ tls_transcript_add:
     strb    w3, [sp, #26]               // length >> 8
     strb    w20, [sp, #27]              // length & 0xff
 
-    adrp    x0, tls_transcript_ctx@PAGE
-    add     x0, x0, tls_transcript_ctx@PAGEOFF
+    adr_l   x0, tls_transcript_ctx
     add     x1, sp, #24
     mov     x2, #4
     bl      sha256_update               // absorb the 4-byte header
 
     // ── the message body ──
-    adrp    x0, tls_transcript_ctx@PAGE
-    add     x0, x0, tls_transcript_ctx@PAGEOFF
+    adr_l   x0, tls_transcript_ctx
     mov     x1, x19
     mov     x2, x20
     bl      sha256_update               // len == 0: no-op, msg ignored

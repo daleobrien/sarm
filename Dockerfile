@@ -10,7 +10,7 @@ COPY build_err_pages.sh .
 COPY src src
 COPY Makefile .
 
-RUN make
+RUN make production
 
 FROM scratch
 COPY --from=builder /app/sarm /sarm

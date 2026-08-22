@@ -29,6 +29,5 @@
 .align 2
 .global tls_transcript_init
 tls_transcript_init:
-    adrp    x0, tls_transcript_ctx@PAGE
-    add     x0, x0, tls_transcript_ctx@PAGEOFF
+    adr_l   x0, tls_transcript_ctx
     b       sha256_init                 // tail call: seed the context

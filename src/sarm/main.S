@@ -370,7 +370,15 @@ sig_tramp:
 #endif
 
 #ifdef __linux__
+// Linux enters the ELF entry point raw: the kernel does not fill x0/x1,
+// it hands over a stack with argc at [sp] and argv immediately after it
+// (x0 is undefined here — reading it as argc walks whatever the stack
+// happens to hold). Darwin gets here through dyld, which calls this as
+// main(argc, argv, ...) with the arguments already in x0/x1, so only
+// Linux needs the unpack.
 _start:
+    ldr x0, [sp]                // argc
+    add x1, sp, #8              // argv
 #endif
 _main:
     // ── argument scan (Plan.md Phase 3, Step 14) ──────────────────────

@@ -42,8 +42,7 @@ tls_transcript_hash:
     add     x1, sp, #16                 // scratch ctx (16-aligned)
 
     // ── copy tls_transcript_ctx into the scratch (14 x 8-byte pairs) ──
-    adrp    x2, tls_transcript_ctx@PAGE
-    add     x2, x2, tls_transcript_ctx@PAGEOFF
+    adr_l   x2, tls_transcript_ctx
     ldp     x3, x4, [x2, #0]
     stp     x3, x4, [x1, #0]
     ldp     x3, x4, [x2, #16]

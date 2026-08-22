@@ -3,19 +3,23 @@
 // macros
 
 #ifdef __linux__
-// Linux GAS uses :pg_hi21: and :lo12: relocations
+// ELF: a bare symbol on adrp already means its page, and :lo12: is the
+// page offset. GNU as also spells the first one :pg_hi21:, but clang's
+// integrated assembler does not accept that form, so the bare symbol is
+// used here — it assembles under both, which is what lets the tree be
+// cross-assembled for Linux from a macOS host.
 .macro adr_l, reg, sym
-    adrp \reg, :pg_hi21:\sym
+    adrp \reg, \sym
     add \reg, \reg, :lo12:\sym
 .endm
 
 .macro ldr_l reg, sym, scratch=x9
-    adrp \scratch, :pg_hi21:\sym
+    adrp \scratch, \sym
     ldr \reg, [\scratch, :lo12:\sym]
 .endm
 
 .macro str_l src, sym, scratch=x9
-    adrp \scratch, :pg_hi21:\sym
+    adrp \scratch, \sym
     str \src, [\scratch, :lo12:\sym]
 .endm
 #else
