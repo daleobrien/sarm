@@ -36,7 +36,7 @@ LDFLAGS := -arch arm64
 
 OBJ_DIR := _obj
 
-HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h overflow_common.h
+HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h overflow_common.h fuzz_common.h
 COMMON_OBJS := $(OBJ_DIR)/guard_pages.o
 
 # ── assembly under test ─────────────────────────────────────────────
@@ -60,12 +60,23 @@ hpack_srcs := $(call rwildcard,../../src/hpack,*.S)
 hpack_objs := $(patsubst ../../src/hpack/%.S,$(OBJ_DIR)/hpack_%.o,$(hpack_srcs))
 util_memcpy_obj := $(OBJ_DIR)/util_memcpy.o
 
+# The TLS record fuzzer (Step 6) drives the record layer against
+# generated input. Named file by file rather than by wildcard: the
+# application_read/application_write specializations reach into
+# tls_state and the sequence counters, which would drag the whole TLS
+# module into a harness whose whole point is that a failure names
+# `tls_record_parse` and not "the server".
+tls_record_srcs := parse.S decrypt.S encrypt.S nonce.S write.S read_record.S
+tls_record_objs := $(patsubst %.S,$(OBJ_DIR)/tls_record_%.o,$(tls_record_srcs))
+transport_raw_obj := $(OBJ_DIR)/transport_raw_read.o
+
 TEST_GUARD_PAGES  := $(OBJ_DIR)/test_guard_pages
 BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildcard test_bounds_*.c))
 DIFF_TESTS        := $(patsubst test_diff_%.c,$(OBJ_DIR)/test_diff_%,$(wildcard test_diff_*.c))
 OVERFLOW_TESTS    := $(patsubst test_overflow_%.c,$(OBJ_DIR)/test_overflow_%,$(wildcard test_overflow_*.c))
+FUZZ_TESTS        := $(patsubst test_fuzz_%.c,$(OBJ_DIR)/test_fuzz_%,$(wildcard test_fuzz_*.c))
 
-TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS) $(OVERFLOW_TESTS)
+TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS) $(OVERFLOW_TESTS) $(FUZZ_TESTS)
 
 all: test
 
@@ -127,6 +138,16 @@ $(OBJ_DIR)/util_%.o: ../../src/util/%.S | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+.SECONDARY: $(tls_record_objs) $(transport_raw_obj)
+
+$(OBJ_DIR)/tls_record_%.o: ../../src/tls/record/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 # Every suite includes tests/unit/test_harness.h, so a change there must
 # rebuild them, exactly as in tests/unit/Makefile.
 HARNESS := ../unit/test_harness.h
@@ -157,6 +178,15 @@ $(OBJ_DIR)/test_overflow_hpack: test_overflow_hpack.c $(HELPERS) $(HARNESS) $(CO
 
 $(OBJ_DIR)/test_overflow_crypto: test_overflow_crypto.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(COMMON_OBJS) $(crypto_objs) $(LDFLAGS) -o $@
+
+# The fuzz suites (Step 6) run millions of generated cases through the
+# real routines. Built at -O2: the harness itself is the hot loop, and
+# unlike the bounds suites nothing here dereferences a pointer the
+# compiler could reasonably decide is undefined — the out-of-bounds
+# accesses under test happen inside the assembly, where no optimiser
+# is involved.
+$(OBJ_DIR)/test_fuzz_tls_record: test_fuzz_tls_record.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(tls_record_objs) $(crypto_objs) $(util_memcpy_obj) $(transport_raw_obj) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(tls_record_objs) $(crypto_objs) $(util_memcpy_obj) $(transport_raw_obj) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

@@ -103,6 +103,15 @@ compares `cursor + field_len` against the applicable end before reading
 It is also the single largest pre-auth parser in the tree and the highest-value
 fuzz target (Step 7).
 
+**Fuzzed in Step 6** (`docs/security/fuzzing.md`): the record row of this table
+— `tls_record_parse`, `tls_record_decrypt`, and the two `tls_read_record`
+entrypoints that feed them off a socket — now has a standalone harness in
+`tests/security/test_fuzz_tls_record.c`. Over 100 million generated cases per
+campaign, with every record ending flush against a guard page and every output
+buffer sized to exactly what the contract permits, no crash, no hang, and no
+invariant violation. The handshake-message and ClientHello rows are still
+untested this way; they are Step 7.
+
 ### 3.2 Record-layer staging
 
 `transport_read` must return exactly what its caller asked for, but a decrypted
@@ -532,7 +541,18 @@ on by Step 1.
    reference — but a security-critical routine that is exercised only by its
    own tests will drift from the two copies that are exercised for real. →
    Step 13.
-11. **`no_fork` mode reuses one process across connections** without clearing
+11. **`tls_read_record` cannot return `TLS_RECORD_ERR_BOUNDS`.** Found in
+   Step 6 by the fuzzer's vacuity check, not by reading the code. It reads
+   exactly `total` bytes off the wire and then hands `tls_record_parse` a
+   buffer length of exactly `total`, so parse's "fragment runs past the end of
+   the buffer" branch is unreachable from the network path; the check standing
+   in its place is the size test against the destination buffer
+   (`_LENGTH`). Nothing is wrong — the two entrypoints do carry a real bounds
+   check between them — but the record layer's documented error set is wider
+   than any caller can actually observe, and one of parse's five branches is
+   dead code from the perspective of the socket. Worth stating so it is not
+   mistaken for coverage. → recorded, no action.
+12. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
 

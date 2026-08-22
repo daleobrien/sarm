@@ -319,3 +319,72 @@ Each fix was reverted in turn and the corpus re-run:
 
 The `OUT OF BOUNDS` rows are the MMU, not the test, confirming the
 pre-Step-5 code really did read past the buffer it was given.
+
+## test_fuzz_* — generated inputs (Step 6)
+
+Steps 3–5 test the inputs somebody thought of. Step 6 tests the others:
+`test_fuzz_tls_record.c` runs six campaigns against the TLS record layer — the
+first code an unauthenticated peer reaches. The design, the invariants and the
+evidence are in
+[docs/security/fuzzing.md](../../docs/security/fuzzing.md); the summary is
+here.
+
+| campaign | target |
+|---|---|
+| `parse` | `tls_record_parse` over bytes ending flush against a guard page |
+| `decrypt` | `tls_record_decrypt` on records that essentially never authenticate |
+| `roundtrip` | `tls_record_encrypt` → `tls_record_decrypt` must return exactly what went in |
+| `tamper` | seal a record, flip one bit anywhere in it, require the open to fail |
+| `read_record` | `tls_read_record` against a real `socketpair` fed adversarial bytes |
+| `read_prefilled` | `tls_read_record_prefilled`, whose shortfall arithmetic runs twice on wire-derived values |
+
+Default run: ~1.14M cases in about 1.4 s, no environment needed.
+
+```bash
+SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_tls_record   # 114M cases
+SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_tls_record   # outcome histogram
+SARM_FUZZ_SEED=<s> SARM_FUZZ_CASE=<i> ./tests/security/_obj/test_fuzz_tls_record
+```
+
+The last one replays a single case **in-process** — no fork, no handler — so a
+fault lands on the faulting instruction under a debugger. Every failure the
+suite reports ends with that exact command.
+
+### Three things it checks that "no crash" does not
+
+**The output contract, on every case.** A parser can return success while
+handing back a fragment pointer past the end of the buffer, and nothing crashes
+until a later caller uses it. Each campaign checks carry, error-code range,
+fragment placement and every length relation the module README publishes.
+
+**That a rejected record leaked nothing.** The decrypt output buffer is filled
+with poison before each case and verified byte-for-byte afterwards on every
+failure. `decrypt.S` claims a bad tag leaves the output untouched; this is that
+claim, tested, a few million times.
+
+**That the corpus still reaches the interesting paths.** A generator that
+drifts into producing only malformed input satisfies every invariant on the
+accepting path vacuously, and stays green. So each campaign declares the
+outcomes it must reach, and an empty one fails it:
+
+```
+✗ read_record — VACUOUS: 20000 cases and not one reached "past the buffer"
+```
+
+That fired on the first run, and it was right: `tls_read_record` structurally
+cannot produce `BOUNDS`, because it hands `tls_record_parse` a buffer length
+equal to the record length it just read. See `fuzzing.md` §4.
+
+### Verified by sabotage
+
+| break | result |
+|---|---|
+| `tls_record_parse` drops its fragment-past-the-buffer check | `parse`: *success with a record running past the end of the buffer* |
+| `tls_record_parse` accepts content type 24 | `parse`, `read_record`, `read_prefilled`, all at the same case index |
+| `tls_record_decrypt` drops its bounds check | `decrypt`, `tamper`: **CRASH: SIGBUS** — the guard page |
+| `aes_gcm_decrypt` skips the tag comparison | `decrypt`: *wrote plaintext for a record it then rejected*; `roundtrip`: *accepted under the wrong sequence number*; `tamper`: *accepted a record with a flipped bit* |
+| `raw_read_exact` drops its EOF check | `read_record`, `read_prefilled`: **HANG**, caught by the heartbeat within seconds |
+
+Four distinct detection mechanisms — a returned-value invariant, a guard-page
+fault, a leaked-plaintext check, and the progress deadline — and the MAC row
+was caught by three of them independently.
