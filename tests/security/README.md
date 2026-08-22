@@ -577,7 +577,19 @@ write "\x03\x00\x40..."             ──▶ reader wakes with the rest
 
 Every wait is bounded and the feeder writes anyway when the bound expires, so a
 reader that stops reading stalls nothing; the campaign's own deadline is what
-catches a genuine hang. Whether each boundary was real is **counted**, not
+catches a genuine hang.
+
+The feeder then says EOF — `shutdown(wfd, SHUT_WR)` — and does *not* exit on
+saying it. On this kernel that message is sometimes not delivered to a thread
+already asleep inside `read()`: the state is set, the wakeup is lost, and the
+campaign hangs until its deadline. So the feeder stays alive until the reader
+says it has stopped reading, prodding the reading thread with `SIGURG` every
+2 ms until it does; the `EINTR` retry every read path in the tree already does
+re-enters `read()` and collects the EOF that was there all along. The prods are
+counted in the `EOF wakeups lost (prodded)` bucket. See
+[fuzzing.md §24](../../docs/security/fuzzing.md).
+
+Whether each boundary was real is **counted**, not
 assumed — `real split boundaries` is a required bucket, so a suite that
 degraded into writing everything at once would fail as `VACUOUS` rather than
 pass while testing nothing. In practice 95–99% of boundaries are confirmed.

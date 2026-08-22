@@ -346,12 +346,22 @@ produced two hangs within a minute:
 ✗ prefilled — HANG: no progress for 60s at case 6778
 ```
 
-The mechanism is somewhere in `frag_common.h`'s feeder — a reader waiting on a
-socket that nobody will write to or close again — and finding it belongs to
-Step 9's suite rather than to this one. What Step 14 contributed is the part
+The mechanism is somewhere in `frag_common.h`'s feeder, and finding it belongs
+to Step 9's suite rather than to this one. What Step 14 contributed is the part
 that was missing before: a failure with a stack, an fd state, a preserved
 input, and the knowledge that it predates the change in front of it rather
 than being caused by it.
+
+**Since found and fixed** — [fuzzing.md](fuzzing.md) §24. The guess above is
+half right: the reader is indeed waiting on a socket nobody will write to
+again, but it *had* been closed for writing, and the EOF was sitting in the
+socket's state the whole time. `shutdown(SHUT_WR)` on an `AF_UNIX` socketpair
+does not always wake a peer already asleep inside `read()` on this kernel, and
+the feeder had shut down and exited believing the job done. The feeder now
+outlives its last write and prods the reading thread until the reader confirms
+it has stopped reading, so the EOF cannot go unheard whatever the scheduler
+does. Six concurrent runs at `--mult 8` pass, with the prod firing 17 times —
+seventeen cases that were hangs before.
 
 ### And it tested this step's own tooling
 
@@ -401,12 +411,6 @@ than test time. Run it on the machines and hours nobody is waiting on.
   does not have: preserving that hang properly wants a corpus format carrying
   the split plan as well as the bytes. Until then the harness refuses the
   question (exit 2) rather than answering it wrongly.
-* **`test_frag_socket` can hang, and nobody knows why yet.** §6: three
-  occurrences, three campaigns, blocked in a `read()` with both ends of the
-  socketpair open and no feeder thread; reproducible on the commit before this
-  one; not reproducible from the case alone. It belongs to Step 9's suite
-  rather than to this one, and it is recorded here because this is where the
-  evidence is.
 * **`FUZZ_INPUT_MAX` is 20480 bytes.** Larger inputs are captured truncated and
   flagged. Every campaign in this tree generates less than that; a future one
   that does not will need this raised, and a truncated finding is a finding

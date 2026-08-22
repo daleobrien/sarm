@@ -960,6 +960,90 @@ campaign's own heartbeat deadline stays the thing that reports a hang. Bounded
 waiting is also why a *blocked* reader and a *finished* one need not be told
 apart: getting it wrong costs one unconfirmed boundary, not a deadlock.
 
+### The EOF that was said and not heard
+
+That last paragraph was true of every wait *the feeder* performs, and it was
+still not enough, because the delivery ends with a wait the feeder does not
+perform: the reader's. When the plan is exhausted the feeder calls
+`shutdown(wfd, SHUT_WR)` — there is nothing more coming, so a reader still
+asking for bytes gets EOF instead of blocking forever. On this kernel that
+message is **sometimes not delivered to a thread already asleep inside
+`read()`**. The state is set correctly; the wakeup that should have ended the
+sleep already in progress is lost.
+
+It is a race between the shutdown and the reader's descent into the sleep, so
+it needs both threads runnable at the same instant on a machine with something
+else to do. On an idle box it essentially never happens. Under `make test`
+beside a soak, or four concurrent copies of this suite, it happened within a
+minute — and what it looked like was the suite hanging until the 300-second
+no-progress deadline killed the campaign
+([continuous-fuzzing.md](continuous-fuzzing.md) §6):
+
+```
+main -> tls_read_record_prefilled -> .Lraw_read_loop     blocked in read()
+lsof: fd 3, fd 4 — both ends of the socketpair still open
+sample: one thread. The feeder has finished and gone.
+```
+
+Which reads like a contradiction, and is the reason it took a while: the feeder
+had finished, so the shutdown *had* been called, so the EOF was there to be
+had. Attaching to a stuck child settles it in two lines —
+
+```
+(lldb) expr (int)shutdown(4, 1)          # already shut down
+(int) $1 = -1                            # ENOTCONN
+(lldb) expr (int)close(4)                # any new event on the socket
+(int) $0 = 0                             # …and the process runs on
+```
+
+— and a 90-line model of this feeder measures it: **61 lost wakeups in 320,000
+deliveries** across 16 concurrent processes, and in every one of the 61 the
+*next* `read()` returned EOF immediately. Nothing was wrong with the socket. The
+reader was asleep on a doorbell that had already rung.
+
+So the fix is not a better way to say EOF, and not a second EOF. It is to stop
+depending on a wakeup at all. After the shutdown the feeder stays alive until
+the reader tells it the delivery is over, and while it waits it prods the
+reading thread every 2 ms with `SIGURG`, whose handler does nothing:
+
+```
+feeder                                    reader
+  shutdown(wfd, SHUT_WR)                    asleep in read() — wakeup lost
+  wait 2 ms for "reader done"               still asleep
+  pthread_kill(reader, SIGURG)  ──▶         read() → EINTR
+                                            raw_read_exact retries …
+                                            read() → 0, the EOF that was there
+  woken: "reader done"                    frag_close
+```
+
+The prod interrupts the sleep; the `EINTR` retry that every read path in the
+tree already does re-enters `read()`; `read()` re-reads the state and returns
+the EOF. The handler is installed without `SA_RESTART` — restarting the read
+underneath us is precisely what must not happen — and the prod repeats until
+the reader is done, so no interleaving can lose it. The reader always meets EOF
+or an error, never neither.
+
+Three details are worth naming:
+
+* **The wait is a condition variable, not a poll.** `frag_close` signals the
+  feeder before it joins, so the common case — the overwhelming majority, where
+  the EOF arrived normally — costs no signal and no 2 ms. A polled version
+  would have added up to 2 ms to every fragmented case, which at 24,000 cases
+  is most of a minute.
+* **The reference delivery needs none of this.** It is written and shut down
+  *before* the reader is handed the socket, so its EOF is already in the
+  socket's state the first time `read()` looks. No concurrency, no wakeup, no
+  race — which is also why every hang seen was in a split delivery.
+* **The prod is counted**, in the same spirit as the boundaries: `EOF wakeups
+  lost (prodded)` is a bucket (`SARM_FUZZ_STATS=1`), so the phenomenon stays
+  visible rather than being silently papered over. Six concurrent runs at
+  `SARM_FUZZ_MULT=8` show it firing 17 times — seventeen cases that were hangs
+  before, now costing a signal each.
+
+A genuine hang in the code under test is still a hang: the prod only ever
+delivers an EOF the kernel already owes the reader, and a reader that will not
+return regardless still stops the heartbeat and is still reported.
+
 Whether each boundary was real is counted rather than assumed.
 `real split boundaries` is a required bucket, so a build where `FIONREAD` did
 nothing useful would fail as `VACUOUS` rather than pass while testing nothing.
@@ -1167,6 +1251,15 @@ generalises: any future reader that grows its own loop can be pointed at
    the corpus never reached, but a routine the harness never called. Both look
    identical from outside — a green campaign — and both were found only by
    breaking something on purpose and noticing that nothing went red.
+6. **The lost EOF wakeup is worked around, not understood.** §24 establishes
+   what happens, and that the prod is sufficient; it does not establish *why*
+   `shutdown(SHUT_WR)` on an `AF_UNIX` socketpair sometimes fails to wake a
+   peer already asleep in `read()` on this kernel. The 90-line model that
+   reproduces it in isolation is the thing to hand to anyone who wants to take
+   it further. Nothing in `src/` depends on the answer — sarm's own sockets are
+   `AF_INET`, and no reader of theirs is woken by a peer inside the same
+   process — so this is a note about the harness, not a defect report against
+   the server.
 
 ---
 

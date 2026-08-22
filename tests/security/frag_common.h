@@ -43,6 +43,11 @@
 //   stalls nothing: the case still finishes and the campaign's own
 //   deadline (fuzz_common.h) is what catches a genuine hang.
 //
+//   The feeder outlives its own last write, because saying EOF and
+//   having it heard turned out to be two different things on this
+//   kernel. The long comment above `frag_kick_until_done` below is the
+//   whole story.
+//
 //   Whether each boundary was real is *counted*, not assumed:
 //   `real_boundaries` and `missed_boundaries` are tallied per case and
 //   the campaigns require the real ones to happen. A suite that
@@ -73,6 +78,7 @@
 
 #include "fuzz_common.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/ioctl.h>
@@ -180,6 +186,40 @@ static void frag_plan_gen(struct fuzz_rng *r, size_t n,
 #define FRAG_SPIN_YIELDS  20000
 #define FRAG_SPIN_SLEEPS  40          // × 250 µs = 10 ms after the spin
 
+// ── why the feeder outlives its last write ──────────────────────────
+// `shutdown(wfd, SHUT_WR)` is how the reader is told there is nothing
+// more coming, and on this kernel that message is *sometimes not
+// delivered to a thread already asleep inside read()*. The state is
+// set — a reader that re-enters read() gets 0 immediately — but the
+// wakeup that should have ended the sleep in progress is lost. It is a
+// race between the shutdown and the reader's descent into the sleep,
+// so it needs both threads runnable at the same instant on a machine
+// with something else to do: rare on an idle box, routine under
+// `make test` beside a soak, where it hung the campaign until the
+// 300-second no-progress deadline (docs/security/fuzzing.md §24, and
+// docs/security/continuous-fuzzing.md §6 for how it was first seen).
+//
+// Measured on a 90-line model of this feeder: 61 lost wakeups in
+// 320,000 deliveries across 16 concurrent processes, and in every one
+// of the 61 the *next* read returned EOF at once.
+//
+// So the fix is not a better way to say EOF — the EOF is already said.
+// It is to stop depending on a wakeup at all. After the shutdown the
+// feeder stays alive until the reader tells it the delivery is over,
+// and while it waits it prods the reading thread with a signal whose
+// handler does nothing. The prod interrupts the sleep; the retry that
+// every read path in the tree does on EINTR re-enters read(); read()
+// re-reads the state and returns the EOF that was there all along. It
+// repeats until the reader is done, so no interleaving can lose it —
+// the reader always meets EOF or an error, never neither.
+//
+// SIGURG because nothing else in the tree uses it and its default
+// disposition is to be ignored, so an unlucky stray delivery to some
+// other thread costs nothing. The handler is installed without
+// SA_RESTART: restarting the read is precisely what must not happen.
+#define FRAG_KICK_SIG   SIGURG
+#define FRAG_KICK_NS    (2 * 1000 * 1000)   // 2 ms between prods
+
 struct frag_stream {
     int       rfd;                    // hand this to the code under test
     int       wfd;
@@ -193,7 +233,57 @@ struct frag_stream {
     volatile uint64_t real_boundaries;    // reader had drained: a true split
     volatile uint64_t missed_boundaries;  // wait expired: possibly coalesced
     volatile int      wr_error;
+
+    // the reading thread, and the flag it raises when it has stopped
+    // reading. Guarded by `lock`, so the feeder's wait for it is a
+    // condition variable and not a poll: frag_close must not pay 2 ms
+    // per fragmented case for a prod that is almost never needed.
+    pthread_t       reader;
+    pthread_mutex_t lock;
+    pthread_cond_t  done_cv;
+    int             reader_done;
+    uint64_t        kicks;            // prods sent — a lost wakeup, counted
 };
+
+static void frag_kick_handler(int sig) { (void)sig; }
+
+// Install the do-nothing handler once per process. Without SA_RESTART,
+// so the signal ends the read() the reader is asleep in rather than
+// resuming it underneath us.
+static void frag_kick_arm(void)
+{
+    static int armed = 0;
+    if (armed)
+        return;
+    armed = 1;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = frag_kick_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;                  // deliberately not SA_RESTART
+    sigaction(FRAG_KICK_SIG, &sa, NULL);
+}
+
+// Wait for the reader to finish, prodding it every FRAG_KICK_NS until
+// it does. Normally the first wait is satisfied immediately — the EOF
+// arrived, the reader returned, frag_close signalled — and not one
+// signal is sent.
+static void frag_kick_until_done(struct frag_stream *s)
+{
+    pthread_mutex_lock(&s->lock);
+    while (!s->reader_done) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += FRAG_KICK_NS;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        int rc = pthread_cond_timedwait(&s->done_cv, &s->lock, &ts);
+        if (rc == ETIMEDOUT && !s->reader_done) {
+            pthread_kill(s->reader, FRAG_KICK_SIG);
+            s->kicks++;
+        }
+    }
+    pthread_mutex_unlock(&s->lock);
+}
 
 // Bytes still unread on `fd`. -1 if the kernel will not say.
 static int frag_pending(int fd)
@@ -253,6 +343,7 @@ static void *frag_feeder(void *arg)
         at = end;
     }
     shutdown(s->wfd, SHUT_WR);        // EOF for anything the reader still wants
+    frag_kick_until_done(s);          // ...and make sure it is heard
     return NULL;
 }
 
@@ -275,9 +366,19 @@ static int frag_open(struct frag_stream *s, const uint8_t *bytes, size_t n,
     s->n = n;
     s->real_boundaries = s->missed_boundaries = 0;
     s->wr_error = 0;
+    s->kicks = 0;
+    s->reader = pthread_self();       // the thread about to do the reading
+    s->reader_done = 0;
+    pthread_mutex_init(&s->lock, NULL);
+    pthread_cond_init(&s->done_cv, NULL);
+    frag_kick_arm();
     if (plan) s->plan = *plan;
     else      { s->plan.n_cuts = 0; s->plan.shape = FRAG_SHAPE_WHOLE; }
 
+    // Both failure paths below leave the mutex and condition variable
+    // alive: every caller pairs a failed frag_open with a frag_close
+    // anyway, and frag_close is where they are destroyed. Destroying
+    // them here would leave that call locking freed state.
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
         return -1;
     int sz = FRAG_SOCK_BUF;
@@ -292,6 +393,10 @@ static int frag_open(struct frag_stream *s, const uint8_t *bytes, size_t n,
     s->rfd = sv[0];
     s->wfd = sv[1];
 
+    // The reference delivery is written and shut down before the reader
+    // is handed the socket at all, so its EOF is already in the socket's
+    // state when read() first looks: there is no wakeup to lose, and no
+    // feeder to prod with.
     if (s->plan.n_cuts == 0) {
         frag_write_all(s, 0, n);
         shutdown(s->wfd, SHUT_WR);
@@ -306,14 +411,25 @@ static int frag_open(struct frag_stream *s, const uint8_t *bytes, size_t n,
     return 0;
 }
 
-// Join the feeder (bounded: every wait inside it is) and drop both
-// ends. Closing the read end first is what unblocks a feeder still
-// waiting on a reader that gave up early.
+// The reader is done with the socket. Say so first — that is what ends
+// the feeder's wait, whether it is still waiting to be told the EOF
+// landed or has yet to reach that wait at all — then close the read end,
+// which is what unblocks a feeder still writing to a reader that gave up
+// early, then join. Every wait inside the feeder is bounded or ended
+// here, so the join is too.
 static void frag_close(struct frag_stream *s)
 {
+    pthread_mutex_lock(&s->lock);
+    s->reader_done = 1;
+    pthread_cond_signal(&s->done_cv);
+    pthread_mutex_unlock(&s->lock);
+
     if (s->rfd >= 0) { close(s->rfd); s->rfd = -1; }
     if (s->threaded) { pthread_join(s->th, NULL); s->threaded = 0; }
     if (s->wfd >= 0) { close(s->wfd); s->wfd = -1; }
+
+    pthread_cond_destroy(&s->done_cv);
+    pthread_mutex_destroy(&s->lock);
 }
 
 // ── comparing two deliveries ────────────────────────────────────────

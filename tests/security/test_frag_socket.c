@@ -189,6 +189,7 @@ enum {
     B_REJECT,           // the reader refused, identically both ways
     B_SPLIT,            // at least one boundary the reader really saw
     B_MISSED,           // a boundary whose drain-wait expired
+    B_KICKED,           // EOF was set but the reader's wakeup was lost
     B_SHAPE_ONE,
     B_SHAPE_BYTES,
     B_SHAPE_RANDOM,
@@ -197,13 +198,15 @@ enum {
 
 #define FRAG_BUCKETS \
     { "!accepted", "!rejected", "!real split boundaries", \
-      "boundaries not confirmed", "shape: one cut", "shape: byte at a time", \
+      "boundaries not confirmed", "EOF wakeups lost (prodded)", \
+      "shape: one cut", "shape: byte at a time", \
       "shape: random cuts", "shape: on the seams", 0 }
 
 static void tally_delivery(struct fuzz_ctx *c, const struct frag_stream *s)
 {
     if (s->real_boundaries)   fuzz_tally(c, B_SPLIT);
     if (s->missed_boundaries) fuzz_tally(c, B_MISSED);
+    if (s->kicks)             fuzz_tally(c, B_KICKED);
     switch (s->plan.shape) {
     case FRAG_SHAPE_ONE:    fuzz_tally(c, B_SHAPE_ONE);    break;
     case FRAG_SHAPE_BYTES:  fuzz_tally(c, B_SHAPE_BYTES);  break;
