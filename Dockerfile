@@ -11,3 +11,8 @@ COPY src src
 COPY Makefile .
 
 RUN make
+
+FROM scratch
+COPY --from=builder /app/sarm /sarm
+EXPOSE 8443
+ENTRYPOINT ["/sarm", "8443"]

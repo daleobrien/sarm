@@ -8,11 +8,10 @@ DETECTED_OS := $(shell uname -s)
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/tls/cert_data.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
 OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
-LDFLAGS := -e _main -arch arm64
 ifeq ($(DETECTED_OS),Darwin)
-	LDFLAGS += -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path)
+	LDFLAGS := -e _main -arch arm64 -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path)
 else
-	LDFLAGS +=
+	LDFLAGS :=
 	CFLAGS += "-march=armv8-a+crypto"
 	CXXFLAGS += "-march=armv8-a+crypto"
 endif
