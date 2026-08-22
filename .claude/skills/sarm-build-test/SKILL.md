@@ -31,6 +31,7 @@ make test-security              # tests/security — bounds + differential + ove
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
 ./tests/test_leak.sh            # secret-leak probe (SECURITY.md Step 10)
 ./tests/test_syscalls.sh        # syscall allowlist + filesystem non-access (Step 11)
+./tests/test_limits.sh          # resource limits under attack (Step 12)
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator (NOT part of `make test`, run separately)
 ```
@@ -55,6 +56,23 @@ Linux, `dtruss` as root on macOS — traces the same hostile workload and checks
 no filesystem syscall appears. On macOS the trace is *skipped*, not passed; the
 static audit is the platform-independent half and is the stronger claim. Both
 are documented in [docs/security/leak-and-containment.md](../../../docs/security/leak-and-containment.md).
+
+`tests/test_limits.sh` (with `tests/limit_checks.py`) is Step 12: four
+campaigns measuring what hostile traffic *costs* rather than what it does —
+`connections` (concurrent slow clients: one forked child each, all reclaimed,
+server still serving), `deadline` (a byte dripped often enough to restart
+`RECV_TIMEOUT`, over HTTP/1, h2c and a TLS `change_cipher_spec` flood; bounded
+by `CONN_DEADLINE`), `buffers` (peak child RSS under oversized headers, paths,
+records, frames, streams and HPACK tables vs. under plain traffic) and `cpu`
+(per-connection CPU in `no_fork` mode, checking a malformed handshake is
+rejected before the key exchange). Knobs: `--connections`, `--cpu-cases`,
+`--deadline`, `--recv-timeout`; `python3 tests/limit_checks.py --self-test`
+checks the measuring instruments. The timeout campaigns run against a
+short-deadline binary the script builds with `make variant BIN=... \
+VARIANT_CFLAGS='-DCONN_DEADLINE_SECONDS=N -DRECV_TIMEOUT_SECONDS=N'` — use that
+target, not a hand-edited `config.S`, whenever a timeout needs to be exercised
+in seconds. Write-up:
+[docs/security/resource-limits.md](../../../docs/security/resource-limits.md).
 
 `make test` builds `sarm` first, so it's always the safe default after a
 source change. The individual `test_*.sh` scripts accept `--no-build

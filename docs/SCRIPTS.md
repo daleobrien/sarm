@@ -40,6 +40,7 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
 ./tests/test_leak.sh            # secret-leak probe: hostile traffic, scanned responses
 ./tests/test_syscalls.sh        # syscall allowlist + traced filesystem non-access
+./tests/test_limits.sh          # resource limits: connections, deadline, buffers, CPU
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
 ```
@@ -83,6 +84,25 @@ exists. It also serves the workload from an empty read-only directory and
 checks nothing appeared on disk. `scripts/syscall_audit.py` is usable alone,
 with `--json` or `--skip-binary`. Write-up:
 [docs/security/leak-and-containment.md](security/leak-and-containment.md).
+
+`tests/test_limits.sh` (with `tests/limit_checks.py`) is Step 12 — the one
+that asks what hostile input *costs* rather than what it does. Four campaigns
+against four differently-shaped servers: `connections` (48 clients that connect
+and go quiet — one forked child each, all reclaimed, and the server still
+serving while they are held), `deadline` (a byte dripped just often enough to
+restart `RECV_TIMEOUT`, in all three protocol shapes including the
+`change_cipher_spec` flood RFC 8446 requires the server to tolerate),
+`buffers` (peak resident size under oversized headers, paths, records, frames,
+streams and HPACK tables, compared with peak resident size under plain traffic
+over all three protocols) and `cpu` (per-connection CPU in `no_fork` mode,
+which is how "rejected before expensive crypto" becomes a measurement — a
+truncated key_share is ~18x cheaper than a completed handshake). Every campaign
+also asserts its own non-vacuity, and `limit_checks.py --self-test` checks the
+instruments before any of them run. The timeout campaigns run against a
+short-deadline binary built by `make variant`; the shipped constants are
+asserted separately out of `src/config.S`. Knobs: `--connections`,
+`--cpu-cases`, `--deadline`, `--recv-timeout`. Write-up:
+[docs/security/resource-limits.md](security/resource-limits.md).
 
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they

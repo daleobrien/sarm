@@ -23,12 +23,16 @@ probe suite (path traversal, `%00`, non-printables) run against a live binary
 with `curl`. That one tests the server; this one tests it from underneath, one
 function at a time.
 
-Two steps of the programme deliberately do **not** live here, because they are
-properties of a running process rather than of a function: Step 10's
-secret-leak probe (`tests/test_leak.sh`) and Step 11's syscall allowlist
-(`tests/test_syscalls.sh`, `scripts/syscall_audit.py`). Both are in `tests/`
-alongside the other live-server harnesses, and both run in `make test`. See
-[docs/security/leak-and-containment.md](../../docs/security/leak-and-containment.md).
+Three steps of the programme deliberately do **not** live here, because they
+are properties of a running process rather than of a function: Step 10's
+secret-leak probe (`tests/test_leak.sh`), Step 11's syscall allowlist
+(`tests/test_syscalls.sh`, `scripts/syscall_audit.py`) and Step 12's
+resource-limit harness (`tests/test_limits.sh`, `tests/limit_checks.py`). All
+three are in `tests/` alongside the other live-server harnesses, and all three
+run in `make test`. See
+[docs/security/leak-and-containment.md](../../docs/security/leak-and-containment.md)
+and
+[docs/security/resource-limits.md](../../docs/security/resource-limits.md).
 
 ## guard_pages — guarded buffers (Step 2)
 

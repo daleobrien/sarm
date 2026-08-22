@@ -21,7 +21,41 @@
 // connection. Also acts as the total header timeout — if a client takes
 // longer than this between any two read() calls, the connection is closed.
 // Default: 10 seconds
-.equ RECV_TIMEOUT, 10
+//
+// Overridable at build time (`-DRECV_TIMEOUT_SECONDS=N`) so a test can
+// exercise the timeout without waiting the shipped default — see the
+// `variant` target in the Makefile and tests/test_limits.sh.
+#ifndef RECV_TIMEOUT_SECONDS
+#define RECV_TIMEOUT_SECONDS 10
+#endif
+.equ RECV_TIMEOUT, RECV_TIMEOUT_SECONDS
+
+// Maximum total wall-clock lifetime, in seconds, of one connection —
+// the hard ceiling on how long a single client can hold a forked child,
+// counted from accept() and enforced by SIGALRM (setitimer(ITIMER_REAL)
+// armed in main.S's Lmain_child).
+//
+// RECV_TIMEOUT alone does not bound this. It is a per-read timeout: a
+// client that sends one byte every RECV_TIMEOUT-1 seconds restarts it
+// forever, and so holds a process, a file descriptor and a 160 KB
+// resident image for as long as it likes. The same is true of a TLS
+// handshake dribbled a record at a time, and of the unbounded run of
+// change_cipher_spec records RFC 8446 Appendix D.4 requires the server
+// to tolerate. This is the bound that makes those finite — see
+// docs/security/resource-limits.md (Step 12).
+//
+// It applies to the forked child only, never to a worker or to `no_fork`
+// debug mode, so an expiry costs exactly one connection.
+// Default: 120 seconds
+//
+// Overridable at build time (`-DCONN_DEADLINE_SECONDS=N`) for the same
+// reason RECV_TIMEOUT is: tests/test_limits.sh asserts the mechanism on
+// a short-deadline variant binary, and asserts this default separately
+// by reading it out of this file.
+#ifndef CONN_DEADLINE_SECONDS
+#define CONN_DEADLINE_SECONDS 120
+#endif
+.equ CONN_DEADLINE, CONN_DEADLINE_SECONDS
 
 // Maximum number of HTTP/1 requests served on one kept-alive connection
 // before sarm sends Connection: close and ends it. Bounds how long a

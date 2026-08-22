@@ -324,6 +324,11 @@
 // signals
 .equ SIGALRM,        14
 .equ SIGCHLD_,       17
+// ITIMER_REAL — the wall-clock interval timer setitimer(2) arms.
+// Expiry raises SIGALRM, whose default disposition is to terminate
+// without a core dump. main.S arms it once per forked connection child
+// (CONN_DEADLINE), which is what bounds that child's lifetime.
+.equ ITIMER_REAL,    0
 .equ SIGPIPE_,       13
 .equ SIGINT_,        2
 .equ SIGTERM_,       15
@@ -490,6 +495,8 @@
 // signals
 .equ SIGALRM,        14
 .equ SIGCHLD_,       20
+// ITIMER_REAL — see the Linux block above.
+.equ ITIMER_REAL,    0
 .equ SIGPIPE_,       13
 .equ SIGINT_,        2
 .equ SIGTERM_,       15

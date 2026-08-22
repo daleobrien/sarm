@@ -37,6 +37,11 @@ fork                # main.S (macOS) — worker spawn and per-connection fork
 clone               # main.S (Linux) — the same
 accept              # main.S (macOS)
 accept4             # main.S (Linux)
+setitimer           # main.S — ITIMER_REAL, the CONN_DEADLINE alarm a forked
+                    #   child arms on itself (docs/SECURITY.md Step 12). The
+                    #   only timer in the server, one shot, no handler: SIGALRM
+                    #   keeps its default disposition, so expiry terminates the
+                    #   child that earned it and nothing else.
 read                # transport, raw_read, h2_verify_preface, main.S
 write               # raw_write
 writev              # raw_writev — header + body in one call

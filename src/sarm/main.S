@@ -92,6 +92,22 @@ http_1_0: .ascii "HTTP/1.0"
 http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
 
+// conn_deadline — struct itimerval for setitimer(ITIMER_REAL), armed
+// once per forked connection child at Lmain_child. it_interval is zero,
+// so this is a one-shot: SIGALRM once, CONN_DEADLINE seconds after
+// accept(), and its default disposition terminates the child. See
+// config.S and docs/security/resource-limits.md (Step 12).
+//
+// struct itimerval is two struct timevals. tv_usec is 32-bit on macOS
+// and 64-bit on Linux, but a timeval is 16 bytes on both, so .quad pairs
+// lay out identically either way — the same trick rcv_timeout uses.
+.align 4
+conn_deadline:
+    .quad 0              // it_interval.tv_sec  — one shot, no rearm
+    .quad 0              // it_interval.tv_usec
+    .quad CONN_DEADLINE  // it_value.tv_sec
+    .quad 0              // it_value.tv_usec
+
 .bss
 .align 4
 sockfd:             .skip 8
@@ -756,6 +772,34 @@ Lmain_child:
     // open would keep the port bound after the parent exits
     SCWINUM SYS_close
     ldr_l x0, sockfd
+    SCWISVC
+    SCERR
+
+    // ── the connection deadline (docs/SECURITY.md Step 12) ──────────
+    // setitimer(ITIMER_REAL, &conn_deadline, NULL): one SIGALRM,
+    // CONN_DEADLINE seconds from now, default disposition, no handler.
+    // This child dies when it fires.
+    //
+    // SO_RCVTIMEO below bounds how long one read() waits; nothing bounds
+    // how many times a client may restart it. One byte every
+    // RECV_TIMEOUT-1 seconds holds this process, its descriptor and its
+    // resident image indefinitely — as does a TLS handshake delivered a
+    // record at a time, or the unbounded run of change_cipher_spec
+    // records RFC 8446 Appendix D.4 says to tolerate. All three are the
+    // same shape of attack and this is the one bound that ends them.
+    //
+    // It is armed here rather than in Lmain_serve deliberately:
+    // Lmain_serve is also how `no_fork` debug mode serves inline, and
+    // there the alarm would kill the server rather than a connection.
+    // Here, one process is one connection, so an expiry costs exactly
+    // the connection that earned it.
+    //
+    // A failure is not fatal — the connection is still served, just
+    // without its ceiling — so nothing branches on the result.
+    SCWINUM SYS_setitimer
+    mov x0, #ITIMER_REAL
+    adr_l x1, conn_deadline
+    mov x2, #0                  // no interest in the previous value
     SCWISVC
     SCERR
 Lmain_serve:

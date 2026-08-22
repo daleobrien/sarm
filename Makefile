@@ -28,6 +28,33 @@ build/%.o: src/%.S
 	@mkdir -p $(dir $@)
 	@cc -g $(CFLAGS) -c $< -o $@
 
+# ── variant: an out-of-tree build with extra -D flags ────────────────
+# Same sources, same link, different compile-time configuration, and a
+# binary somewhere other than ./sarm — so a test can exercise a knob
+# without disturbing the binary the rest of the suite is running
+# against. tests/test_limits.sh (docs/SECURITY.md Step 12) uses it to
+# assert the connection deadline and the receive timeout in seconds
+# rather than minutes:
+#
+#   make variant BIN=/tmp/sarm-short \
+#        VARIANT_CFLAGS='-DCONN_DEADLINE_SECONDS=6 -DRECV_TIMEOUT_SECONDS=2'
+#
+# The object tree is separate ($(VBUILD)) and removed on the way out, so
+# a variant build never leaves stale objects for the default target.
+BIN ?= sarm-variant
+VBUILD := build-variant
+VOBJS := $(SRCS:src/%.S=$(VBUILD)/%.o)
+
+$(VBUILD)/%.o: src/%.S
+	@mkdir -p $(dir $@)
+	@cc -g $(CFLAGS) $(VARIANT_CFLAGS) -c $< -o $@
+
+.PHONY: variant
+variant: assets $(VOBJS) $(VBUILD)/embedded.o $(VBUILD)/tls/cert_data.o
+	@mkdir -p $(dir $(BIN))
+	@ld $(VOBJS) $(VBUILD)/embedded.o $(VBUILD)/tls/cert_data.o -o $(BIN) $(LDFLAGS)
+	@rm -rf $(VBUILD)
+
 # Production build: same pipeline as the default target, but the final
 # binary is stripped of local symbols with `strip -x`.
 .PHONY: production
@@ -61,7 +88,8 @@ clean:
 	@$(MAKE) -s -C tests/security clean
 	rm -f sarm src/embedded.S
 	rm -f sarm src/tls/cert_data.S
-	rm -rf build www_gz www/err
+	rm -rf build build-variant www_gz www/err
+	rm -f sarm-variant
 
 .PHONY: test-security
 # The security test suite (docs/SECURITY.md). Links no part of the
@@ -82,6 +110,7 @@ test: sarm
 	@./tests/test_workers.sh --no-build --quiet
 	@./tests/test_leak.sh --no-build --quiet
 	@./tests/test_syscalls.sh --no-build --quiet
+	@./tests/test_limits.sh --no-build --quiet
 	@./tests/test_multicore.sh --no-build --quiet --workers 1 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 2 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 4 --iterations 2 --stress-seconds 5

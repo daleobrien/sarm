@@ -365,6 +365,7 @@ Actual call sites, whole tree, excluding the `.equ` definitions in `defs.S`:
 | `accept` / `accept4` | `main.S:675,681` | per connection |
 | `kill` | `main.S:312` | `worker_shutdown` only |
 | `setsockopt` (`SO_RCVTIMEO`) | `main.S:759`, `child.S:84` | per connection |
+| `setitimer` (`ITIMER_REAL`) | `main.S:799` | per connection — the `CONN_DEADLINE` alarm (Step 12) |
 | `read` | `main.S:780`, `child.S:132`, `h2_verify_preface.S:41`, `raw_read.S:43`, `transport_read.S:72` | per connection |
 | `write` / `writev` | `raw_write.S:44`, `raw_writev.S:63` | per response |
 | `close` | `main.S:731,740,749,835`, `child_end.S:30,38`, `worker_shutdown` | teardown |
@@ -375,7 +376,7 @@ Actual call sites, whole tree, excluding the `.equ` definitions in `defs.S`:
 **No filesystem syscall is called from anywhere in `src/`.** `open`, `openat`,
 `stat64`, `fstat64`, `getdirentries64`, `unlink`, `unlinkat`, `renameatx_np`,
 `execve`, `mmap`, `munmap`, `dup2`, `pipe`, `wait4`, `getpeername`,
-`nanosleep`, `setitimer`, `gettimeofday`, `recvfrom`, `proc_info` and
+`nanosleep`, `gettimeofday`, `recvfrom`, `proc_info` and
 `getpid` are **defined in `defs.S` but never invoked** — leftovers from the
 pre-embedded era. That makes the allowlist for Step 11 exactly the table above,
 and the test assertion is strong and simple: after startup, a traced workload
@@ -492,6 +493,7 @@ per connection" does not do the isolation for us.
 |---|---|---|
 | listen backlog | 128 | `main.S:497` |
 | idle/receive timeout | `RECV_TIMEOUT` = 10 s per read | `config.S`, armed at `main.S:759` before the first read and again in `child.S:84` |
+| total connection lifetime | `CONN_DEADLINE` = 120 s | `config.S`, `setitimer(ITIMER_REAL)` armed at `main.S:799` in the forked child; expiry is a default-disposition `SIGALRM` (Step 12) |
 | HTTP/1 requests per connection | `HTTP1_KEEPALIVE_BUDGET` = 100 | `config.S`, `request_budget` |
 | request header bytes | `BUF_SIZE` = 16384 → 431 | `child.S` |
 | path length | 4096 → 414 | `parse_path.S` |
@@ -503,11 +505,18 @@ per connection" does not do the isolation for us.
 | TLS record plaintext / ciphertext | 2^14 / 2^14+256 | `record/parse.S` |
 | worker processes | `--workers N`, clamped to `[1, MAX_WORKERS=64]` | `main.S`, `config.S` |
 
-Not bounded anywhere in the server: **the number of concurrent connections**
-(one forked process each, so the real ceiling is the OS process/fd limit), and
-**total handshake duration** (only the per-read `SO_RCVTIMEO` applies, so a
-client that dribbles one byte per 9 seconds holds a process indefinitely).
-Both are inputs to Step 12, not defects to fix here.
+~~Not bounded anywhere in the server: **the number of concurrent
+connections** … and **total handshake duration**.~~ **Half closed in Step 12**
+([resource-limits.md](resource-limits.md)). Total handshake duration — and, in
+the same stroke, a drip-fed HTTP/1 header and a drip-fed h2c frame — is now
+bounded by `CONN_DEADLINE`, the row above: one `setitimer` per connection, a
+default-disposition `SIGALRM`, and the child that earned it is the only thing
+that dies. The number of **concurrent connections** is still uncapped; a cap
+means the parent counting live children, which means reaping them, which means
+giving up `SA_NOCLDWAIT` and putting a `wait4` loop in the accept path. That is
+a change to the process model rather than to a limit, and it is argued and
+deferred in `resource-limits.md` §9 — with the note that a bounded *lifetime*
+turns an unbounded accumulation into a steady state set by the arrival rate.
 
 ---
 
@@ -543,8 +552,12 @@ on by Step 1.
    by tracing, not by inspection. The allowlist in §6 is the tested form. →
    Step 11.
 7. **No concurrent-connection cap and no total-handshake-duration cap.** The
-   per-read timeout does not bound a slow client's total hold on a process. →
-   Step 12.
+   per-read timeout does not bound a slow client's total hold on a process.
+   **Half closed in Step 12**: measured at 32 s and still holding on one byte
+   every 4 s, then bounded by `CONN_DEADLINE` (§8). The concurrent-connection
+   cap is still open and is now a recorded decision rather than an omission —
+   `resource-limits.md` §9. → partly fixed; see
+   [resource-limits.md](resource-limits.md).
 8. **The h2 flow-control re-entrancy path** (`h2_write_body` dispatching frames,
    serving nested requests, `H2S_FLAG_SERVING` guarding double-send) is the
    densest state region and deserves targeted state fuzzing rather than only
@@ -626,7 +639,11 @@ on by Step 1.
 14. **An unbounded number of `change_cipher_spec` records is tolerated**
    before the client's Finished (RFC 8446 Appendix D.4 requires tolerating
    them and sets no limit). A peer can hold a handshake open indefinitely with
-   6-byte records. → Step 12.
+   6-byte records. **Fixed in Step 12** — not by counting the records, which
+   the RFC does not permit, but by bounding the connection they are holding
+   open. Confirmed at 30 s with 10 records before the change, and it is now one
+   of the three drip shapes the `deadline` campaign runs. → fixed; see
+   [resource-limits.md](resource-limits.md) §3.
 16. **`parse_path` read one byte past its length argument, in three
     places.** Found in Step 8 by the `path` campaign, case 38, against a guard
     page, and fixed in the same step. The filename copy loop's bound was
