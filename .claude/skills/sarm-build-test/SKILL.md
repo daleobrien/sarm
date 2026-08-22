@@ -1,6 +1,6 @@
 ---
 name: sarm-build-test
-description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, the tests/security guard-page, differential, integer-overflow and fuzzing suites (make test-security), and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
+description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, the tests/security guard-page, differential, integer-overflow and fuzzing suites (make test-security, including the TLS record and handshake fuzzers), and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
 ---
 
 # Building and testing sarm
@@ -48,11 +48,13 @@ in hardware rather than silently landing in the next global, plus differential
 suites that run each crypto routine and an independent C reference over
 hundreds of thousands of random vectors, and overflow suites that feed a
 hostile length corpus to the real HPACK and HKDF entry points with a guard page
-immediately after the input, and a fuzzer that runs millions of generated TLS
-records through the record layer. The differential suites take a seed and a
+immediately after the input, and fuzzers that run millions of generated TLS
+records through the record layer and millions of generated ClientHellos,
+flights and client Finished messages through the handshake and its driver. The differential suites take a seed and a
 multiplier — `SARM_DIFF_SEED=0x1234` to replay a run, `SARM_DIFF_ITERS=100 make
 test-security` for a long soak; the overflow suites need no environment at all.
-The fuzz suites take `SARM_FUZZ_MULT=100` for a long soak, `SARM_FUZZ_STATS=1`
+The fuzz suites (`test_fuzz_tls_record`, `test_fuzz_tls_handshake`) take
+`SARM_FUZZ_MULT=100` for a long soak, `SARM_FUZZ_STATS=1`
 for the outcome histogram that shows which branches the corpus is reaching, and
 `SARM_FUZZ_SEED=<s> SARM_FUZZ_CASE=<i>` to replay one case in-process under a
 debugger — the reproducer every failure prints.

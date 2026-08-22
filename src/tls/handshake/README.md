@@ -264,9 +264,17 @@ Output (carry clear — success):
   (src/tls/data.S)
 
 Output (carry set — failure):
-  x0 = TLS_ALERT_DECODE_ERROR / _PROTOCOL_VERSION / _HANDSHAKE_FAILURE
-       / _NO_APPLICATION_PROTOCOL / _UNRECOGNIZED_NAME
+  x0 = TLS_ALERT_DECODE_ERROR / _ILLEGAL_PARAMETER / _PROTOCOL_VERSION
+       / _HANDSHAKE_FAILURE / _NO_APPLICATION_PROTOCOL
+       / _UNRECOGNIZED_NAME
 ```
+
+`illegal_parameter` is the one the table above does not cover: RFC 8446
+§4.1.2 requires a TLS 1.3 ClientHello to carry exactly one
+compression method, `null`, and anything else is a parameter error
+rather than a decode error. It was missing from this list until Step 7's
+fuzzer reached it and reported an alert the documentation did not
+mention — see `docs/security/fuzzing.md`.
 
 ### `tls_build_server_hello`
 ```

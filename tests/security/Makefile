@@ -70,6 +70,18 @@ tls_record_srcs := parse.S decrypt.S encrypt.S nonce.S write.S read_record.S
 tls_record_objs := $(patsubst %.S,$(OBJ_DIR)/tls_record_%.o,$(tls_record_srcs))
 transport_raw_obj := $(OBJ_DIR)/transport_raw_read.o
 
+# The handshake fuzzer (Step 7) drives tls_server_handshake, whose
+# whole job is to sequence every other TLS module against a live
+# socket — so unlike the record fuzzer above it links src/tls,
+# src/crypto and src/transport whole. Naming files individually would
+# only be a way of pretending the driver has fewer dependencies than
+# it has. src/data.S (the HTTP buffers) is still not linked: the TLS
+# module deliberately keeps its own scratch buffers.
+tls_all_srcs   := $(call rwildcard,../../src/tls,*.S)
+tls_all_objs   := $(patsubst ../../src/tls/%.S,$(OBJ_DIR)/tlsmod_%.o,$(tls_all_srcs))
+transport_srcs := $(call rwildcard,../../src/transport,*.S)
+transport_objs := $(patsubst ../../src/transport/%.S,$(OBJ_DIR)/transport_%.o,$(transport_srcs))
+
 TEST_GUARD_PAGES  := $(OBJ_DIR)/test_guard_pages
 BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildcard test_bounds_*.c))
 DIFF_TESTS        := $(patsubst test_diff_%.c,$(OBJ_DIR)/test_diff_%,$(wildcard test_diff_*.c))
@@ -148,6 +160,12 @@ $(OBJ_DIR)/transport_%.o: ../../src/transport/%.S | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+.SECONDARY: $(tls_all_objs)
+
+$(OBJ_DIR)/tlsmod_%.o: ../../src/tls/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 # Every suite includes tests/unit/test_harness.h, so a change there must
 # rebuild them, exactly as in tests/unit/Makefile.
 HARNESS := ../unit/test_harness.h
@@ -187,6 +205,14 @@ $(OBJ_DIR)/test_overflow_crypto: test_overflow_crypto.c $(HELPERS) $(HARNESS) $(
 # is involved.
 $(OBJ_DIR)/test_fuzz_tls_record: test_fuzz_tls_record.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(tls_record_objs) $(crypto_objs) $(util_memcpy_obj) $(transport_raw_obj) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(tls_record_objs) $(crypto_objs) $(util_memcpy_obj) $(transport_raw_obj) $(LDFLAGS) -o $@
+
+# The handshake fuzzer additionally plays a real client against the
+# server, so it links the same objects from both sides — there is only
+# one implementation of X25519 and of the key schedule in this tree,
+# and the ServerHello parse on the client side is written by hand
+# precisely so the two are not the same code.
+$(OBJ_DIR)/test_fuzz_tls_handshake: test_fuzz_tls_handshake.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) $(LDFLAGS) -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

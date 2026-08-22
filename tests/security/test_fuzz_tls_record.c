@@ -161,6 +161,30 @@ static struct enc_out rec_encrypt(uint64_t inner_type, const uint8_t *pt,
     return o;
 }
 
+// Seals an arbitrary buffer, which tls_record_encrypt deliberately
+// cannot do: it appends the inner type itself, so nothing it produces
+// ever ends in a zero octet. Reaching decrypt's padding scan means
+// building the TLSInnerPlaintext by hand and sealing it directly.
+static void gcm_seal(const uint8_t *key, const uint8_t *nonce,
+                     const uint8_t *aad, uint64_t aad_len,
+                     const uint8_t *pt, uint64_t pt_len,
+                     uint8_t *ct, uint8_t *tag)
+{
+    uint64_t a[8];
+    a[0] = (uint64_t)key; a[1] = (uint64_t)nonce; a[2] = (uint64_t)aad;
+    a[3] = aad_len;       a[4] = (uint64_t)pt;    a[5] = pt_len;
+    a[6] = (uint64_t)ct;  a[7] = (uint64_t)tag;
+    __asm__ volatile(
+        "ldp x0, x1, [%0]\n"
+        "ldp x2, x3, [%0, #16]\n"
+        "ldp x4, x5, [%0, #32]\n"
+        "ldp x6, x7, [%0, #48]\n"
+        "bl aes_gcm_encrypt\n"
+        :
+        : "r"(a)
+        : CRYPTO_CLOBBER);
+}
+
 static struct parse_out rec_read(int fd, uint8_t *buf, uint64_t cap)
 {
     struct parse_out o;
@@ -797,6 +821,161 @@ static void read_pre_case(struct fuzz_rng *r, struct fuzz_ctx *c)
       "!too big for the buffer", "past the buffer", "mac", "inner", \
       "other", 0 }
 
+// ── campaign 7: the inner-plaintext scan (Step 7) ──────────────────
+// RFC 8446 §5.4: the sealed plaintext is `content || type ||
+// zeros(padding)`, and the reader finds the type by scanning back from
+// the end for the first non-zero octet. Nothing above can reach that
+// scan with real padding — tls_record_encrypt appends the type last,
+// so its plaintexts never end in a zero — which is why the `inner`
+// bucket is empty in every campaign of Step 6. This one seals a
+// *chosen* inner plaintext with aes_gcm_encrypt directly and asks the
+// scan the three questions the contract in decrypt.S answers: the
+// padded record, the all-zero record of Appendix C.3, and the record
+// whose type octet is not a content type.
+
+enum { PB_OK = 0, PB_PADDED, PB_ALL_ZERO, PB_BAD_TYPE };
+
+struct pad_state {
+    struct guarded_buffer rec;
+    struct guarded_buffer out;
+    uint8_t              *plain;
+};
+
+static struct pad_state g_pad;
+
+#define PAD_MAX_CONTENT 96
+#define PAD_MAX_PAD     64
+#define PAD_MAX_PLAIN   (PAD_MAX_CONTENT + 1 + PAD_MAX_PAD)
+
+static int pad_setup(struct fuzz_ctx *c)
+{
+    (void)c;
+    if (guard_alloc(&g_pad.rec, TLS_RECORD_HEADER_LEN + PAD_MAX_PLAIN
+                                + TLS_TAG_LEN) != 0)
+        return -1;
+    if (guard_alloc(&g_pad.out, PAD_MAX_PLAIN) != 0) {
+        guard_free(&g_pad.rec);
+        return -1;
+    }
+    static uint8_t plain[PAD_MAX_PLAIN];
+    g_pad.plain = plain;
+    return 0;
+}
+
+static void pad_teardown(struct fuzz_ctx *c)
+{
+    (void)c;
+    guard_free(&g_pad.rec);
+    guard_free(&g_pad.out);
+}
+
+// RFC 8446 §5.3, written out here rather than calling tls_record_nonce:
+// an independent second implementation of the per-record nonce means a
+// disagreement shows up as a tag that does not verify.
+static void pad_nonce(const uint8_t *iv, uint64_t seq, uint8_t *out)
+{
+    for (int i = 0; i < 12; i++)
+        out[i] = iv[i];
+    for (int i = 0; i < 8; i++)
+        out[11 - i] ^= (uint8_t)(seq >> (8 * i));
+}
+
+static void pad_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t content = (size_t)fuzz_below(r, PAD_MAX_CONTENT + 1);
+    size_t pad     = fuzz_chance(r, 2) ? (size_t)fuzz_below(r, PAD_MAX_PAD + 1)
+                                       : 0;
+    // 1 in 8 is all zeros — the malformed case of Appendix C.3, with
+    // no type octet anywhere.
+    int all_zero = fuzz_chance(r, 8);
+    uint64_t type = fuzz_chance(r, 4) ? fuzz_u8(r) : fuzz_range(r, 20, 23);
+
+    uint8_t *pt = g_pad.plain;
+    size_t pt_len;
+    if (all_zero) {
+        pt_len = content + 1 + pad;
+        if (pt_len == 0) pt_len = 1;
+        memset(pt, 0, pt_len);
+    } else {
+        fuzz_fill_random(r, pt, content);
+        pt[content] = (uint8_t)type;
+        memset(pt + content + 1, 0, pad);
+        pt_len = content + 1 + pad;
+    }
+
+    // What §5.4 says the reader must find, derived from the bytes as
+    // built rather than from the knobs that built them. The two differ
+    // more often than it looks: a type octet of 0 is padding, and then
+    // the last non-zero octet of `content` becomes the type — which is
+    // correct behaviour, and was worth one wrong expectation here
+    // before the scan below replaced it.
+    size_t scan = pt_len;
+    while (scan && pt[scan - 1] == 0)
+        scan--;
+    const int    zeros_only  = (scan == 0);
+    const uint64_t exp_type  = zeros_only ? 0 : pt[scan - 1];
+    const size_t exp_content = zeros_only ? 0 : scan - 1;
+    const int    type_ok     = !zeros_only && exp_type >= 20 && exp_type <= 23;
+
+    const uint64_t seq = fuzz_chance(r, 2) ? fuzz_below(r, 8) : fuzz_u64(r);
+    const size_t frag = pt_len + TLS_TAG_LEN;
+
+    uint8_t *rec = g_pad.rec.data + g_pad.rec.size
+                 - (TLS_RECORD_HEADER_LEN + frag);
+    rec[0] = 23; rec[1] = 3; rec[2] = 3;
+    rec[3] = (uint8_t)(frag >> 8); rec[4] = (uint8_t)frag;
+
+    uint8_t nonce[12];
+    pad_nonce(g_iv, seq, nonce);
+    gcm_seal(g_key, nonce, rec, TLS_RECORD_HEADER_LEN, pt, pt_len,
+             rec + TLS_RECORD_HEADER_LEN,
+             rec + TLS_RECORD_HEADER_LEN + pt_len);
+
+    // The plaintext is about to be overwritten in place by decrypt's
+    // output buffer in the guarded page, so keep a copy to compare
+    // against — the sealed record is the only other copy.
+    uint8_t sealed_pt[PAD_MAX_PLAIN];
+    memcpy(sealed_pt, pt, pt_len);
+
+    uint8_t *out = g_pad.out.data + g_pad.out.size - pt_len;
+    memset(out, POISON, pt_len);
+
+    struct dec_out o = rec_decrypt(rec, TLS_RECORD_HEADER_LEN + frag,
+                                   g_key, g_iv, seq, out);
+
+    if (!type_ok) {
+        FUZZ_CHECK(c, o.carry,
+                   "tls_record_decrypt: accepted an inner plaintext with no "
+                   "valid content type");
+        FUZZ_CHECK(c, o.content_len == ERR_INNER,
+                   "tls_record_decrypt: rejected a malformed inner plaintext "
+                   "with something other than INNER");
+        // Deliberately no poison check here. "A bad tag leaves the
+        // output untouched" is a claim about *authentication*: the
+        // caller must never see keystream for a record nobody with the
+        // key produced. This record authenticates — the peer really
+        // did seal it — and is then rejected for being malformed
+        // inside, after the plaintext has already been written. The
+        // `decrypt` campaign checks the confidentiality claim on the
+        // path where it applies.
+        fuzz_tally(c, zeros_only ? PB_ALL_ZERO : PB_BAD_TYPE);
+        return;
+    }
+
+    FUZZ_CHECK(c, !o.carry,
+               "tls_record_decrypt: rejected a record it sealed correctly "
+               "itself");
+    FUZZ_CHECK(c, o.inner_type == exp_type,
+               "tls_record_decrypt: reported an inner type other than the "
+               "last non-zero octet");
+    FUZZ_CHECK(c, o.content_len == exp_content,
+               "tls_record_decrypt: content length does not strip exactly "
+               "the type octet and the padding");
+    FUZZ_CHECK(c, memcmp(out, sealed_pt, exp_content) == 0,
+               "tls_record_decrypt: the content is not what was sealed");
+    fuzz_tally(c, (pt_len - scan) ? PB_PADDED : PB_OK);
+}
+
 static const struct fuzz_target g_targets[] = {
     { "parse", parse_case, parse_setup, parse_teardown, 1000000, 0,
       PARSE_BUCKETS },
@@ -822,6 +1001,9 @@ static const struct fuzz_target g_targets[] = {
       READ_BUCKETS },
     { "read_prefilled", read_pre_case, read_setup, read_teardown, 20000, 0,
       READ_BUCKETS },
+    { "inner_plaintext", pad_case, pad_setup, pad_teardown, 20000, 0,
+      { "!unpadded", "!padded", "!all-zero refused", "!bad type refused",
+        0 } },
 };
 
 int main(void)

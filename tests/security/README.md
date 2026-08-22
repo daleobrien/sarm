@@ -320,11 +320,12 @@ Each fix was reverted in turn and the corpus re-run:
 The `OUT OF BOUNDS` rows are the MMU, not the test, confirming the
 pre-Step-5 code really did read past the buffer it was given.
 
-## test_fuzz_* — generated inputs (Step 6)
+## test_fuzz_* — generated inputs (Steps 6 and 7)
 
 Steps 3–5 test the inputs somebody thought of. Step 6 tests the others:
-`test_fuzz_tls_record.c` runs six campaigns against the TLS record layer — the
-first code an unauthenticated peer reaches. The design, the invariants and the
+`test_fuzz_tls_record.c` runs seven campaigns against the TLS record layer —
+the first code an unauthenticated peer reaches. Step 7 points the same harness
+one layer up, at the handshake (`test_fuzz_tls_handshake.c`, below). The design, the invariants and the
 evidence are in
 [docs/security/fuzzing.md](../../docs/security/fuzzing.md); the summary is
 here.
@@ -337,8 +338,9 @@ here.
 | `tamper` | seal a record, flip one bit anywhere in it, require the open to fail |
 | `read_record` | `tls_read_record` against a real `socketpair` fed adversarial bytes |
 | `read_prefilled` | `tls_read_record_prefilled`, whose shortfall arithmetic runs twice on wire-derived values |
+| `inner_plaintext` | RFC 8446 §5.4's `content \|\| type \|\| zeros`, sealed with `aes_gcm_encrypt` directly — the only way to reach `decrypt`'s padding scan, since `tls_record_encrypt` appends the type octet last and never produces a plaintext ending in a zero (added in Step 7) |
 
-Default run: ~1.14M cases in about 1.4 s, no environment needed.
+Default run: ~1.16M cases in about 1.4 s, no environment needed.
 
 ```bash
 SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_tls_record   # 114M cases
@@ -388,3 +390,54 @@ equal to the record length it just read. See `fuzzing.md` §4.
 Four distinct detection mechanisms — a returned-value invariant, a guard-page
 fault, a leaked-plaintext check, and the progress deadline — and the MAC row
 was caught by three of them independently.
+
+## test_fuzz_tls_handshake — the handshake (Step 7)
+
+Three campaigns, in `test_fuzz_tls_handshake.c`. The design and the evidence
+are in [docs/security/fuzzing.md](../../docs/security/fuzzing.md) §§8–14.
+
+| campaign | target |
+|---|---|
+| `client_hello` | `tls_parse_client_hello` over structured-then-mutated bodies ending flush against a guard page — the largest pre-auth parser in the tree |
+| `flight` | `tls_server_handshake` against a generated flight in a `socketpair`: no such flight can complete a handshake, so every case must end at `TLS_HS_FAILED`, plaintext, with no application traffic keys installed |
+| `finished` | the iff. The case forks the server and plays a **real client** — X25519, key schedule, decrypting the server's flight — so it can send either a correct client Finished or one of ten generated deviations, and require the server to connect on exactly the correct ones |
+
+```bash
+./tests/security/_obj/test_fuzz_tls_handshake                    # ~2.0M cases, ~1.2 s
+SARM_FUZZ_MULT=200 ./tests/security/_obj/test_fuzz_tls_handshake # 401M cases
+SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_tls_handshake # outcome histogram
+```
+
+This is the suite that found the one production defect the fuzzing steps have
+turned up: a handshake record whose fragment is shorter than the 4-byte
+handshake header made `tls_server_handshake` hash 2^64-4 bytes and crash,
+before authentication, on five bytes from any peer. `fuzzing.md` §9 has the
+input, the instruction, and the fix.
+
+### Two detection mechanisms the record suite did not need
+
+**An invariant on global state after the call.** `tls_server_handshake` returns
+one bit; what matters as much is what it left behind. Every `flight` case
+checks `tls_hs_state`, `transport_mode`, and the four application traffic
+key/IV fields, which are filled with poison before the call — a handshake that
+fails *after* installing application keys would leave a live key schedule no
+peer ever authenticated.
+
+**An invariant on a second process's verdict.** The `finished` campaign's
+server runs in a forked child so it has its own `tls_state`; the child's exit
+code carries "connected" or "rejected", and the case compares it against what
+it knows it sent. That comparison is an iff in both directions: a correct
+Finished that is refused fails the campaign exactly as loudly as an incorrect
+one that is accepted.
+
+### Verified by sabotage
+
+| break | result |
+|---|---|
+| the fragment-length check from `fuzzing.md` §9 removed | `flight`: **CRASH: SIGSEGV**, case 83 — the original defect |
+| `tls_server_handshake` skips the `verify_data` comparison | `finished`: *accepted an invalid client Finished* |
+| `tls_server_handshake` accepts any inner type on the client's Finished | `finished`: same, at case 0 |
+| the application traffic secrets derived before the client's Finished is read | `flight`: *failed after installing application traffic keys* |
+| `TLS_HS_FAILED` computed but not stored | `flight`: *failed without leaving tls_hs_state at TLS_HS_FAILED* |
+| `tls_parse_client_hello` drops its `cipher_suites` bounds check | `client_hello`: **CRASH: SIGBUS** at case 79 of 2,000,000 — the guard page |
+| `tls_record_decrypt` accepts inner type 24 | `inner_plaintext`: *accepted an inner plaintext with no valid content type* — and **none** of the six Step 6 campaigns notice |

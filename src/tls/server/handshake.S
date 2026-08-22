@@ -152,6 +152,16 @@ tls_server_handshake:
     b.cs    .Lhs_fail
     cmp     x0, #TLS_RECORD_HANDSHAKE
     b.ne    .Lhs_fail_generic
+    // A handshake record whose fragment is shorter than the 4-byte
+    // handshake header carries no message at all. Both uses below
+    // subtract TLS_HS_HEADER_LEN from this length, and the subtraction
+    // is unsigned: without this check a five-byte record (type 22,
+    // fragment length 0) makes tls_transcript_add hash 2^64-4 bytes
+    // and walk off the end of memory, before anything about the peer
+    // has been authenticated. Found in Step 7 by the handshake fuzzer
+    // (docs/security/fuzzing.md).
+    cmp     x2, #TLS_HS_HEADER_LEN
+    b.lo    .Lhs_fail_generic
     mov     x20, x1                     // ClientHello: header+body ptr
     mov     x21, x2                     // ClientHello: header+body len
 

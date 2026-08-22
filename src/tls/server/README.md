@@ -47,7 +47,19 @@ only exists at the *sequencing* level:
    first connection a freshly started process ever handles and fires
    on every connection after that.
 
-All three were found and fixed by driving the real handshake against
+A fourth arrived later, from a different direction. Step 7 of
+`docs/SECURITY.md` fuzzed this function's state transitions and found
+that **a handshake record whose fragment is shorter than the 4-byte
+handshake header crashed the server before authentication**: step 2
+below hands `tls_transcript_add` and `tls_parse_client_hello` a length
+of `fragment_len - TLS_HS_HEADER_LEN`, computed unsigned, so the
+five-byte record `16 03 01 00 00` made SHA-256 hash 2^64-4 bytes and
+walk off the end of memory. `tls_record_parse` is right to accept the
+record — a zero-length fragment is legal at the record layer — so the
+check belongs here, and is now the `cmp x2, #TLS_HS_HEADER_LEN` right
+after the content-type test. See `docs/security/fuzzing.md` §9.
+
+The first three were found and fixed by driving the real handshake against
 independent TLS implementations (Python's `ssl` module and `curl`
 built against LibreSSL) rather than trusting the code to be correct
 because each underlying primitive was already unit-tested — the same

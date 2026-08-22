@@ -88,7 +88,7 @@ through.
 | Length | Source | Bound enforced | Destination |
 |---|---|---|---|
 | record fragment length (2 octets) | `src/tls/record/parse.S` | `<= 2^14` for types 20/21/22, `<= 2^14+256` for type 23; fragment must not run past the buffer end (`TLS_RECORD_ERR_LENGTH` / `_BOUNDS`) | `tls_hs_record_buf` (16448 B) / `tls_read_raw_buf` (16448 B) |
-| handshake message length (3 octets) | `src/tls/server/handshake.S`, `TLS_HS_HEADER_LEN` | must fit inside the record fragment | `tls_hs_msg_buf` (2048 B) |
+| handshake message length (3 octets) | `src/tls/server/handshake.S`, `TLS_HS_HEADER_LEN` | the record fragment must be at least `TLS_HS_HEADER_LEN` long (added in Step 7 — see observation 13); the message's own declared length is not checked | `tls_hs_msg_buf` (2048 B) |
 | `legacy_session_id` (1 octet) | `client_hello.S:110-118` | `<= 32` **and** must fit the body remainder | `tls_session_id` (32 B) |
 | `cipher_suites` (2 octets) | `client_hello.S:131+` | `>= 2`, must fit the body remainder | not copied — scanned |
 | `legacy_compression_methods` | `client_hello.S` | exactly one byte, value 0 (RFC 8446 §4.1.2) | not copied |
@@ -111,6 +111,16 @@ campaign, with every record ending flush against a guard page and every output
 buffer sized to exactly what the contract permits, no crash, no hang, and no
 invariant violation. The handshake-message and ClientHello rows are still
 untested this way; they are Step 7.
+
+**Fuzzed in Step 7** (`docs/security/fuzzing.md` §§8–14): the ClientHello row
+and the handshake-message row. `tls_parse_client_hello` was run over 400
+million generated bodies ending flush against a guard page, and
+`tls_server_handshake` over 1.2 million generated flights and 200,000 complete
+client handshakes per seed. **This found a remote pre-authentication crash**
+(observation 13 below): the handshake-message length row of this table was
+computed as `fragment_len - TLS_HS_HEADER_LEN` with nothing establishing that
+the fragment was that long, so a five-byte record made `tls_transcript_add`
+hash 2^64-4 bytes. Fixed in `src/tls/server/handshake.S`.
 
 ### 3.2 Record-layer staging
 
@@ -552,7 +562,35 @@ on by Step 1.
    than any caller can actually observe, and one of parse's five branches is
    dead code from the perspective of the socket. Worth stating so it is not
    mistaken for coverage. → recorded, no action.
-12. **`no_fork` mode reuses one process across connections** without clearing
+12. **`tls_server_handshake` ignores the handshake message's own 3-octet
+   length field**, in both places a peer controls one. The ClientHello's
+   declared length is never compared with what the record actually carries —
+   the parser is handed "everything left in the fragment" — and the client
+   Finished's is never read at all, so a Finished declaring length `0xABCDEF`
+   inside a correct 36-byte record is accepted (verified by hand in Step 7).
+   Neither is exploitable as things stand: the record length bounds every
+   read, the Finished is never re-parsed or re-hashed, and a ClientHello whose
+   declared length disagrees with the record is caught almost always by the
+   parser's exact-fit extensions check. But "almost always" is the wrong shape
+   of argument for a pre-auth parser, and the same missing concept — there is
+   no handshake-message reassembly layer — is why a message split across two
+   records, or two messages in one record (both legal, RFC 8446 §5.1), are not
+   handled either. → recorded; see `fuzzing.md` §14.
+13. **A handshake record with a fragment shorter than 4 bytes crashed the
+   server before authentication.** Found in Step 7 by the `flight` campaign,
+   case 83, and fixed in the same step. `tls_server_handshake` subtracted
+   `TLS_HS_HEADER_LEN` from the fragment length without checking it, unsigned,
+   so `16 03 01 00 00` — five bytes, the first thing a peer says — made
+   SHA-256 walk the address space. The record layer was right to accept the
+   record; the check belongs to the driver and is now there. Recorded rather
+   than closed because the class is what matters: this is the only place in
+   the tree where a peer-controlled length was consumed before being bounded,
+   and §3.1's table now names the bound. → fixed.
+14. **An unbounded number of `change_cipher_spec` records is tolerated**
+   before the client's Finished (RFC 8446 Appendix D.4 requires tolerating
+   them and sets no limit). A peer can hold a handshake open indefinitely with
+   6-byte records. → Step 12.
+15. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
 

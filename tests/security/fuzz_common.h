@@ -317,8 +317,11 @@ static void fuzz_disarm_harness_timeout(void) { alarm(0); }
 static const char *fuzz_signal_name(int sig)
 {
     switch (sig) {
-    case SIGSEGV: return "SIGSEGV (guard page: read or wrote outside the input)";
-    case SIGBUS:  return "SIGBUS (guard page, or an unaligned access)";
+    case SIGSEGV: return "SIGSEGV (read or wrote outside a mapped page — a "
+                         "guard page, or memory the routine had no business "
+                         "touching)";
+    case SIGBUS:  return "SIGBUS (the same, or an unaligned access — Apple "
+                         "silicon reports guard-page hits either way)";
     case SIGILL:  return "SIGILL";
     case SIGABRT: return "SIGABRT";
     case SIGFPE:  return "SIGFPE";
