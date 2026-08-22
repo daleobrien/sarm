@@ -104,6 +104,24 @@ asserted separately out of `src/config.S`. Knobs: `--connections`,
 `--cpu-cases`, `--deadline`, `--recv-timeout`. Write-up:
 [docs/security/resource-limits.md](security/resource-limits.md).
 
+`tests/test_hardening.sh` (with `tests/hardening_checks.py`) is Step 13 — the
+one that inspects the *binary* rather than the behaviour. It checks that the
+linked image is a PIE with no writable-and-executable segment, that 11 named
+constants (the certificate, the private scalar, the crypto tables, the HPACK
+static table, the frame dispatch table) sit in a read-only section while 4
+named mutable globals do not, and that the loader is asked to apply no
+relocations at all; on ELF it also checks `PT_GNU_STACK` and that `.rodata`
+gets its own `r--` LOAD segment. Then the same claims about a running server —
+`vmmap` or `/proc/pid/maps` — and the core-dump limit, both statically (the
+binary really does call `setrlimit`/`prlimit64`) and dynamically (a `SIGSEGV`'d
+connection child leaves no core, gated on a control that proves the machine
+dumps cores at all). Two deliberately unhardened control builds show the checks
+can fail: `-DSARM_NO_RODATA` puts every constant back in writable `.data`, and
+on Linux an empty `LDFLAGS` gives a fixed-address image with an executable
+stack. `--docker` additionally inspects the binary inside the container image;
+the ELF side is parsed in Python, so that works from macOS. Write-up:
+[docs/security/hardening.md](security/hardening.md).
+
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they
 cannot live in `tests/unit/`: which `--workers` arguments are accepted and

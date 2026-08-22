@@ -17,7 +17,7 @@
 //   authority_buf — NUL-terminated copy of the Host/:authority value
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 www_prefix: .ascii DOCROOT // DOCROOT from config.S
 .align 4

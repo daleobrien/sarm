@@ -29,7 +29,7 @@
 //   16 bytes: str x30, [sp, #-16]!
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 // the range-unit prefix h2_parse_range accepts (matched
 // case-insensitively, like HTTP/1's get_header_field/parse_range)
 .align 4

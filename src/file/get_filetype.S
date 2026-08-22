@@ -33,7 +33,7 @@
     .space 96 - (. - 99b) // pad to offset 96 from entry start
 .endm
 
-.data
+rodata
 // table of file extension / corresponding MIME types.
 // this table is offset by 96 bytes per entry; 8 bytes for the extension, and
 // 88 bytes for the MIME type string. 96 = 6 * 16, so once the first entry is
@@ -44,6 +44,8 @@
 
 // ── group a: .aac, .apng, .avi, .avif ──
 .align 4
+.global file_types_a            // visible in the stripped binary too,
+                                // for tests/hardening_checks.py
 file_types_a:
     mime_entry ".aac",   "audio/aac"
     mime_entry ".apng",  "image/apng"

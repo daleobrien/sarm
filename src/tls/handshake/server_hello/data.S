@@ -1,6 +1,6 @@
 #include "../../../defs.S"
 
-.data
+rodata
 .align 4
 // RFC 7748 §5: the X25519 base point, u = 9, little-endian, 32 bytes.
 .global x25519_basepoint9

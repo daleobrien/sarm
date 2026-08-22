@@ -1,6 +1,6 @@
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 header_200: .ascii "HTTP/1.1 200 OK"
 .equ header_200_len, . - header_200
@@ -90,50 +90,56 @@ header_507: .ascii "HTTP/1.1 507 Insufficient Storage"
 .align 4
 // lookup table, like the MIME one, for headers. 32 bytes per entry, 8 bytes
 // per each element, 8 bytes padding — so every entry starts 16-aligned
+//
+// The middle element is the status line's offset from the table's own
+// address, not its address: an absolute address here would be a
+// load-time relocation, and the Linux build is a position-independent
+// executable with no dynamic linker to apply one (docs/SECURITY.md
+// Step 13). find_http_code adds the table base back.
 .global status_table
 status_table:
-    //    status, str pointer, length
-    .quad 200,    header_200,  header_200_len
+    //    status, str offset from status_table, length
+    .quad 200,    (header_200 - status_table),  header_200_len
     .quad 0 // padding — 32-byte entries keep every entry 16-aligned
-    .quad 201,    header_201,  header_201_len
+    .quad 201,    (header_201 - status_table),  header_201_len
     .quad 0
-    .quad 204,    header_204,  header_204_len
+    .quad 204,    (header_204 - status_table),  header_204_len
     .quad 0
-    .quad 206,    header_206,  header_206_len
+    .quad 206,    (header_206 - status_table),  header_206_len
     .quad 0
-    .quad 400,    header_400,  header_400_len
+    .quad 400,    (header_400 - status_table),  header_400_len
     .quad 0
-    .quad 403,    header_403,  header_403_len
+    .quad 403,    (header_403 - status_table),  header_403_len
     .quad 0
-    .quad 404,    header_404,  header_404_len
+    .quad 404,    (header_404 - status_table),  header_404_len
     .quad 0
-    .quad 408,    header_408,  header_408_len
+    .quad 408,    (header_408 - status_table),  header_408_len
     .quad 0
-    .quad 409,    header_409,  header_409_len
+    .quad 409,    (header_409 - status_table),  header_409_len
     .quad 0
-    .quad 411,    header_411,  header_411_len
+    .quad 411,    (header_411 - status_table),  header_411_len
     .quad 0
-    .quad 413,    header_413,  header_413_len
+    .quad 413,    (header_413 - status_table),  header_413_len
     .quad 0
-    .quad 414,    header_414,  header_414_len
+    .quad 414,    (header_414 - status_table),  header_414_len
     .quad 0
-    .quad 416,    header_416,  header_416_len
+    .quad 416,    (header_416 - status_table),  header_416_len
     .quad 0
-    .quad 418,    header_418,  header_418_len
+    .quad 418,    (header_418 - status_table),  header_418_len
     .quad 0
-    .quad 431,    header_431,  header_431_len
+    .quad 431,    (header_431 - status_table),  header_431_len
     .quad 0
-    .quad 500,    header_500,  header_500_len
+    .quad 500,    (header_500 - status_table),  header_500_len
     .quad 0
-    .quad 501,    header_501,  header_501_len
+    .quad 501,    (header_501 - status_table),  header_501_len
     .quad 0
-    .quad 502,    header_502,  header_502_len
+    .quad 502,    (header_502 - status_table),  header_502_len
     .quad 0
-    .quad 503,    header_503,  header_503_len
+    .quad 503,    (header_503 - status_table),  header_503_len
     .quad 0
-    .quad 505,    header_505,  header_505_len
+    .quad 505,    (header_505 - status_table),  header_505_len
     .quad 0
-    .quad 507,    header_507,  header_507_len
+    .quad 507,    (header_507 - status_table),  header_507_len
     .quad 0
 
     .quad 0 // mark the end

@@ -26,7 +26,7 @@
 //   (carry clear = success / carry set = failure, x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
-//   x0-x3, x9 for a static index (h2_hpack_static_lookup); x0-x3, x9-x16
+//   x0-x4, x9 for a static index (h2_hpack_static_lookup); x0-x4, x9-x16
 //   for a dynamic index (h2_hpack_dyn_lookup) — the link register is
 //   untouched, both are tail calls
 //

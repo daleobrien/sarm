@@ -104,42 +104,45 @@ stub_big_etag:
 stub_big_etag_end:
 
 .align 3
+// Pointer columns are offsets from embedded_files, matching what
+// embed_www.sh generates (docs/SECURITY.md Step 13) — lookup_embedded
+// adds the base back.
 embedded_files:
-    .8byte stub_index_path, (stub_index_path_end - stub_index_path - 1)
-    .8byte stub_index_content, (stub_index_content_end - stub_index_content)
-    .8byte stub_index_ct, (stub_index_ct_end - stub_index_ct - 1)
+    .8byte (stub_index_path - embedded_files), (stub_index_path_end - stub_index_path - 1)
+    .8byte (stub_index_content - embedded_files), (stub_index_content_end - stub_index_content)
+    .8byte (stub_index_ct - embedded_files), (stub_index_ct_end - stub_index_ct - 1)
     .8byte 0                                      // gzip flag — raw content
-    .8byte stub_index_etag, (stub_index_etag_end - stub_index_etag - 1)
+    .8byte (stub_index_etag - embedded_files), (stub_index_etag_end - stub_index_etag - 1)
 
-    .8byte stub_css_path, (stub_css_path_end - stub_css_path - 1)
-    .8byte stub_css_content, (stub_css_content_end - stub_css_content)
-    .8byte stub_css_ct, (stub_css_ct_end - stub_css_ct - 1)
+    .8byte (stub_css_path - embedded_files), (stub_css_path_end - stub_css_path - 1)
+    .8byte (stub_css_content - embedded_files), (stub_css_content_end - stub_css_content)
+    .8byte (stub_css_ct - embedded_files), (stub_css_ct_end - stub_css_ct - 1)
     .8byte 0
-    .8byte stub_css_etag, (stub_css_etag_end - stub_css_etag - 1)
+    .8byte (stub_css_etag - embedded_files), (stub_css_etag_end - stub_css_etag - 1)
 
-    .8byte stub_js_path, (stub_js_path_end - stub_js_path - 1)
-    .8byte stub_js_content, (stub_js_content_end - stub_js_content)
-    .8byte stub_js_ct, (stub_js_ct_end - stub_js_ct - 1)
+    .8byte (stub_js_path - embedded_files), (stub_js_path_end - stub_js_path - 1)
+    .8byte (stub_js_content - embedded_files), (stub_js_content_end - stub_js_content)
+    .8byte (stub_js_ct - embedded_files), (stub_js_ct_end - stub_js_ct - 1)
     .8byte 0
-    .8byte stub_js_etag, (stub_js_etag_end - stub_js_etag - 1)
+    .8byte (stub_js_etag - embedded_files), (stub_js_etag_end - stub_js_etag - 1)
 
-    .8byte stub_svg_path, (stub_svg_path_end - stub_svg_path - 1)
-    .8byte stub_svg_content, (stub_svg_content_end - stub_svg_content)
-    .8byte stub_svg_ct, (stub_svg_ct_end - stub_svg_ct - 1)
+    .8byte (stub_svg_path - embedded_files), (stub_svg_path_end - stub_svg_path - 1)
+    .8byte (stub_svg_content - embedded_files), (stub_svg_content_end - stub_svg_content)
+    .8byte (stub_svg_ct - embedded_files), (stub_svg_ct_end - stub_svg_ct - 1)
     .8byte 0
-    .8byte stub_svg_etag, (stub_svg_etag_end - stub_svg_etag - 1)
+    .8byte (stub_svg_etag - embedded_files), (stub_svg_etag_end - stub_svg_etag - 1)
 
-    .8byte stub_png_path, (stub_png_path_end - stub_png_path - 1)
-    .8byte stub_png_content, (stub_png_content_end - stub_png_content)
-    .8byte stub_png_ct, (stub_png_ct_end - stub_png_ct - 1)
+    .8byte (stub_png_path - embedded_files), (stub_png_path_end - stub_png_path - 1)
+    .8byte (stub_png_content - embedded_files), (stub_png_content_end - stub_png_content)
+    .8byte (stub_png_ct - embedded_files), (stub_png_ct_end - stub_png_ct - 1)
     .8byte 0
-    .8byte stub_png_etag, (stub_png_etag_end - stub_png_etag - 1)
+    .8byte (stub_png_etag - embedded_files), (stub_png_etag_end - stub_png_etag - 1)
 
-    .8byte stub_big_path, (stub_big_path_end - stub_big_path - 1)
-    .8byte stub_big_content, (stub_big_content_end - stub_big_content)
-    .8byte stub_big_ct, (stub_big_ct_end - stub_big_ct - 1)
+    .8byte (stub_big_path - embedded_files), (stub_big_path_end - stub_big_path - 1)
+    .8byte (stub_big_content - embedded_files), (stub_big_content_end - stub_big_content)
+    .8byte (stub_big_ct - embedded_files), (stub_big_ct_end - stub_big_ct - 1)
     .8byte 0
-    .8byte stub_big_etag, (stub_big_etag_end - stub_big_etag - 1)
+    .8byte (stub_big_etag - embedded_files), (stub_big_etag_end - stub_big_etag - 1)
 
 embedded_count:
     .quad 6

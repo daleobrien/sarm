@@ -8,10 +8,24 @@ DETECTED_OS := $(shell uname -s)
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/tls/cert_data.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
 OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
+# Link-time hardening (docs/SECURITY.md Step 13 / docs/security/hardening.md).
+# tests/test_hardening.sh asserts every property these flags buy, by
+# inspecting the linked binary rather than trusting the flags.
+#
+#   -pie              position-independent executable, so the loader can
+#                     place the image at a random base. The tree carries
+#                     no absolute addresses in static data — every table
+#                     holds link-time-resolved offsets — so this needs no
+#                     load-time relocation on either platform.
+#   -z noexecstack    emit PT_GNU_STACK RW. Without it aarch64 Linux
+#                     turns on READ_IMPLIES_EXEC for the whole process,
+#                     which makes every readable mapping executable.
+#   -z separate-code  give .rodata its own r-- LOAD segment instead of
+#                     sharing the r-x one with .text.
 ifeq ($(DETECTED_OS),Darwin)
-	LDFLAGS := -e _main -arch arm64 -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path)
+	LDFLAGS := -e _main -arch arm64 -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -pie
 else
-	LDFLAGS :=
+	LDFLAGS := -pie --no-dynamic-linker -z noexecstack -z separate-code
 	CFLAGS += "-march=armv8-a+crypto"
 	CXXFLAGS += "-march=armv8-a+crypto"
 endif
@@ -111,6 +125,7 @@ test: sarm
 	@./tests/test_leak.sh --no-build --quiet
 	@./tests/test_syscalls.sh --no-build --quiet
 	@./tests/test_limits.sh --no-build --quiet
+	@./tests/test_hardening.sh --no-build --quiet
 	@./tests/test_multicore.sh --no-build --quiet --workers 1 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 2 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 4 --iterations 2 --stress-seconds 5

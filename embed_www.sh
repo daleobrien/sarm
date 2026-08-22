@@ -119,7 +119,11 @@ fi
     echo '// Embeds all files from www/ into the binary data section.'
     echo '// Includes precomputed SHA-256 ETags for conditional requests.'
     echo ''
-    echo '.data'
+    # Read-only: nothing in this file is ever written (docs/SECURITY.md
+    # Step 13). defs.S is included for the `rodata` macro alone.
+    echo '#include "defs.S"'
+    echo ''
+    echo 'rodata'
     echo '.align 4'  # 16-byte alignment for every embedded string and payload
     echo ''
 
@@ -199,6 +203,13 @@ fi
     # Table entries are sorted lexicographically by path (files are
     # already sorted by 'find ... | sort' above). lookup_embedded resolves
     # a request path against this table by linear scan.
+    #
+    # Every pointer column is an offset from embedded_files itself, not
+    # an address (docs/SECURITY.md Step 13). An address in static data
+    # is a load-time relocation, and the Linux build is a
+    # position-independent executable with no dynamic linker to apply
+    # one; a difference between two symbols is resolved by the linker.
+    # lookup_embedded adds the table base back before returning.
     echo '.align 4'
     echo '.global embedded_files'
     echo '.global embedded_count'
@@ -211,22 +222,22 @@ fi
     echo 'embedded_files:'
 
     # Entry layout (72 bytes):
-    #   +0:  path_ptr    (8 bytes)
+    #   +0:  path_off    (8 bytes, from embedded_files)
     #   +8:  path_len    (8 bytes)
-    #   +16: content_ptr (8 bytes)
+    #   +16: content_off (8 bytes, from embedded_files)
     #   +24: content_size (8 bytes)
-    #   +32: ct_ptr      (8 bytes)
+    #   +32: ct_off      (8 bytes, from embedded_files)
     #   +40: ct_len      (8 bytes)
     #   +48: gzip flag   (8 bytes)
-    #   +56: etag_ptr    (8 bytes)
+    #   +56: etag_off    (8 bytes, from embedded_files)
     #   +64: etag_len    (8 bytes)
     i=0
     while read -r gzflag; do
-        printf '    .8byte embedded_path_%d, (embedded_path_%d_end - embedded_path_%d - 1)\n' "$i" "$i" "$i"
-        printf '    .8byte embedded_data_%d, (embedded_data_%d_end - embedded_data_%d)\n' "$i" "$i" "$i"
-        printf '    .8byte embedded_ct_%d,   (embedded_ct_%d_end - embedded_ct_%d - 1)\n' "$i" "$i" "$i"
+        printf '    .8byte (embedded_path_%d - embedded_files), (embedded_path_%d_end - embedded_path_%d - 1)\n' "$i" "$i" "$i"
+        printf '    .8byte (embedded_data_%d - embedded_files), (embedded_data_%d_end - embedded_data_%d)\n' "$i" "$i" "$i"
+        printf '    .8byte (embedded_ct_%d - embedded_files),   (embedded_ct_%d_end - embedded_ct_%d - 1)\n' "$i" "$i" "$i"
         printf '    .8byte %d\n' "$gzflag"
-        printf '    .8byte embedded_etag_%d, (embedded_etag_%d_end - embedded_etag_%d - 1)\n' "$i" "$i" "$i"
+        printf '    .8byte (embedded_etag_%d - embedded_files), (embedded_etag_%d_end - embedded_etag_%d - 1)\n' "$i" "$i" "$i"
         i=$((i + 1))
     done < "$FLAGS"
 } > "$OUTPUT"

@@ -24,137 +24,146 @@
 //   x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x9
+//   x0, x1, x2, x3, x4, x9
 //
 // Stack Usage:
 //   none
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
+// Name and value pointers are stored as offsets from the table's own
+// address (docs/SECURITY.md Step 13). Addresses in static data are
+// load-time relocations; the Linux build is a position-independent
+// executable with nothing to apply them, so the table holds
+// link-time-resolved differences instead and the lookup adds the base
+// back. 61 entries x 2 pointers is most of what the binary would
+// otherwise need fixed up.
+.global h2_hpack_static_table   // visible in the stripped binary too,
+                                // for tests/hardening_checks.py
 h2_hpack_static_table:
     //   1  :authority                    (empty)
-    .quad hp_s_authority, hp_l_authority, hp_empty, 0
+    .quad (hp_s_authority - h2_hpack_static_table), hp_l_authority, (hp_empty - h2_hpack_static_table), 0
     //   2  :method                       GET
-    .quad hp_s_method, hp_l_method, hp_v_get, hp_l_get
+    .quad (hp_s_method - h2_hpack_static_table), hp_l_method, (hp_v_get - h2_hpack_static_table), hp_l_get
     //   3  :method                       POST
-    .quad hp_s_method, hp_l_method, hp_v_post, hp_l_post
+    .quad (hp_s_method - h2_hpack_static_table), hp_l_method, (hp_v_post - h2_hpack_static_table), hp_l_post
     //   4  :path                         /
-    .quad hp_s_path, hp_l_path, hp_v_slash, hp_l_slash
+    .quad (hp_s_path - h2_hpack_static_table), hp_l_path, (hp_v_slash - h2_hpack_static_table), hp_l_slash
     //   5  :path                         /index.html
-    .quad hp_s_path, hp_l_path, hp_v_index, hp_l_index
+    .quad (hp_s_path - h2_hpack_static_table), hp_l_path, (hp_v_index - h2_hpack_static_table), hp_l_index
     //   6  :scheme                       http
-    .quad hp_s_scheme, hp_l_scheme, hp_v_http, hp_l_http
+    .quad (hp_s_scheme - h2_hpack_static_table), hp_l_scheme, (hp_v_http - h2_hpack_static_table), hp_l_http
     //   7  :scheme                       https
-    .quad hp_s_scheme, hp_l_scheme, hp_v_https, hp_l_https
+    .quad (hp_s_scheme - h2_hpack_static_table), hp_l_scheme, (hp_v_https - h2_hpack_static_table), hp_l_https
     //   8  :status                       200
-    .quad hp_s_status, hp_l_status, hp_v_200, hp_l_200
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_200 - h2_hpack_static_table), hp_l_200
     //   9  :status                       204
-    .quad hp_s_status, hp_l_status, hp_v_204, hp_l_204
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_204 - h2_hpack_static_table), hp_l_204
     //  10  :status                       206
-    .quad hp_s_status, hp_l_status, hp_v_206, hp_l_206
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_206 - h2_hpack_static_table), hp_l_206
     //  11  :status                       304
-    .quad hp_s_status, hp_l_status, hp_v_304, hp_l_304
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_304 - h2_hpack_static_table), hp_l_304
     //  12  :status                       400
-    .quad hp_s_status, hp_l_status, hp_v_400, hp_l_400
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_400 - h2_hpack_static_table), hp_l_400
     //  13  :status                       404
-    .quad hp_s_status, hp_l_status, hp_v_404, hp_l_404
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_404 - h2_hpack_static_table), hp_l_404
     //  14  :status                       500
-    .quad hp_s_status, hp_l_status, hp_v_500, hp_l_500
+    .quad (hp_s_status - h2_hpack_static_table), hp_l_status, (hp_v_500 - h2_hpack_static_table), hp_l_500
     //  15  accept-charset                (empty)
-    .quad hp_s_accept_charset, hp_l_accept_charset, hp_empty, 0
+    .quad (hp_s_accept_charset - h2_hpack_static_table), hp_l_accept_charset, (hp_empty - h2_hpack_static_table), 0
     //  16  accept-encoding               gzip, deflate
-    .quad hp_s_accept_encoding, hp_l_accept_encoding, hp_v_gzip_deflate, hp_l_gzip_deflate
+    .quad (hp_s_accept_encoding - h2_hpack_static_table), hp_l_accept_encoding, (hp_v_gzip_deflate - h2_hpack_static_table), hp_l_gzip_deflate
     //  17  accept-language               (empty)
-    .quad hp_s_accept_language, hp_l_accept_language, hp_empty, 0
+    .quad (hp_s_accept_language - h2_hpack_static_table), hp_l_accept_language, (hp_empty - h2_hpack_static_table), 0
     //  18  accept-ranges                 (empty)
-    .quad hp_s_accept_ranges, hp_l_accept_ranges, hp_empty, 0
+    .quad (hp_s_accept_ranges - h2_hpack_static_table), hp_l_accept_ranges, (hp_empty - h2_hpack_static_table), 0
     //  19  accept                        (empty)
-    .quad hp_s_accept, hp_l_accept, hp_empty, 0
+    .quad (hp_s_accept - h2_hpack_static_table), hp_l_accept, (hp_empty - h2_hpack_static_table), 0
     //  20  access-control-allow-origin   (empty)
-    .quad hp_s_access_control_allow_origin, hp_l_access_control_allow_origin, hp_empty, 0
+    .quad (hp_s_access_control_allow_origin - h2_hpack_static_table), hp_l_access_control_allow_origin, (hp_empty - h2_hpack_static_table), 0
     //  21  age                           (empty)
-    .quad hp_s_age, hp_l_age, hp_empty, 0
+    .quad (hp_s_age - h2_hpack_static_table), hp_l_age, (hp_empty - h2_hpack_static_table), 0
     //  22  allow                         (empty)
-    .quad hp_s_allow, hp_l_allow, hp_empty, 0
+    .quad (hp_s_allow - h2_hpack_static_table), hp_l_allow, (hp_empty - h2_hpack_static_table), 0
     //  23  authorization                 (empty)
-    .quad hp_s_authorization, hp_l_authorization, hp_empty, 0
+    .quad (hp_s_authorization - h2_hpack_static_table), hp_l_authorization, (hp_empty - h2_hpack_static_table), 0
     //  24  cache-control                 (empty)
-    .quad hp_s_cache_control, hp_l_cache_control, hp_empty, 0
+    .quad (hp_s_cache_control - h2_hpack_static_table), hp_l_cache_control, (hp_empty - h2_hpack_static_table), 0
     //  25  content-disposition           (empty)
-    .quad hp_s_content_disposition, hp_l_content_disposition, hp_empty, 0
+    .quad (hp_s_content_disposition - h2_hpack_static_table), hp_l_content_disposition, (hp_empty - h2_hpack_static_table), 0
     //  26  content-encoding              (empty)
-    .quad hp_s_content_encoding, hp_l_content_encoding, hp_empty, 0
+    .quad (hp_s_content_encoding - h2_hpack_static_table), hp_l_content_encoding, (hp_empty - h2_hpack_static_table), 0
     //  27  content-language              (empty)
-    .quad hp_s_content_language, hp_l_content_language, hp_empty, 0
+    .quad (hp_s_content_language - h2_hpack_static_table), hp_l_content_language, (hp_empty - h2_hpack_static_table), 0
     //  28  content-length                (empty)
-    .quad hp_s_content_length, hp_l_content_length, hp_empty, 0
+    .quad (hp_s_content_length - h2_hpack_static_table), hp_l_content_length, (hp_empty - h2_hpack_static_table), 0
     //  29  content-location              (empty)
-    .quad hp_s_content_location, hp_l_content_location, hp_empty, 0
+    .quad (hp_s_content_location - h2_hpack_static_table), hp_l_content_location, (hp_empty - h2_hpack_static_table), 0
     //  30  content-range                 (empty)
-    .quad hp_s_content_range, hp_l_content_range, hp_empty, 0
+    .quad (hp_s_content_range - h2_hpack_static_table), hp_l_content_range, (hp_empty - h2_hpack_static_table), 0
     //  31  content-type                  (empty)
-    .quad hp_s_content_type, hp_l_content_type, hp_empty, 0
+    .quad (hp_s_content_type - h2_hpack_static_table), hp_l_content_type, (hp_empty - h2_hpack_static_table), 0
     //  32  cookie                        (empty)
-    .quad hp_s_cookie, hp_l_cookie, hp_empty, 0
+    .quad (hp_s_cookie - h2_hpack_static_table), hp_l_cookie, (hp_empty - h2_hpack_static_table), 0
     //  33  date                          (empty)
-    .quad hp_s_date, hp_l_date, hp_empty, 0
+    .quad (hp_s_date - h2_hpack_static_table), hp_l_date, (hp_empty - h2_hpack_static_table), 0
     //  34  etag                          (empty)
-    .quad hp_s_etag, hp_l_etag, hp_empty, 0
+    .quad (hp_s_etag - h2_hpack_static_table), hp_l_etag, (hp_empty - h2_hpack_static_table), 0
     //  35  expect                        (empty)
-    .quad hp_s_expect, hp_l_expect, hp_empty, 0
+    .quad (hp_s_expect - h2_hpack_static_table), hp_l_expect, (hp_empty - h2_hpack_static_table), 0
     //  36  expires                       (empty)
-    .quad hp_s_expires, hp_l_expires, hp_empty, 0
+    .quad (hp_s_expires - h2_hpack_static_table), hp_l_expires, (hp_empty - h2_hpack_static_table), 0
     //  37  from                          (empty)
-    .quad hp_s_from, hp_l_from, hp_empty, 0
+    .quad (hp_s_from - h2_hpack_static_table), hp_l_from, (hp_empty - h2_hpack_static_table), 0
     //  38  host                          (empty)
-    .quad hp_s_host, hp_l_host, hp_empty, 0
+    .quad (hp_s_host - h2_hpack_static_table), hp_l_host, (hp_empty - h2_hpack_static_table), 0
     //  39  if-match                      (empty)
-    .quad hp_s_if_match, hp_l_if_match, hp_empty, 0
+    .quad (hp_s_if_match - h2_hpack_static_table), hp_l_if_match, (hp_empty - h2_hpack_static_table), 0
     //  40  if-modified-since             (empty)
-    .quad hp_s_if_modified_since, hp_l_if_modified_since, hp_empty, 0
+    .quad (hp_s_if_modified_since - h2_hpack_static_table), hp_l_if_modified_since, (hp_empty - h2_hpack_static_table), 0
     //  41  if-none-match                 (empty)
-    .quad hp_s_if_none_match, hp_l_if_none_match, hp_empty, 0
+    .quad (hp_s_if_none_match - h2_hpack_static_table), hp_l_if_none_match, (hp_empty - h2_hpack_static_table), 0
     //  42  if-range                      (empty)
-    .quad hp_s_if_range, hp_l_if_range, hp_empty, 0
+    .quad (hp_s_if_range - h2_hpack_static_table), hp_l_if_range, (hp_empty - h2_hpack_static_table), 0
     //  43  if-unmodified-since           (empty)
-    .quad hp_s_if_unmodified_since, hp_l_if_unmodified_since, hp_empty, 0
+    .quad (hp_s_if_unmodified_since - h2_hpack_static_table), hp_l_if_unmodified_since, (hp_empty - h2_hpack_static_table), 0
     //  44  last-modified                 (empty)
-    .quad hp_s_last_modified, hp_l_last_modified, hp_empty, 0
+    .quad (hp_s_last_modified - h2_hpack_static_table), hp_l_last_modified, (hp_empty - h2_hpack_static_table), 0
     //  45  link                          (empty)
-    .quad hp_s_link, hp_l_link, hp_empty, 0
+    .quad (hp_s_link - h2_hpack_static_table), hp_l_link, (hp_empty - h2_hpack_static_table), 0
     //  46  location                      (empty)
-    .quad hp_s_location, hp_l_location, hp_empty, 0
+    .quad (hp_s_location - h2_hpack_static_table), hp_l_location, (hp_empty - h2_hpack_static_table), 0
     //  47  max-forwards                  (empty)
-    .quad hp_s_max_forwards, hp_l_max_forwards, hp_empty, 0
+    .quad (hp_s_max_forwards - h2_hpack_static_table), hp_l_max_forwards, (hp_empty - h2_hpack_static_table), 0
     //  48  proxy-authenticate            (empty)
-    .quad hp_s_proxy_authenticate, hp_l_proxy_authenticate, hp_empty, 0
+    .quad (hp_s_proxy_authenticate - h2_hpack_static_table), hp_l_proxy_authenticate, (hp_empty - h2_hpack_static_table), 0
     //  49  proxy-authorization           (empty)
-    .quad hp_s_proxy_authorization, hp_l_proxy_authorization, hp_empty, 0
+    .quad (hp_s_proxy_authorization - h2_hpack_static_table), hp_l_proxy_authorization, (hp_empty - h2_hpack_static_table), 0
     //  50  range                         (empty)
-    .quad hp_s_range, hp_l_range, hp_empty, 0
+    .quad (hp_s_range - h2_hpack_static_table), hp_l_range, (hp_empty - h2_hpack_static_table), 0
     //  51  referer                       (empty)
-    .quad hp_s_referer, hp_l_referer, hp_empty, 0
+    .quad (hp_s_referer - h2_hpack_static_table), hp_l_referer, (hp_empty - h2_hpack_static_table), 0
     //  52  refresh                       (empty)
-    .quad hp_s_refresh, hp_l_refresh, hp_empty, 0
+    .quad (hp_s_refresh - h2_hpack_static_table), hp_l_refresh, (hp_empty - h2_hpack_static_table), 0
     //  53  retry-after                   (empty)
-    .quad hp_s_retry_after, hp_l_retry_after, hp_empty, 0
+    .quad (hp_s_retry_after - h2_hpack_static_table), hp_l_retry_after, (hp_empty - h2_hpack_static_table), 0
     //  54  server                        (empty)
-    .quad hp_s_server, hp_l_server, hp_empty, 0
+    .quad (hp_s_server - h2_hpack_static_table), hp_l_server, (hp_empty - h2_hpack_static_table), 0
     //  55  set-cookie                    (empty)
-    .quad hp_s_set_cookie, hp_l_set_cookie, hp_empty, 0
+    .quad (hp_s_set_cookie - h2_hpack_static_table), hp_l_set_cookie, (hp_empty - h2_hpack_static_table), 0
     //  56  strict-transport-security     (empty)
-    .quad hp_s_strict_transport_security, hp_l_strict_transport_security, hp_empty, 0
+    .quad (hp_s_strict_transport_security - h2_hpack_static_table), hp_l_strict_transport_security, (hp_empty - h2_hpack_static_table), 0
     //  57  transfer-encoding             (empty)
-    .quad hp_s_transfer_encoding, hp_l_transfer_encoding, hp_empty, 0
+    .quad (hp_s_transfer_encoding - h2_hpack_static_table), hp_l_transfer_encoding, (hp_empty - h2_hpack_static_table), 0
     //  58  user-agent                    (empty)
-    .quad hp_s_user_agent, hp_l_user_agent, hp_empty, 0
+    .quad (hp_s_user_agent - h2_hpack_static_table), hp_l_user_agent, (hp_empty - h2_hpack_static_table), 0
     //  59  vary                          (empty)
-    .quad hp_s_vary, hp_l_vary, hp_empty, 0
+    .quad (hp_s_vary - h2_hpack_static_table), hp_l_vary, (hp_empty - h2_hpack_static_table), 0
     //  60  via                           (empty)
-    .quad hp_s_via, hp_l_via, hp_empty, 0
+    .quad (hp_s_via - h2_hpack_static_table), hp_l_via, (hp_empty - h2_hpack_static_table), 0
     //  61  www-authenticate              (empty)
-    .quad hp_s_www_authenticate, hp_l_www_authenticate, hp_empty, 0
+    .quad (hp_s_www_authenticate - h2_hpack_static_table), hp_l_www_authenticate, (hp_empty - h2_hpack_static_table), 0
 
 // ── the table's strings ──────────────────────────────────────────────
 
@@ -442,11 +451,13 @@ h2_hpack_static_lookup:
     sub x0, x0, #1              // table is zero-based
     adr_l x9, h2_hpack_static_table
     lsl x0, x0, #5              // entry stride = H2_HPACK_ENTRY_SIZE (32)
-    add x9, x9, x0
-    ldr x0, [x9, #H2_HPACK_ENTRY_NAME_PTR]
-    ldr x1, [x9, #H2_HPACK_ENTRY_NAME_LEN]
-    ldr x2, [x9, #H2_HPACK_ENTRY_VALUE_PTR]
-    ldr x3, [x9, #H2_HPACK_ENTRY_VALUE_LEN]
+    add x4, x9, x0              // x9 stays the table base
+    ldr x0, [x4, #H2_HPACK_ENTRY_NAME_PTR]   // offsets from the base
+    add x0, x9, x0
+    ldr x1, [x4, #H2_HPACK_ENTRY_NAME_LEN]
+    ldr x2, [x4, #H2_HPACK_ENTRY_VALUE_PTR]
+    add x2, x9, x2
+    ldr x3, [x4, #H2_HPACK_ENTRY_VALUE_LEN]
     cmn xzr, xzr
     ret
 .Lhpack_lookup_bad:

@@ -28,7 +28,7 @@
 //   none
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 // receive-side stream transitions (§5.1) — rows are states, columns are
 // H2_EVENT_* in order [RECV_HEADERS, RECV_DATA, RECV_END_STREAM,
 // RECV_RST_STREAM]. Each byte is the resulting state, or 0xff when the

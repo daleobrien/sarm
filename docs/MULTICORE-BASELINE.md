@@ -1161,7 +1161,16 @@ became threads. Nothing here is a bug today.
 
 ### A. Read-only in practice (shared, safe)
 
-Emitted into `.data` (so technically writable) but never stored to:
+Emitted into `.data` (so technically writable) but never stored to.
+
+> **Since 2026-08-23 (`docs/SECURITY.md` Step 13) this whole category is
+> read-only in fact, not just in practice.** Everything listed below now uses
+> the `rodata` macro in `src/defs.S` — `__DATA_CONST,__const` on Mach-O,
+> `.rodata` on ELF — and is mapped `r--` in the running process. The counts
+> below still say "writable-section symbols" because they were taken before
+> that change; the classification they support (what would have to become
+> thread-local) is unaffected, since nothing here is ever written. See
+> [security/hardening.md](security/hardening.md).
 
 | Group | Where | Notes |
 | --- | --- | --- |

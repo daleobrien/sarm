@@ -23,7 +23,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 
 // R^2 mod n, R = 2^256 -- multiplying by this in Montgomery

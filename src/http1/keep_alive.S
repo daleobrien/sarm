@@ -43,7 +43,7 @@
 //   80 bytes: stp x29, x30, [sp, #-80]!
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 cl_match_str:     .ascii "Content-Length"
 .equ cl_match_len, 14

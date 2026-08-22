@@ -20,6 +20,8 @@
 // ── RFC 7541 Appendix B — the static Huffman code ───────────────────
 // (code length, code) plus a per-length start index. See the decoder
 // below for how the two tables drive h2_huffman_decode.
+rodata
+.align 4
 .global h2_huffman_table
 .global h2_huffman_len_start
 #include "../h2_huffman_table.S"

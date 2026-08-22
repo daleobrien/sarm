@@ -15,7 +15,7 @@
 //   x2 — length (0 if not found)
 //
 // Clobbered Registers:
-//   x1, x2, x3, x4
+//   x1, x2, x3, x4, x5
 //
 // Stack Usage:
 //   none
@@ -26,6 +26,8 @@
 .global find_http_code
 find_http_code:
     adr_l x3, status_table
+    mov x5, x3                  // keep the table base — entries are
+                                // offsets from it, not addresses
 1:
     // load the first element
     ldr x4, [x3]
@@ -40,7 +42,8 @@ find_http_code:
     b 1b
 
 2:
-    ldr x1, [x3, #8]
+    ldr x1, [x3, #8]            // status line, as an offset from the table
+    add x1, x5, x1
     ldr x2, [x3, #16]
     ret
 

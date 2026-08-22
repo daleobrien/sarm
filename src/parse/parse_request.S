@@ -34,7 +34,7 @@
 //   80 bytes: stp x29, x30, [sp, #-80]!
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 host_match_str: .ascii "Host"
 .equ host_match_len, 4

@@ -5,7 +5,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 // HKDF-Expand-Label bare labels (no "tls13 " prefix — hkdf_expand_label
 // adds that). Lengths are passed explicitly by every caller below, so

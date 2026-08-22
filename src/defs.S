@@ -40,6 +40,49 @@
 .endm
 #endif
 
+// ── rodata — read-only static data (docs/SECURITY.md §13, Step 13) ───
+// Everything this tree emits used to land in writable `.data`: the
+// embedded assets, the certificate, the private scalar, the SHA-256
+// round constants, the P-256 field constants and comb table, every
+// dispatch table and every response string. A write primitive anywhere
+// could rewrite served content, retarget a `br` through a handler
+// table, or replace the key in place. None of that data is written by
+// the server, so none of it needs to be writable.
+//
+// `rodata` opens the platform's read-only section. `.data` still means
+// what it always did, and the files that use it are the ones that
+// really do hold mutable state — connection state, staging buffers,
+// scratch. docs/security/hardening.md has the split, and
+// tests/test_hardening.sh checks the resulting binary rather than the
+// sources.
+//
+// Mach-O: __DATA_CONST,__const rather than __TEXT,__const, for two
+// reasons. It holds pointers (the frame-handler and HPACK static
+// tables) which need chained-fixup rebasing in a PIE, and __TEXT is
+// r-x — data does not belong in an executable mapping. dyld applies the
+// fixups and then drops __DATA_CONST to r-- (SG_READ_ONLY).
+//
+// ELF: .rodata, which the linker places in the r-- LOAD segment.
+//
+// -DSARM_NO_RODATA sends everything back to writable .data. It exists
+// for one caller: tests/test_hardening.sh builds a control binary with
+// it, so that "the constants are in a read-only section" is a check
+// that has been seen to fail rather than a check that has only ever
+// been seen to pass.
+#ifdef SARM_NO_RODATA
+.macro rodata
+    .data
+.endm
+#elif defined(__linux__)
+.macro rodata
+    .section .rodata,"a",%progbits
+.endm
+#else
+.macro rodata
+    .section __DATA_CONST,__const
+.endm
+#endif
+
 // (c)ompare and (b)ranch, (eq/ne/gt/etc), x0, x1, label
 .macro cb cond, r1, r2, l
     cmp \r1, \r2
@@ -153,6 +196,10 @@
 .equ SO_RCVTIMEO,      20
 // Linux doesn't have SO_NOSIGPIPE; we ignore SIGPIPE instead.
 .equ SO_NOSIGPIPE,     -1
+
+// prlimit64(pid, resource, new_limit, old_limit) — arm64 Linux has no
+// setrlimit; this is the only limit-setting call in the table.
+.equ SYS_prlimit64,    261
 
 // mmap
 .equ PROT_READ,        1
@@ -329,6 +376,14 @@
 // without a core dump. main.S arms it once per forked connection child
 // (CONN_DEADLINE), which is what bounds that child's lifetime.
 .equ ITIMER_REAL,    0
+
+// RLIMIT_CORE — the core-dump size limit main.S sets to zero at startup
+// (docs/SECURITY.md §10 and Step 13). A core of this process is a
+// complete memory disclosure, private scalar and traffic keys included.
+// The number is 4 on both platforms; only the syscall differs, because
+// arm64 Linux has no setrlimit — the generic syscall table carries
+// prlimit64(pid, resource, new, old) instead, with pid 0 meaning self.
+.equ RLIMIT_CORE,    4
 .equ SIGPIPE_,       13
 .equ SIGINT_,        2
 .equ SIGTERM_,       15
@@ -396,6 +451,7 @@
 .equ SYS_execve,       59
 .equ SYS_munmap,       73
 .equ SYS_setitimer,    83
+.equ SYS_setrlimit,    195
 .equ SYS_dup2,         90
 .equ SYS_socket,       97
 .equ SYS_bind,         104
@@ -497,6 +553,10 @@
 .equ SIGCHLD_,       20
 // ITIMER_REAL — see the Linux block above.
 .equ ITIMER_REAL,    0
+
+// RLIMIT_CORE — see the Linux block above. Same number, and macOS does
+// have setrlimit(resource, &rlimit).
+.equ RLIMIT_CORE,    4
 .equ SIGPIPE_,       13
 .equ SIGINT_,        2
 .equ SIGTERM_,       15

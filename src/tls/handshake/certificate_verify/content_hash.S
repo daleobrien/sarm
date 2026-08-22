@@ -6,7 +6,7 @@
 
 #include "../../../defs.S"
 
-.data
+rodata
 .align 4
 // 64 spaces, the server context string, and its terminating 0x00 —
 // the fixed prefix of every CertificateVerify signature content (RFC

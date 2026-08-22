@@ -44,7 +44,7 @@
 //   160 bytes: stp x19, x20, [sp, #-160]!; ...; str x30, [sp, #48]
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 // Byte-exact names h2_build_request compares decoded field names and
 // values against. The pseudo-headers are the four a request may carry;
 // the method strings mirror parse_request's case-sensitive detection.
@@ -88,6 +88,7 @@ h2_range_name:
     .asciz "range"
 .equ h2_range_name_len, 5
 
+.data
 // h2_range_buf — persistent copy of the request's Range header value
 // ("bytes=0-99"). The decoded value points into h2_hpack_str_buf, which
 // is per-block scratch, so it is copied here — like :authority into

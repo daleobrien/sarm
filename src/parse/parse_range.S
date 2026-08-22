@@ -23,7 +23,7 @@
 //   80 bytes: stp x29, x30, [sp, #-80]!
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 range_match_str: .ascii "range"
 .equ range_match_len, 5

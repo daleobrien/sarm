@@ -8,6 +8,12 @@
 //   embedded_files and embedded_count (declared in the generated/stub
 //   files); calls streqn.
 //
+//   Every pointer column in that table is an offset from embedded_files
+//   itself rather than an address, so the binary needs no load-time
+//   relocations and can be a position-independent executable on both
+//   platforms (docs/SECURITY.md Step 13). This routine adds the table
+//   base back, so its callers still receive real pointers.
+//
 //   A hash-based side table (FNV-1a keys, sorted for binary search) was
 //   built for this lookup and never wired up. It was evaluated and
 //   deliberately not adopted: embedded_count is 6, where the entire
@@ -32,7 +38,7 @@
 //   carry set = not found, carry clear = found
 //
 // Clobbered Registers:
-//   x0-x6, x9, x10, x19, x20, x22, x23
+//   x0-x6, x9, x10, x11, x19, x20, x22, x23
 //   (x19, x20, x22, x23 saved and restored)
 //
 // Stack Usage:
@@ -65,7 +71,11 @@ Lle_scan:
     cmp x20, x3                   // compare lengths
     b.ne Lle_next
 
-    ldr x1, [x23, #0]             // entry path_ptr
+    adr_l x11, embedded_files     // table base — re-derived per
+                                  // iteration because streqn is free to
+                                  // clobber x11
+    ldr x1, [x23, #0]             // entry path offset
+    add x1, x11, x1
     mov x0, x19
     mov x2, x20
     bl streqn
@@ -76,22 +86,27 @@ Lle_next:
     b Lle_scan
 
 Lle_found:
-    // Entry layout at x23:
-    // +0:  path_ptr    (8 bytes)
+    adr_l x11, embedded_files     // base again — the streqn that got us
+                                  // here may have clobbered it
+    // Entry layout at x23 (offsets are from embedded_files, in x11):
+    // +0:  path_off    (8 bytes)
     // +8:  path_len    (8 bytes)
-    // +16: content_ptr (8 bytes)
+    // +16: content_off (8 bytes)
     // +24: content_size (8 bytes)
-    // +32: ct_ptr      (8 bytes)
+    // +32: ct_off      (8 bytes)
     // +40: ct_len      (8 bytes)
     // +48: gzip flag   (8 bytes)
-    // +56: etag_ptr    (8 bytes)
+    // +56: etag_off    (8 bytes)
     // +64: etag_len    (8 bytes)
-    ldr x0, [x23, #16]   // content_ptr
+    ldr x0, [x23, #16]   // content
+    add x0, x11, x0
     ldr x1, [x23, #24]   // content_size
-    ldr x2, [x23, #32]   // ct_ptr
+    ldr x2, [x23, #32]   // content-type
+    add x2, x11, x2
     ldr x3, [x23, #40]   // ct_len
     ldr x4, [x23, #48]   // gzip flag
-    ldr x5, [x23, #56]   // etag_ptr
+    ldr x5, [x23, #56]   // ETag
+    add x5, x11, x5
     ldr x6, [x23, #64]   // etag_len
 
     cmn xzr, xzr  // clear carry

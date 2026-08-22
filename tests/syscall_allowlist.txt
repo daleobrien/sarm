@@ -31,6 +31,14 @@ sigaction           # main.S (macOS) — SIGCHLD, SIGINT, SIGTERM, SIGPIPE
 rt_sigaction        # main.S (Linux) — the same
 sigreturn           # sig_tramp (macOS) — returning from a signal handler
 sysctlbyname        # main.S — hw.logicalcpu, only on `--workers auto`
+setrlimit           # main.S (macOS) — RLIMIT_CORE to zero before the listening
+                    #   socket exists, so no process in the tree can ever dump
+                    #   core (docs/SECURITY.md §10, Step 13). A core is a
+                    #   complete memory disclosure: private scalar, handshake
+                    #   secrets, traffic keys. Inherited across fork(), so it
+                    #   covers every worker and every connection child.
+prlimit64           # main.S (Linux) — the same call; arm64 Linux has no
+                    #   setrlimit, so pid 0 stands in for "this process".
 
 # ── per connection ──────────────────────────────────────────────────
 fork                # main.S (macOS) — worker spawn and per-connection fork

@@ -34,12 +34,15 @@ stub_index_etag:
 stub_index_etag_end:
 
 .align 3
+// Pointer columns are offsets from embedded_files, matching what
+// embed_www.sh generates (docs/SECURITY.md Step 13) — lookup_embedded
+// adds the base back.
 embedded_files:
-    .8byte stub_index_path, (stub_index_path_end - stub_index_path - 1)
-    .8byte stub_index_content, (stub_index_content_end - stub_index_content)
-    .8byte stub_index_ct, (stub_index_ct_end - stub_index_ct - 1)
+    .8byte (stub_index_path - embedded_files), (stub_index_path_end - stub_index_path - 1)
+    .8byte (stub_index_content - embedded_files), (stub_index_content_end - stub_index_content)
+    .8byte (stub_index_ct - embedded_files), (stub_index_ct_end - stub_index_ct - 1)
     .8byte 0                                      // gzip flag — raw content
-    .8byte stub_index_etag, (stub_index_etag_end - stub_index_etag - 1)
+    .8byte (stub_index_etag - embedded_files), (stub_index_etag_end - stub_index_etag - 1)
 
 embedded_count:
     .quad 1

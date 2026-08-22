@@ -24,7 +24,7 @@
 //   32 bytes: stp x29, x30, [sp, #-32]!; stp x20, x21, [sp, #16]
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 host_str: .ascii "Host"
 .equ host_str_len, . - host_str
 

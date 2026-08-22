@@ -5,7 +5,7 @@
 
 #include "../../../defs.S"
 
-.data
+rodata
 .align 4
 // The bare "finished" label (no "tls13 " prefix — hkdf_expand_label
 // adds that, same convention as key_schedule.S's khs_label_* set).

@@ -34,7 +34,7 @@
 //   of stack per request on a kept-alive connection.
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 err_dir: .ascii ERR_DIR
 .equ err_dir_len, . - err_dir

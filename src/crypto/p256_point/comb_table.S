@@ -15,7 +15,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 .global p256_comb_table
 p256_comb_table:

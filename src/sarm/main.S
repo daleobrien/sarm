@@ -39,6 +39,7 @@ addr:
     .byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // padding
 .align 4
 
+rodata
 // ── Phase 3, Step 14 option tokens ────────────────────────────────
 // Matched with streqn over a length that INCLUDES the NUL, so a longer
 // argument sharing the prefix ("--workersplease") is a mismatch rather
@@ -91,6 +92,15 @@ http_1_0: .ascii "HTTP/1.0"
 .align 4
 http_1_1: .ascii "HTTP/1.1"
 .equ http_1_1_len, . - http_1_1
+
+// no_core_rlimit — struct rlimit { rlim_cur, rlim_max }, both zero, for
+// the RLIMIT_CORE call at the top of the accept path's setup. Two
+// 64-bit fields on both platforms, and it is read by the kernel, never
+// written, so it lives with the other constants.
+.align 4
+no_core_rlimit:
+    .quad 0              // rlim_cur
+    .quad 0              // rlim_max
 
 // conn_deadline — struct itimerval for setitimer(ITIMER_REAL), armed
 // once per forked connection child at Lmain_child. it_interval is zero,
@@ -483,6 +493,38 @@ Largv_next:
     b Largv_loop
 
 skip_argv:
+    // ── no core dumps, ever (docs/SECURITY.md §10, Step 13) ───────────
+    // A core of this process is a complete memory disclosure: the
+    // private scalar, the handshake secrets and every traffic key are
+    // all in it. tests/test_leak.sh checked that no core appeared, but
+    // it checked it with `ulimit -c 0` in the harness — a property of
+    // how the test launched the server, not of the server. This makes
+    // it a property of the server: the limit is set before the
+    // listening socket exists, and rlimits are inherited across fork(),
+    // so every worker and every connection child starts with it too.
+    //
+    // Lowering a soft limit is always permitted, so a failure here
+    // means something is wrong with the kernel interface rather than
+    // with the request, and it happens at startup where refusing to
+    // serve costs nothing. It is fatal for the same reason bind() is.
+    adr_l x9, no_core_rlimit
+#ifdef __linux__
+    // arm64 Linux has no setrlimit: prlimit64(0, RLIMIT_CORE, &new, NULL)
+    SCWINUM SYS_prlimit64
+    mov x0, #0                  // pid 0 — this process
+    mov x1, #RLIMIT_CORE
+    mov x2, x9
+    mov x3, #0                  // don't want the old limit back
+#else
+    // setrlimit(RLIMIT_CORE, &rlimit)
+    SCWINUM SYS_setrlimit
+    mov x0, #RLIMIT_CORE
+    mov x1, x9
+#endif
+    SCWISVC
+    SCERR
+    b.cs fatal_exit
+
     // socket(AF_INET, SOCK_STREAM, 0)
     SCWINUM SYS_socket
     mov x0, #AF_INET

@@ -2,7 +2,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 
 // SHA-256 round constants (FIPS 180-4), 64 x 32-bit words

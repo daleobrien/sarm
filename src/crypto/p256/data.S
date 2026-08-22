@@ -2,7 +2,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 .global p256_p
 p256_p:

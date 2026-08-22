@@ -35,7 +35,7 @@
 //   caller's buffer, not a global (see src/util/itoa.S).
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 header_content_length: .ascii "\r\nContent-Length: "
 .equ header_content_length_len, . - header_content_length

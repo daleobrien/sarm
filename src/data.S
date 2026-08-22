@@ -45,6 +45,7 @@ connection_mode: .quad CONNECTION_HTTP1
 .align 4
 worker_count: .quad 1
 
+rodata
 // h2_preface — the 24-byte HTTP/2 client connection preface
 // (RFC 9113 §3.4), compared byte-for-byte by h2_verify_preface. Read
 // with three 8-byte loads (h2_verify_preface), so it starts 16-aligned

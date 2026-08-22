@@ -2,7 +2,7 @@
 
 #include "../../defs.S"
 
-.data
+rodata
 .align 4
 // The P-256 base point G, little-endian 64-bit limbs.
 .global p256_gx

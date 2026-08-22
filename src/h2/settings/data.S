@@ -8,7 +8,7 @@
 // we'd prefer), and (Stage 12) SETTINGS_MAX_CONCURRENT_STREAMS = 32
 // advertises how many concurrent streams this endpoint permits (§5.1.2).
 
-.data
+rodata
 .align 4
 .global h2_settings_frame
 h2_settings_frame:

@@ -11,7 +11,7 @@
 //   one — constant 1 used by setsockopt() (SO_REUSEADDR, SO_NOSIGPIPE)
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4 // one is a .word (4 bytes) — pad it out to 16
 one: .word 1
 .align 4

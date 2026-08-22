@@ -19,28 +19,41 @@
 //   carry set on connection error
 //
 // Clobbered Registers:
-//   x3, x9 (handlers clobber their own)
+//   x3, x9, x10 (handlers clobber their own)
 //
 // Stack Usage:
 //   none
 // ─────────────────────────────────────────────────────────────────────
 
-.data
+rodata
 .align 4
 // frame-type dispatch table, indexed by frame type (§6). The dispatcher
 // tail-calls the selected handler, so the handler returns directly to
 // the dispatcher's caller with the same x0/x1/x2 arguments.
+//
+// Entries are offsets from the table's own address, not addresses
+// (docs/SECURITY.md Step 13, docs/security/hardening.md §3). An
+// absolute address in static data is a relocation, and a relocation in
+// a position-independent executable has to be applied by something at
+// load time; the Linux build has no dynamic linker to apply it. A
+// difference between two symbols is resolved by the linker instead, so
+// the table costs nothing at runtime beyond the `add` below, and the
+// binary needs no load-time fixups at all.
+// Exported (like the other static tables) so that
+// tests/hardening_checks.py can still find it in the stripped
+// production binary, where local symbols are gone.
+.global h2_frame_handlers
 h2_frame_handlers:
-    .quad h2_handle_data
-    .quad h2_handle_headers
-    .quad h2_handle_priority
-    .quad h2_handle_rst_stream
-    .quad h2_handle_settings
-    .quad h2_handle_push_promise
-    .quad h2_handle_ping
-    .quad h2_handle_goaway
-    .quad h2_handle_window_update
-    .quad h2_handle_continuation
+    .quad (h2_handle_data - h2_frame_handlers)
+    .quad (h2_handle_headers - h2_frame_handlers)
+    .quad (h2_handle_priority - h2_frame_handlers)
+    .quad (h2_handle_rst_stream - h2_frame_handlers)
+    .quad (h2_handle_settings - h2_frame_handlers)
+    .quad (h2_handle_push_promise - h2_frame_handlers)
+    .quad (h2_handle_ping - h2_frame_handlers)
+    .quad (h2_handle_goaway - h2_frame_handlers)
+    .quad (h2_handle_window_update - h2_frame_handlers)
+    .quad (h2_handle_continuation - h2_frame_handlers)
 
 .text
 .align 2
@@ -54,7 +67,8 @@ h2_dispatch_frame:
     str w3, [x2, #H2C_LAST_FRAME_TYPE]
 
     adr_l x9, h2_frame_handlers
-    ldr x9, [x9, w3, uxtw #3]
+    ldr x10, [x9, w3, uxtw #3]  // entry: handler - table
+    add x9, x9, x10
     br x9
 
 .Lh2_unknown_frame:
