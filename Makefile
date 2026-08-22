@@ -80,6 +80,8 @@ test: sarm
 	@./tests/test_keepalive.sh --no-build --quiet
 	@./tests/test_h2_flow.sh --no-build --quiet
 	@./tests/test_workers.sh --no-build --quiet
+	@./tests/test_leak.sh --no-build --quiet
+	@./tests/test_syscalls.sh --no-build --quiet
 	@./tests/test_multicore.sh --no-build --quiet --workers 1 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 2 --iterations 2 --stress-seconds 5
 	@./tests/test_multicore.sh --no-build --quiet --workers 4 --iterations 2 --stress-seconds 5

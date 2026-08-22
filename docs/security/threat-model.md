@@ -282,6 +282,15 @@ The disclosure risk is therefore entirely *over-read into an adjacent
 buffer*, not accidental printing — which makes the `.bss`/`.data` adjacency map
 in §5 the thing that matters, and Step 10's canary test the right detector.
 
+Step 10 has since built it: `tests/test_leak.sh` drives the hostile workload in
+`tests/hostile_workload.py` against a live server in both fork and `no_fork`
+mode, captures every byte that comes back (ciphertext and decrypted alike), and
+searches it for the private scalar, for any 12-byte run of it, for
+certificate-adjacent memory and for the per-connection request markers. The
+"no logging" property above is asserted there too — the run fails on any byte
+written to stdout or stderr. Write-up:
+[leak-and-containment.md](leak-and-containment.md).
+
 ---
 
 ## 5. Memory: allocations and buffers
@@ -371,6 +380,15 @@ Actual call sites, whole tree, excluding the `.equ` definitions in `defs.S`:
 pre-embedded era. That makes the allowlist for Step 11 exactly the table above,
 and the test assertion is strong and simple: after startup, a traced workload
 must show no `open`/`openat`/`execve` at all, because no code path issues one.
+
+Step 11 has since written that allowlist down as `tests/syscall_allowlist.txt`
+and made it checkable two ways: `scripts/syscall_audit.py` resolves every `svc`
+site in the built binary (and every `SCWINUM` site in `src/`) to a syscall name
+and compares it with the list — a statement about *all* workloads, not the one
+that ran — and `tests/test_syscalls.sh` additionally traces the hostile
+workload under `strace` where the platform provides it. **Adding a line to that
+file is a change to this table.** Write-up:
+[leak-and-containment.md](leak-and-containment.md).
 
 Two footnotes for the tracing test: `sysctlbyname` is startup-only and only on
 the `--workers auto` path, and the entropy call is the only syscall in the

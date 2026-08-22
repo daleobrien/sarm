@@ -1,0 +1,55 @@
+# sarm — the syscall allowlist (docs/SECURITY.md §14, Step 11)
+#
+# The complete set of kernel calls `sarm` is permitted to make, on either
+# platform.  Checked two ways by `scripts/syscall_audit.py`, which
+# `tests/test_syscalls.sh` runs:
+#
+#   * every `SCWINUM SYS_x` site in src/ must name a syscall listed here;
+#   * every `svc` in the built binary must resolve to a number that maps
+#     (through the `.equ SYS_x` table in src/defs.S, for the platform being
+#     audited) to a syscall listed here.
+#
+# Nothing here opens, creates, renames, removes, lists or executes a file,
+# and nothing here maps memory.  That is the invariant the audit turns into a
+# test: a remote attacker cannot trick the server into reading a file because
+# the server contains no instruction that asks the kernel to open one.
+#
+# Both platforms' names appear together — the source check is deliberately
+# platform-blind, so a syscall added under the #ifdef arm you are not
+# currently building still has to be justified here.  The audit prints any
+# entry nothing calls, so this list cannot quietly grow wider than the binary.
+#
+# Adding a line to this file is a change to the server's threat model.  The
+# corresponding entry in docs/security/threat-model.md §6 changes with it.
+
+# ── startup ─────────────────────────────────────────────────────────
+socket              # main.S — the listening socket
+bind                # main.S
+listen              # main.S
+setsockopt          # main.S — SO_REUSEADDR at startup, SO_RCVTIMEO per conn
+sigaction           # main.S (macOS) — SIGCHLD, SIGINT, SIGTERM, SIGPIPE
+rt_sigaction        # main.S (Linux) — the same
+sigreturn           # sig_tramp (macOS) — returning from a signal handler
+sysctlbyname        # main.S — hw.logicalcpu, only on `--workers auto`
+
+# ── per connection ──────────────────────────────────────────────────
+fork                # main.S (macOS) — worker spawn and per-connection fork
+clone               # main.S (Linux) — the same
+accept              # main.S (macOS)
+accept4             # main.S (Linux)
+read                # transport, raw_read, h2_verify_preface, main.S
+write               # raw_write
+writev              # raw_writev — header + body in one call
+close               # main.S, child_end.S
+shutdown            # main.S — graceful close of the listener
+
+# ── entropy ─────────────────────────────────────────────────────────
+# The only syscall in the whole crypto tree, and the only one that touches a
+# kernel CSPRNG.  No file descriptor is involved: there is deliberately no
+# /dev/urandom path to audit (src/crypto/random.S).
+getentropy          # macOS
+getrandom           # Linux
+
+# ── teardown ────────────────────────────────────────────────────────
+kill                # main.S — worker_shutdown signalling its children
+exit                # main.S, child_end.S

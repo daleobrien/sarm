@@ -29,6 +29,8 @@ make test-security              # tests/security — bounds + differential + ove
 ./tests/test_security.sh        # traversal, encoding, oversize, malformed input (live binary, curl)
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
+./tests/test_leak.sh            # secret-leak probe (SECURITY.md Step 10)
+./tests/test_syscalls.sh        # syscall allowlist + filesystem non-access (Step 11)
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator (NOT part of `make test`, run separately)
 ```
@@ -36,6 +38,23 @@ make test-security              # tests/security — bounds + differential + ove
 `tests/test_multicore.sh` takes `--workers N`, `--iterations N` and
 `--stress-seconds S`; `make test` runs it at 1, 2 and 4 workers with short
 settings, and the long soaks are run by hand.
+
+`tests/test_leak.sh` fires deterministic malformed traffic
+(`tests/hostile_workload.py`) at a live server in both fork and `no_fork` mode,
+captures every byte returned, and scans it for the embedded private scalar, any
+12-byte run of it, certificate-adjacent memory, file content and the
+per-connection request markers; it also asserts the server writes nothing to
+stdout/stderr, leaves no core dump and never dies on a signal. `--cases N` /
+`SARM_LEAK_CASES=N` scales it (default 150 per mode); `python3
+tests/leak_checks.py --self-test` checks the scanner itself.
+
+`tests/test_syscalls.sh` runs `scripts/syscall_audit.py` (every `svc` site in
+the built binary and every `SCWINUM` in `src/`, against
+`tests/syscall_allowlist.txt`) and then, where a tracer exists — `strace` on
+Linux, `dtruss` as root on macOS — traces the same hostile workload and checks
+no filesystem syscall appears. On macOS the trace is *skipped*, not passed; the
+static audit is the platform-independent half and is the stronger claim. Both
+are documented in [docs/security/leak-and-containment.md](../../../docs/security/leak-and-containment.md).
 
 `make test` builds `sarm` first, so it's always the safe default after a
 source change. The individual `test_*.sh` scripts accept `--no-build

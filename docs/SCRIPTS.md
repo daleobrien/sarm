@@ -38,6 +38,8 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_keepalive.sh       # pipelining, fragmentation, keep-alive budget
 ./tests/test_h2_flow.sh         # HTTP/2 flow-control wait path, over h2c
 ./tests/test_workers.sh         # --workers parsing, accept spread, shutdown
+./tests/test_leak.sh            # secret-leak probe: hostile traffic, scanned responses
+./tests/test_syscalls.sh        # syscall allowlist + traced filesystem non-access
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
 ```
@@ -56,6 +58,31 @@ bytes live in the TLS stage buffer, which is what kept the buffer-sharing bug
 it regresses latent there. It needs an embedded asset larger than the
 65535-byte default window and says so rather than passing vacuously if there
 isn't one.
+
+`tests/test_leak.sh` (with `tests/leak_checks.py` and
+`tests/hostile_workload.py`) is `docs/SECURITY.md` Step 10: it fires
+deterministic malformed traffic over HTTP/1, h2c, junk TLS, a real TLS 1.3
+connection and byte-at-a-time fragments, captures every byte the server sends
+back, and searches it for the embedded private scalar, any 12-byte run of it,
+certificate-adjacent memory, file content, and the per-connection request
+markers — the last of which catches one connection seeing another's buffers.
+It runs the whole workload twice, once in the production fork mode and once in
+`no_fork`, and also asserts the server writes nothing to stdout or stderr,
+leaves no core dump, and never dies on a signal. `--cases N` (or
+`SARM_LEAK_CASES`) scales the run; the scanner tests itself first with
+`leak_checks.py --self-test`.
+
+`tests/test_syscalls.sh` (with `scripts/syscall_audit.py`,
+`tests/syscall_allowlist.txt` and `tests/trace_check.py`) is Step 11. The
+static half resolves every `svc` site in the built binary — every syscall
+number in this tree is a compile-time immediate, so the complete set the binary
+*can* make is decidable — and checks it against the allowlist; the dynamic half
+traces the hostile workload under `strace` (Linux) or `dtruss` (macOS, root)
+and checks what actually happened, skipping rather than passing where no tracer
+exists. It also serves the workload from an empty read-only directory and
+checks nothing appeared on disk. `scripts/syscall_audit.py` is usable alone,
+with `--json` or `--skip-binary`. Write-up:
+[docs/security/leak-and-containment.md](security/leak-and-containment.md).
 
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they
@@ -149,8 +176,16 @@ python3 scripts/regpressure.py                                    # ranked repor
 python3 scripts/regpressure.py --callers .Lgcm_ghash_run
 python3 scripts/abi.py --source src/crypto/p256/sqr_mul.S --function p256_reduce --flags
 python3 scripts/validate_clobbers.py --verdict OVERSTATES
+python3 scripts/syscall_audit.py                                  # svc sites vs the allowlist
 ```
 
+- **`syscall_audit.py`** — the syscall allowlist checker (`docs/SECURITY.md`
+  Step 11). Resolves every `svc` in the built binary to a syscall number and
+  every `SCWINUM` in `src/` to a name, and checks both against
+  `tests/syscall_allowlist.txt`. Its own parser, not `asmparse.py`: it reads
+  the *disassembled binary*, which is where the claim has to hold —
+  `--skip-binary` falls back to the source check alone, `--json` for a report.
+  Run by `tests/test_syscalls.sh`.
 - **`asmparse.py`** — the single AArch64 parser everything else uses: labels
   (including `.L`), macro expansion (`ldr_l`, `SCWISVC`, `gcm_rbit`, the carry51
   family), regions, call graph, platform-aware (`--linux`). It exists because
