@@ -133,6 +133,16 @@ the parsers above: the bug shape here is a stale or unreset `pos > len`, not an
 oversized field. `h2_connection_loop` resets the plain staging pair at the
 start of every connection precisely because `no_fork` reuses the process.
 
+**Fragmentation-tested in Step 9** (`docs/security/fuzzing.md` §§23–28): both
+staging paths, and both record readers above them, are now driven twice per
+case — the same bytes written whole, then written in pieces the case chose,
+with every return value and every delivered byte compared. `transport_read`
+carries *two* independent drain loops, one per transport mode; sabotaging
+either leaves the other's campaign green, which is how the suite shows it
+covers both. What the two runs are allowed to differ in is the staging state
+itself, so the campaigns reset `transport_mode`, both stage cursors and the
+client sequence number before each run rather than comparing them after.
+
 ### 3.3 HTTP/2 and HPACK
 
 | Length | Source | Bound enforced | Destination |
@@ -629,6 +639,21 @@ on by Step 1.
 19. **`no_fork` mode reuses one process across connections** without clearing
    `tls_state`. It is a debug/profiling mode only, but any test harness that
    uses it inherits cross-connection state. → Steps 3, 10.
+20. **`transport_read` contains two copies of the same drain loop**, one for
+   `TRANSPORT_PLAIN` and one for `TRANSPORT_TLS` (`.Ltr_plain_loop` /
+   `.Ltr_tls_loop`), differing only in where a refill comes from. Step 9's
+   sabotage table is the demonstration that both are correct today, and also
+   the demonstration that a fix applied to one would not be applied to the
+   other: breaking the plain loop leaves the `tls` campaign green and vice
+   versa. → recorded; see `fuzzing.md` §27.
+21. **The HTTP/1 read loop's leftover shift is now covered.** §3.4's
+   pipelined-request row and observation 2 of `fuzzing.md` §22 both pointed at
+   `child.S`'s `Lcheck_leftover` / `Lhkc_shift`: a keep-alive request is parsed
+   from bytes that were `memcpy`'d down to the front of `buf`, possibly
+   several times. Step 9's `pipeline` campaign transcribes that loop and checks
+   the requests it takes out of a pipelined stream, byte for byte, against the
+   stream's own terminators, for every chunking. → covered; see `fuzzing.md`
+   §25.
 
 ---
 

@@ -503,3 +503,139 @@ guard-page fault, a `.bss` canary, a contract invariant on the parsed request,
 and the escape status. The authority row is the reason the generator emits Host
 values around 256 bytes — it was **missed** on the first attempt, because
 nothing in the corpus was long enough to reach the truncation branch at all.
+
+## test_frag_* — the same bytes, delivered in pieces (Step 9)
+
+Steps 6–8 handed each parser a buffer that was already full, which is the one
+thing the network never does. Step 9 puts the bytes back on a socket and asks
+whether the answer depends on how they arrived:
+
+> Send every valid corpus item split at arbitrary byte positions.
+> **Test:** behaviour matches unsplit input.
+
+The bug it hunts is the assumption `docs/SECURITY.md` §7 names outright —
+`one recv() == one protocol message`. Nothing in TCP promises that, and a
+reader that believes it passes every test whose client writes a whole record
+with one `write()`.
+
+So a case is not one input and one invariant. It is *the same input twice* —
+written whole, then written in pieces the case chose — with the two outcomes
+compared byte for byte: every return value, every error code, and the whole
+destination buffer including the poison the reader was supposed to leave
+alone. Equality is the invariant, so the corpus does not have to be valid for
+the check to mean anything: a record rejected for a bad version must be
+rejected the same way, at the same point, however it arrived.
+
+The design and the evidence are in
+[docs/security/fuzzing.md](../../docs/security/fuzzing.md) §§23–28.
+
+| suite | campaign | target |
+|---|---|---|
+| `test_frag_socket` | `record` | `tls_read_record` — the first read of the connection, whose five header bytes decide how far the second read goes, split anywhere including inside them |
+| | `prefilled` | `tls_read_record_prefilled` — the same, for the ClientHello whose first bytes `main.S` already read. Two shortfall subtractions, both on wire-derived values |
+| | `plain` | `transport_read` in `TRANSPORT_PLAIN` — the staging buffer h2c reads frame headers and payloads out of |
+| | `tls` | `transport_read` in `TRANSPORT_TLS` — several records in one write, one record across several writes, a record header split down the middle |
+| `test_frag_http` | `header_end` | `parse_header_end` over *every prefix* of the same request, each placed flush against a guard page |
+| | `probe` | `h2_probe` over every prefix — a connection whose first read is three bytes is still an HTTP/2 connection |
+| | `pipeline` | the read loop transcribed from `child.S` — accumulate, scan, serve, shift the leftover bytes to the front with the server's own `memcpy`, repeat — over a pipelined stream chopped up arbitrarily |
+
+```bash
+./tests/security/_obj/test_frag_socket                     # 7200 cases, ~1 s
+./tests/security/_obj/test_frag_http                       # 100000 cases, ~0.5 s
+SARM_FUZZ_MULT=40 ./tests/security/_obj/test_frag_socket   # the soak
+SARM_FUZZ_STATS=1 ./tests/security/_obj/test_frag_socket   # outcome histogram
+```
+
+### Making a split a real split
+
+Writing the pieces back to back proves nothing: they land in the socket buffer
+together and the reader's first `read()` returns the lot — the unsplit case
+wearing a disguise. A split is only real if the reader consumes piece *k*
+before piece *k+1* arrives, and that needs two threads plus a way to know when.
+
+`frag_common.h` asks the kernel. `FIONREAD` on the read end is the number of
+bytes still waiting there, so the feeder thread spins until it reads 0 — the
+reader has taken everything sent so far and is, or is about to be, blocked in
+`read()` — and only then writes the next piece:
+
+```
+write "\x17\x03"   ──▶  [ 2 bytes ]  ──▶ reader takes them, blocks
+       wait FIONREAD == 0
+write "\x03\x00\x40..."             ──▶ reader wakes with the rest
+```
+
+Every wait is bounded and the feeder writes anyway when the bound expires, so a
+reader that stops reading stalls nothing; the campaign's own deadline is what
+catches a genuine hang. Whether each boundary was real is **counted**, not
+assumed — `real split boundaries` is a required bucket, so a suite that
+degraded into writing everything at once would fail as `VACUOUS` rather than
+pass while testing nothing. In practice 95–99% of boundaries are confirmed.
+
+The *schedule* is deterministic — same seed, same case, same cuts at the same
+offsets, so every reproducer still works. The *interleaving* is not, and that
+asymmetry is the right way round: the invariant under test is that the
+interleaving does not matter.
+
+### The two runs may legitimately differ — in what?
+
+Not in anything the caller can see. How much sits in `plain_read_stage_buf`
+when the last span is served *does* depend on the split, and is nobody's
+business but `transport_read`'s, so the comparison is of return values and
+delivered bytes, and the state each run starts from (`transport_mode`, both
+stage cursors, the client sequence number) is reset to identical values rather
+than compared at the end.
+
+### Why the HTTP/1 side has no socket
+
+`src/sarm/child.S` reads with `read()` straight into `buf` and, after every
+read, re-runs `h2_probe` and `parse_header_end` over everything accumulated so
+far. The loop is what waits, so the fragmentation question for that path is not
+"does the reader wait for the rest" but *whether the answer depends on where
+the reads happened to land* — a property of the two scans over every prefix of
+the same bytes. That is what `test_frag_http` sweeps, with each prefix placed
+flush against `PROT_NONE`: a scan that peeks one byte past its length argument
+works fine on a full buffer, where the next byte is simply the one that has not
+arrived yet, and reads whatever is there exactly when a read boundary lands on
+it. Here it faults.
+
+The `pipeline` campaign is the other half of that path, and the item Step 8
+carried forward: a keep-alive connection does not start each request at the
+front of `buf`. `http1_keepalive_continue` shifts whatever followed the last
+header down to offset 0 with `memcpy` and re-enters the scan, so the bytes a
+request is parsed from have been moved — possibly several times — before the
+parser sees them. The campaign records each served request as its length *and*
+a hash of its bytes, because a length-only record calls a corrupted shift
+identical.
+
+That shift is also the reason the campaign calls `memcpy` through inline asm.
+In Mach-O a `.global memcpy` in assembly is the symbol `memcpy`, while C's
+`memcpy()` is libc's `_memcpy`: linking `util_memcpy.o` and writing `memcpy(…)`
+in the harness would have tested libc. The first sabotage run said so — a
+`memcpy` with a broken byte tail was **not** caught until the call went to the
+right routine.
+
+`h2_read_exact` is not listed above because it is one instruction — `b
+transport_read` — so the `plain` and `tls` campaigns are its coverage.
+
+### Verified by sabotage
+
+| break | result |
+|---|---|
+| `raw_read_exact` treats one `read()` as the whole request (the `one recv() == one message` bug itself) | `record`, `prefilled`, `tls`: *fragmented delivery differs from whole*, case 0 of each |
+| `transport_read`'s PLAIN drain loop serves one staged chunk and calls the span done | `plain`: *differs from whole at byte 128*, case 0 |
+| `parse_header_end` scans one byte past the length it was given | `header_end`: **CRASH: SIGBUS** at case 0 — the guard page |
+| `h2_probe` demands all 24 preface bytes at once | `probe`: *a prefix of the same bytes gives a different answer*, case 2 |
+| `memcpy`'s byte tail drops its last byte | `pipeline`: *a pipelined stream splits into different requests depending on where the reads landed*, case 0 |
+
+Five breaks, five catches, at case 0 or 2 of the campaign that owns them —
+which is the shape to expect here rather than the deep case numbers of Steps
+6–8. A fragmentation defect is not a rare input; it fails on the *first* input
+that arrives in more than one piece.
+
+The rows also say which campaign owns which code, and the passes are as
+informative as the failures. Sabotaging `raw_read_exact` leaves `plain`
+green, because `transport_read`'s PLAIN path does its own `read()` and its own
+staging loop; sabotaging that loop leaves `tls` green, because the TLS branch
+carries a second copy of it. Two copies of the same drain loop is a fact about
+`src/transport/transport_read.S` worth knowing, and this is the suite that
+demonstrates both are correct.

@@ -36,7 +36,7 @@ LDFLAGS := -arch arm64
 
 OBJ_DIR := _obj
 
-HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h overflow_common.h fuzz_common.h
+HELPERS := guard_pages.h crypto_ref.h ref_selfcheck.h refbn.h bounds_common.h diff_common.h overflow_common.h fuzz_common.h frag_common.h
 COMMON_OBJS := $(OBJ_DIR)/guard_pages.o
 
 # ── assembly under test ─────────────────────────────────────────────
@@ -107,8 +107,10 @@ BOUNDS_TESTS      := $(patsubst test_bounds_%.c,$(OBJ_DIR)/test_bounds_%,$(wildc
 DIFF_TESTS        := $(patsubst test_diff_%.c,$(OBJ_DIR)/test_diff_%,$(wildcard test_diff_*.c))
 OVERFLOW_TESTS    := $(patsubst test_overflow_%.c,$(OBJ_DIR)/test_overflow_%,$(wildcard test_overflow_*.c))
 FUZZ_TESTS        := $(patsubst test_fuzz_%.c,$(OBJ_DIR)/test_fuzz_%,$(wildcard test_fuzz_*.c))
+FRAG_TESTS        := $(patsubst test_frag_%.c,$(OBJ_DIR)/test_frag_%,$(wildcard test_frag_*.c))
 
-TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS) $(OVERFLOW_TESTS) $(FUZZ_TESTS)
+TESTS := $(TEST_GUARD_PAGES) $(BOUNDS_TESTS) $(DIFF_TESTS) $(OVERFLOW_TESTS) \
+         $(FUZZ_TESTS) $(FRAG_TESTS)
 
 all: test
 
@@ -263,6 +265,34 @@ $(OBJ_DIR)/test_fuzz_tls_handshake: test_fuzz_tls_handshake.c $(HELPERS) $(HARNE
 # unwinds, which is what turns those escapes into checkable outcomes.
 $(OBJ_DIR)/test_fuzz_http: test_fuzz_http.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(http_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(http_objs) $(LDFLAGS) -o $@
+
+# The fragmentation suites (Step 9) run every case twice — once with
+# the bytes written whole, once with them written in pieces — and
+# compare. The split half needs a feeder thread (frag_common.h), so
+# these are the only suites here that link pthreads.
+#
+# test_frag_socket drives the socket readers, so it links the same
+# objects the handshake fuzzer does: tls_read_record reaches the record
+# layer, transport_read's TLS branch reaches tls_app_data_read and from
+# there the whole key/sequence state in src/tls/data.S.
+$(OBJ_DIR)/test_frag_socket: test_frag_socket.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(tls_all_objs) $(crypto_objs) $(transport_objs) $(util_memcpy_obj) $(LDFLAGS) -lpthread -o $@
+
+# test_frag_http drives the two routines the plaintext read loop
+# re-runs over its growing buffer (src/sarm/child.S): the header-end
+# scan and the HTTP/2 preface probe. No socket — child.S reads with
+# read() straight into `buf` and rescans, so its fragmentation
+# question is a property of scanning prefixes, and that is what this
+# one asks. src/data.S comes along for h2_preface.
+# util_memcpy.o is the shift itself: the `pipeline` campaign moves
+# leftover pipelined bytes to the front of its buffer with the server's
+# memcpy, not libc's, because that is the copy child.S makes.
+$(OBJ_DIR)/test_frag_http: test_frag_http.c $(HELPERS) $(HARNESS) $(COMMON_OBJS) $(OBJ_DIR)/httpparse_parse_header_end.o $(OBJ_DIR)/h2_h2_probe.o $(OBJ_DIR)/httptop_data.o $(util_memcpy_obj) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -O2 $< $(COMMON_OBJS) $(OBJ_DIR)/httpparse_parse_header_end.o $(OBJ_DIR)/h2_h2_probe.o $(OBJ_DIR)/httptop_data.o $(util_memcpy_obj) $(LDFLAGS) -lpthread -o $@
+
+$(OBJ_DIR)/h2_%.o: ../../src/h2/%.S | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(OBJ_DIR)

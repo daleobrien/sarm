@@ -866,3 +866,304 @@ disagreement, after the `parse_path` fix in §16.
    sabotage in §20 is the sharpest illustration so far: a bound that is never
    reached and a bound that is never enforced look identical from outside, and
    only writing a generator that aims at the branch told them apart.
+
+---
+
+# Step 9 — socket fragmentation
+
+Steps 6, 7 and 8 handed every parser a buffer that was already full. That is
+the one thing the network never does.
+
+> **Step 9 — Add socket fragmentation testing.** Send every valid corpus item
+> split at arbitrary byte positions.
+> **Test:** behaviour matches unsplit input.
+
+It delivers seven campaigns across two suites — `tests/security/test_frag_socket.c`
+and `tests/security/test_frag_http.c` — sharing one new piece of harness,
+`frag_common.h`. **No production changes**: five sabotages, five catches, and
+nothing found in 6.5 million deliveries. §28 argues why that outcome was the
+likely one here, and what it is evidence of.
+
+---
+
+## 23. Equality, not validity
+
+Every campaign so far has been of the shape *generate an input, assert
+something about the answer*. Fragmentation is not that shape, because the
+property is a relation between two runs:
+
+```
+        bytes ──┬── written whole ────▶ reader ──▶ result A
+                └── written in pieces ─▶ reader ──▶ result B
+
+                            A == B
+```
+
+Three things follow, and between them they define the suite.
+
+**The corpus does not have to be valid.** "Behaviour matches unsplit input" is
+checkable for a record with a nonsense content type just as well as for a good
+one — it must be rejected the same way, with the same error code, having left
+the same bytes in the destination buffer. So the generators here are the ones
+from Steps 6 and 8 with the hostility left in, and roughly a third of every
+campaign is cases the reader refuses.
+
+**"Behaviour" is not a summary.** What gets compared is every return value,
+every error code, *and the whole destination buffer* — poison included, filled
+with 0xA5 before each of the two runs. A reader that returns the same four
+values while writing one extra byte somewhere it should not have is a finding
+here, and would not be if the comparison were of the return values alone.
+
+**What is allowed to differ has to be named.** How much sits in
+`plain_read_stage_buf` when the last span is served *does* depend on the split,
+legitimately: staging is an optimisation, and nobody's business but
+`transport_read`'s. So the comparison is of what a caller can observe, and the
+state each run *starts* from — `transport_mode`, both stage cursors, the client
+sequence number — is reset to identical values rather than compared at the end.
+Getting that boundary wrong in either direction spoils the test: compare too
+much and every case fails, compare too little and the record layer could be
+delivering the second half of the previous record.
+
+---
+
+## 24. Making a split a real split
+
+The naive implementation of "write it in pieces" tests nothing:
+
+```c
+for (each piece) write(fd, piece, len);      /* useless */
+```
+
+They land in the socket buffer together and the reader's first `read()` returns
+the lot. That is the unsplit case wearing a disguise, and — this is the part
+worth stating — it *passes*. A suite built this way is green for exactly the
+same reason a broken reader is.
+
+A split is real only if the reader consumes piece *k* before piece *k+1*
+arrives, which needs a second thread and a way to know when. `frag_common.h`
+asks the kernel: `FIONREAD` on the read end is the number of bytes still
+waiting there, so the feeder spins until it reads 0 — the reader has taken
+everything sent so far and is, or is about to be, blocked in `read()` — and
+only then writes the next piece.
+
+```
+feeder                                    reader (the code under test)
+  write "\x17\x03"        ──▶ [2 bytes]
+  FIONREAD → 2 …              draining …  raw_read_exact: read() → 2 of 5
+  FIONREAD → 0                            blocked in read()
+  write "\x03\x00\x40"    ──▶ [3 bytes]   read() → 3, header complete
+```
+
+Every wait is bounded — a spin, then ten milliseconds of sleeps, then the
+feeder writes anyway — so a reader that stops reading stalls nothing, and the
+campaign's own heartbeat deadline stays the thing that reports a hang. Bounded
+waiting is also why a *blocked* reader and a *finished* one need not be told
+apart: getting it wrong costs one unconfirmed boundary, not a deadlock.
+
+Whether each boundary was real is counted rather than assumed.
+`real split boundaries` is a required bucket, so a build where `FIONREAD` did
+nothing useful would fail as `VACUOUS` rather than pass while testing nothing.
+In practice 95–99% of boundaries are confirmed; the rest are cases where the
+reader had already returned.
+
+The *schedule* is deterministic — same seed, same case, same cuts at the same
+offsets, so `SARM_FUZZ_CASE` still replays exactly the input that failed. The
+*interleaving* is not, and that asymmetry is the right way round: the invariant
+under test is precisely that the interleaving does not matter.
+
+### The four shapes
+
+Random cut positions alone reach the interesting ones by luck, so the plan
+generator has four shapes and the campaigns tell it where their seams are —
+the header/fragment boundary at offset 5, the start of each record, the end of
+each span:
+
+| shape | what it is for |
+|---|---|
+| one cut | the simplest reproducer, and the one a bisect can name |
+| byte at a time | the extreme: every `read()` returns 1 |
+| random cuts | up to 32, anywhere |
+| on the seams | a named offset, or one byte to either side of it — the three placements that tell a split header from a split fragment |
+
+---
+
+## 25. The campaigns
+
+| # | campaign | delivered | what must hold |
+|---|---|---|---|
+| 1 | `record` | one TLS record — mostly structurally valid, sometimes claiming a length the bytes do not support | `tls_read_record`'s four results and the whole destination buffer are identical whole and split |
+| 2 | `prefilled` | the same record, with a prefix already sitting in the buffer and the rest on the wire | the same, for `tls_read_record_prefilled` — whose two shortfall subtractions are what the prefill moves |
+| 3 | `plain` | a byte stream, read back through up to 24 `transport_read` spans in `TRANSPORT_PLAIN` | every span's result identical, delivered bytes identical, and equal to the stream in order |
+| 4 | `tls` | a plaintext stream sealed into a sequence of `application_data` records, read back through the same spans in `TRANSPORT_TLS` | the same, and the delivered bytes equal the plaintext |
+| 5 | `header_end` | every prefix of a generated request, each placed flush against a guard page | the first `\r\n\r\n` is found at the same index from every prefix, never before all four bytes have arrived, never past the length given |
+| 6 | `probe` | every prefix of a generated first read | `h2_probe` matches the reference at every prefix, and a stream that has diverged from the preface never looks like it again |
+| 7 | `pipeline` | a pipelined stream, chopped up, through the read loop transcribed from `child.S` | the same requests come out, byte for byte, whatever the chunking — and they are the ones the terminators name |
+
+Campaigns 1–4 are equality-of-two-deliveries. Campaigns 5–7 are differential
+against a reference *and* equality across chunkings, because for those the
+"delivery" is a prefix rather than a socket (§26).
+
+### Why the HTTP/1 side has no socket
+
+`child.S` reads with `read()` straight into `buf` and, after every read,
+re-runs `h2_probe` and `parse_header_end` over everything accumulated so far.
+The loop is what waits. So the fragmentation question there is not "does the
+reader wait for the rest" but *whether the answer depends on where the reads
+landed*, which is a property of those two scans over every prefix of the same
+bytes — and that is a sweep, not a socket.
+
+The guard page is what makes the sweep worth doing at every length rather than
+one. A scan that peeks one byte past its length argument works perfectly on a
+full buffer, where the next byte is simply the one that has not arrived yet,
+and reads whatever happens to be there exactly when a read boundary lands on
+it. Placed flush against `PROT_NONE`, at every prefix length, it faults.
+
+`h2_read_exact` has no campaign of its own because it is one instruction —
+`b transport_read` — so campaigns 3 and 4 are its coverage.
+
+### The pipeline campaign, and the item Step 8 carried forward
+
+§22 item 2 pointed Step 9 at `child.S`'s `Lcheck_leftover` shift, and campaign
+7 is that. A keep-alive connection does not start each request at the front of
+`buf`: `http1_keepalive_continue` computes
+`request_total_len - request_header_len`, shifts that many bytes down to offset
+0 with the server's `memcpy`, and re-enters the same scan. The bytes a request
+is parsed from have therefore been moved, possibly several times, before the
+parser sees them.
+
+Campaign 7 transcribes that loop — accumulate, scan, serve, shift, repeat —
+and only that: no reply, no budget, no protocol probe, because the question is
+which bytes each request is made of. Each served request is recorded as its
+length **and** a hash of its bytes; §27 is why.
+
+---
+
+## 26. What the corpus reaches
+
+`SARM_FUZZ_STATS=1`, default multiplier:
+
+```
+record       accepted 64%   rejected 36%   real split boundaries 95%
+prefilled    accepted 64%   rejected 36%   real split boundaries 95%
+plain        accepted 92%   rejected  8%   real split boundaries 99%
+tls          accepted 91%   rejected  9%   real split boundaries 96%
+             shapes, across the four:  one cut 25%   byte at a time 0-3%
+                                       random 50%    on the seams 8-27%
+header_end   some prefix found a header end 83%   some prefix did not 100%
+             some prefix ended inside the \r\n\r\n 83%
+probe        looked like the preface 30%   did not 100%   diverged 91%
+pipeline     served a request 95%   served none 4%   served more than one 78%
+```
+
+`byte at a time` is low on purpose: the shape is only offered when the input is
+short enough for 32 cuts to cover it, which for a 1200-byte record it is not.
+Where it does apply it is the strongest case in the suite, and it is required
+to keep happening.
+
+The three `100%` rows are prefix sweeps, where "some prefix did not find a
+header end" is true of every case that includes the empty prefix — which is all
+of them. They are kept as required buckets anyway: they cost nothing, and they
+would go to zero if the sweep ever stopped sweeping.
+
+---
+
+## 27. Verified by sabotage
+
+Five breaks, one at a time, each reverted:
+
+| break | caught by | as |
+|---|---|---|
+| `raw_read_exact` treats one `read()` as the whole request — the `one recv() == one message` bug itself | `record`, `prefilled`, `tls` — case 0 of each | *fragmented delivery differs from whole at byte 0* |
+| `transport_read`'s PLAIN drain loop serves one staged chunk and calls the span done | `plain`, case 0 | *differs from whole at byte 128* |
+| `parse_header_end` scans one byte past its length argument | `header_end`, case 0 | **CRASH: SIGBUS** — the guard page |
+| `h2_probe` demands all 24 preface bytes at once | `probe`, case 2 | *a prefix of the same bytes gives a different answer than the byte string does* |
+| `memcpy`'s byte tail drops its last byte | `pipeline`, case 0 | *a pipelined stream splits into different requests depending on where the reads landed* |
+
+Case 0 or case 2, every time. That is the signature of this bug class and the
+reason the campaigns need thousands of cases rather than millions: a
+fragmentation defect is not a rare input, it fails on the first input that
+arrives in more than one piece.
+
+**The passes are as informative as the failures.** Sabotaging `raw_read_exact`
+leaves `plain` green, because `transport_read`'s PLAIN path does its own
+`read()` and its own staging loop; sabotaging that loop leaves `tls` green,
+because the TLS branch carries a second copy of it. `transport_read.S` has two
+independent drain loops, which is a fact about that file worth knowing, and
+this is the suite that demonstrates both of them are right.
+
+**One sabotage missed, and the miss was the useful part.** The `memcpy` row
+above did not fail on the first attempt. The campaign linked `util_memcpy.o`
+and called `memcpy(…)` from C — and in Mach-O those are two different symbols:
+a `.global memcpy` in assembly is `memcpy`, while C's `memcpy()` is libc's
+`_memcpy`. The harness had been testing libc's memcpy, faithfully, the whole
+time. Reaching the routine child.S actually calls means saying `bl memcpy` in
+inline asm, and the sabotage then failed at case 0.
+
+Two things came out of that. The first is a rule for this suite: *a sabotage
+that does not fail is a claim about the harness, not about the server.* The
+second is the byte hash. Before the symbol was fixed, the campaign recorded
+only each request's *length*, and a length-only record would have called a
+corrupted shift identical even against the right memcpy — the terminator
+positions happen to survive many single-byte corruptions. It now records a hash
+of each served request's bytes.
+
+---
+
+## 28. Results, and what a clean run is evidence of
+
+Three seeds, `SARM_FUZZ_MULT=40` on the socket suite and `50` on the prefix
+suite: **864,000 socket cases — 1.73 million deliveries**, since every case is
+one whole delivery and one split one — and **15 million prefix-sweep cases**,
+each sweeping tens of prefix lengths. No crash, no hang, no invariant
+violation, no divergence between a whole delivery and a split one.
+
+| | |
+|---|---|
+| committed default | 107,200 cases, ~1.5 s, no environment needed |
+| long run | `SARM_FUZZ_MULT=40` → 288,000 socket cases per seed |
+| production changes | none |
+| security suite | 1403 → 1410 tests |
+
+Nothing found, and unlike the previous three steps that was the expected
+outcome rather than a disappointment — for a reason worth writing down. Every
+reader in this tree is built on `raw_read_exact`, a nine-instruction loop whose
+only job is to keep reading until it has what it was asked for, or on
+`transport_read`'s two drain loops, which do the same thing over a staging
+buffer. There is no third way to read a byte in sarm. A tree with one read
+primitive either has this bug everywhere or nowhere, and the sabotages in §27
+are the evidence that the suite can tell which — they are what make the clean
+run mean "nowhere" rather than "the test does not look".
+
+What the step leaves behind is a harness, and the harness is the part that
+generalises: any future reader that grows its own loop can be pointed at
+`frag_common.h` and asked the same question in about thirty lines.
+
+## 29. Carried forward
+
+1. **The handshake driver is not fragmented end to end.** `tls_server_handshake`
+   reads exclusively through `tls_read_record`, which campaign 1 fragments
+   directly, so the read path is covered — but "a ClientHello split across
+   five packets still completes a handshake" is a statement about the driver
+   that is not asserted anywhere. It needs Step 7's `finished` machinery (a
+   real client, played by the harness) with a fragmented flight, and belongs
+   with the DoS work in Step 12, which needs the same client.
+2. **EOF at every possible byte is not swept.** SECURITY.md §7's Phase 4 asks
+   for EOF at every offset, and this step tests it only where the corpus
+   happens to claim a length longer than what was sent (about a sixth of the
+   `record` cases). The sweep is a small extension of `frag_plan` — truncate
+   rather than cut — and the invariant is different: not equality with the
+   whole delivery, but "fails cleanly, with `_SHORT`, having written nothing
+   past what arrived".
+3. **A reset during the handshake is not tested at all.** Phase 4 lists it
+   next to fragmentation, and `frag_common.h` can already produce it —
+   `close()` instead of `shutdown(SHUT_WR)` on the write end, so the reader
+   gets `ECONNRESET` rather than EOF. The reason it is not here is that the
+   invariant is again not equality: an aborted delivery is not required to
+   match an unsplit one, only to fail safely.
+4. **Thousands of simultaneous partial connections** — the last item on Phase
+   4's list — is a resource question, not a parsing one, and is Step 12's.
+5. **Still nothing measures coverage** (§7 item 2, §14 item 5, §22 item 5). The
+   `memcpy` symbol in §27 is a new flavour of the same blind spot: not a branch
+   the corpus never reached, but a routine the harness never called. Both look
+   identical from outside — a green campaign — and both were found only by
+   breaking something on purpose and noticing that nothing went red.

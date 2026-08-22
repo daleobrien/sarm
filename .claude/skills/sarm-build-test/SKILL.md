@@ -1,6 +1,6 @@
 ---
 name: sarm-build-test
-description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, the tests/security guard-page, differential, integer-overflow and fuzzing suites (make test-security, including the TLS record and handshake fuzzers), and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
+description: How to build sarm and run its test suites — make / make production, make test, the individual test_files.sh / test_security.sh / test_protocols.sh scripts, the tests/unit C suite, the tests/security guard-page, differential, integer-overflow and fuzzing suites (make test-security, including the TLS record and handshake fuzzers and the socket-fragmentation suites), and tests/h2_browser_sim.py. Use whenever asked to build the server, run tests, or check whether a change broke anything, before reaching for an ad-hoc build/test invocation.
 ---
 
 # Building and testing sarm
@@ -24,7 +24,7 @@ step needed for a normal build.
 ```bash
 make test                       # everything: unit + files + security + protocols
 make -C tests/unit              # unit suite alone (~4,300 assertions, C drivers vs the real .S files)
-make test-security              # tests/security — bounds + differential + overflow + fuzz (docs/SECURITY.md)
+make test-security              # tests/security — bounds + differential + overflow + fuzz + fragmentation (docs/SECURITY.md)
 ./tests/test_files.sh           # asset integrity, ranges, MIME, ETag, gzip
 ./tests/test_security.sh        # traversal, encoding, oversize, malformed input (live binary, curl)
 ./tests/test_protocols.sh       # HTTP/1.1, h2c, HTTP/2-over-TLS end to end
@@ -52,11 +52,15 @@ immediately after the input, and fuzzers that run millions of generated TLS
 records through the record layer, millions of generated ClientHellos,
 flights and client Finished messages through the handshake and its driver, and
 millions of generated HTTP/1 request headers through the parse module, the path
-filters and the keep-alive predicate. The differential suites take a seed and a
+filters and the keep-alive predicate, and fragmentation suites that deliver the
+same bytes to a real socket twice — once whole, once split at arbitrary
+positions by a feeder thread — and compare every result and every delivered
+byte. The differential suites take a seed and a
 multiplier — `SARM_DIFF_SEED=0x1234` to replay a run, `SARM_DIFF_ITERS=100 make
 test-security` for a long soak; the overflow suites need no environment at all.
-The fuzz suites (`test_fuzz_tls_record`, `test_fuzz_tls_handshake`,
-`test_fuzz_http`) take
+The fuzz and fragmentation suites (`test_fuzz_tls_record`,
+`test_fuzz_tls_handshake`, `test_fuzz_http`, `test_frag_socket`,
+`test_frag_http`) take
 `SARM_FUZZ_MULT=100` for a long soak, `SARM_FUZZ_STATS=1`
 for the outcome histogram that shows which branches the corpus is reaching, and
 `SARM_FUZZ_SEED=<s> SARM_FUZZ_CASE=<i>` to replay one case in-process under a
