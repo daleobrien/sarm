@@ -1167,3 +1167,24 @@ generalises: any future reader that grows its own loop can be pointed at
    the corpus never reached, but a routine the harness never called. Both look
    identical from outside — a green campaign — and both were found only by
    breaking something on purpose and noticing that nothing went red.
+
+---
+
+## 30. And then Step 14
+
+Everything above runs on a fixed seed, and every reproducer above is a seed and
+a case index. Both facts are load-bearing — a moving corpus cannot tell a
+regression from a coincidence — and both have a cost that Step 14 is about:
+the committed suite only ever asks the same questions, and a seed-based
+reproducer means whatever its generator means *today*. Replaying
+`SARM_FUZZ_SEED=25423240288893562 SARM_FUZZ_CASE=83` now yields a 238-byte
+flight rather than the five bytes of §9.
+
+So Step 14 adds two things and changes none of the campaigns' behaviour: a soak
+runner (`scripts/fuzz_soak.py`) that runs the same suites on random seeds, and
+a harness that captures every case's input bytes and writes them out when a
+campaign fails — from which `scripts/fuzz_minimize.py` produces a minimal
+reproducer and `tests/security/corpus/` keeps it as a regression test. The
+findings of §9 and §16 are the first entries, and putting either defect back
+now fails a named file rather than a case number.
+[continuous-fuzzing.md](continuous-fuzzing.md).

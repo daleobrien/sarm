@@ -299,6 +299,7 @@ static void rec_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     uint32_t hints[8];
     unsigned n_hints = 0;
     size_t n = gen_record(r, g_rec.wire, sizeof g_rec.wire, hints, &n_hints);
+    fuzz_input(c, g_rec.wire, n);
 
     uint64_t cap = fuzz_chance(r, 8)
                  ? fuzz_range(r, TLS_RECORD_HEADER_LEN, n + 1)  // sometimes too small
@@ -336,6 +337,7 @@ static void pre_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     uint32_t hints[8];
     unsigned n_hints = 0;
     size_t n = gen_record(r, g_rec.wire, sizeof g_rec.wire, hints, &n_hints);
+    fuzz_input(c, g_rec.wire, n);
 
     uint64_t cap = REC_CAP_MAX;
     uint8_t *dst = g_rec.dst.data + g_rec.dst.size - cap;
@@ -502,6 +504,7 @@ static void plain_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 {
     size_t n = (size_t)fuzz_range(r, 1, STREAM_MAX);
     fuzz_fill_random(r, g_tr.wire, n);
+    fuzz_input(c, g_tr.wire, n);
 
     struct span_plan sp;
     uint32_t hints[8];
@@ -558,6 +561,7 @@ static void tls_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 
     size_t plain_len = (size_t)fuzz_range(r, 1, STREAM_MAX);
     fuzz_fill_random(r, g_tr.plain, plain_len);
+    fuzz_input(c, g_tr.plain, plain_len);
 
     // seal the stream into 1..k records of independently chosen sizes
     uint32_t hints[8];
@@ -607,6 +611,10 @@ static void tls_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 }
 
 // ── campaigns ───────────────────────────────────────────────────────
+// No replay entries (the trailing 0 in each row): a case here is a byte
+// string *and* the positions it is cut at, and bytes alone would not
+// reproduce it. Findings from these campaigns keep their input as
+// evidence and are reproduced by seed and case.
 // Case counts an order of magnitude below the Step 6-8 campaigns, and
 // deliberately so: a case here is two full deliveries, a thread, and
 // as many context switches as it has cuts — hundreds of microseconds,
@@ -615,15 +623,17 @@ static void tls_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 // property under test fails for *every* input the moment a reader
 // assumes one read per message.
 static const struct fuzz_target g_targets[] = {
-    { "record",    rec_case,   rec_setup, rec_teardown, 3000, 0, FRAG_BUCKETS },
-    { "prefilled", pre_case,   rec_setup, rec_teardown, 3000, 0, FRAG_BUCKETS },
-    { "plain",     plain_case, tr_setup,  tr_teardown,   800, 0, FRAG_BUCKETS },
-    { "tls",       tls_case,   tr_setup,  tr_teardown,   400, 0, FRAG_BUCKETS },
+    { "record",    rec_case,   rec_setup, rec_teardown, 3000, 0, FRAG_BUCKETS, 0 },
+    { "prefilled", pre_case,   rec_setup, rec_teardown, 3000, 0, FRAG_BUCKETS, 0 },
+    { "plain",     plain_case, tr_setup,  tr_teardown,   800, 0, FRAG_BUCKETS, 0 },
+    { "tls",       tls_case,   tr_setup,  tr_teardown,   400, 0, FRAG_BUCKETS, 0 },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argc;
     fuzz_disarm_harness_timeout();
+    fuzz_suite("frag_socket", argv[0]);
     // A feeder whose reader gave up early gets EPIPE, not a signal:
     // "the reader stopped reading" is one of the outcomes under test.
     signal(SIGPIPE, SIG_IGN);
@@ -635,8 +645,7 @@ int main(void)
            (unsigned long long)fuzz_seed(), (unsigned long long)fuzz_mult());
 
     TEST_SUITE("the read paths — whole delivery vs split delivery");
-    for (size_t i = 0; i < sizeof g_targets / sizeof g_targets[0]; i++)
-        fuzz_run(&g_targets[i]);
+    fuzz_run_all(g_targets, sizeof g_targets / sizeof g_targets[0]);
 
     test_summary();
     return 0;

@@ -383,11 +383,12 @@ static uint8_t *flush_end(struct guarded_buffer *gb, const uint8_t *src,
     return p;
 }
 
-static void parse_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The case body, from the input bytes on. Split out from parse_case so
+// that a preserved input can be run through exactly the same
+// invariants as a generated one (Step 14: the corpus is bytes, and it
+// has to mean the same thing the generator's case meant).
+static void parse_check(uint8_t *p, size_t n, struct fuzz_ctx *c)
 {
-    size_t n = gen_record(r, g_parse.scratch, REC_MAX);
-    uint8_t *p = flush_end(&g_parse.rec, g_parse.scratch, n);
-
     struct parse_out o = rec_parse(p, n);
 
     if (o.carry) {
@@ -424,6 +425,22 @@ static void parse_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     FUZZ_CHECK(c, o.frag_len == (uint64_t)((p[3] << 8) | p[4]),
                "tls_record_parse: reported a length the header does not "
                "carry");
+}
+
+static void parse_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_record(r, g_parse.scratch, REC_MAX);
+    fuzz_input(c, g_parse.scratch, n);
+    uint8_t *p = flush_end(&g_parse.rec, g_parse.scratch, n);
+    parse_check(p, n, c);
+}
+
+static void parse_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REC_MAX)
+        len = REC_MAX;
+    uint8_t *p = flush_end(&g_parse.rec, in, len);
+    parse_check(p, len, c);
 }
 
 // ── campaign 2: tls_record_decrypt ──────────────────────────────────
@@ -471,11 +488,14 @@ static void dec_teardown(struct fuzz_ctx *c)
     guard_free(&g_dec.out);
 }
 
-static void dec_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// As with parse: the body from the bytes on, so a preserved input runs
+// the same invariants. The sequence number is the one other thing a
+// case varies, and a replayed input carries only bytes, so it replays
+// at sequence 0 — the record is rejected on its length or its tag long
+// before the nonce matters, and every finding this campaign has
+// produced was reached that way.
+static void dec_check(uint8_t *p, size_t n, uint64_t seq, struct fuzz_ctx *c)
 {
-    size_t n = gen_record(r, g_dec.scratch, REC_MAX);
-    uint8_t *p = flush_end(&g_dec.rec, g_dec.scratch, n);
-
     // The contract says the output buffer must hold len - 16 bytes.
     // decrypt bounds the ciphertext by the buffer it was given, so the
     // most it can ever write is n - 5 - 16. Give it exactly that, with
@@ -486,7 +506,6 @@ static void dec_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     uint8_t *out = g_dec.out.data + g_dec.out.size - outcap;
     memset(out, POISON, outcap);
 
-    uint64_t seq = fuzz_chance(r, 2) ? fuzz_below(r, 8) : fuzz_u64(r);
     struct dec_out o = rec_decrypt(p, n, g_key, g_iv, seq, out);
 
     if (o.carry) {
@@ -515,6 +534,23 @@ static void dec_case(struct fuzz_rng *r, struct fuzz_ctx *c)
                "inner type byte");
     FUZZ_CHECK(c, o.content_len <= outcap,
                "tls_record_decrypt: content length exceeds the output buffer");
+}
+
+static void dec_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_record(r, g_dec.scratch, REC_MAX);
+    fuzz_input(c, g_dec.scratch, n);
+    uint8_t *p = flush_end(&g_dec.rec, g_dec.scratch, n);
+    uint64_t seq = fuzz_chance(r, 2) ? fuzz_below(r, 8) : fuzz_u64(r);
+    dec_check(p, n, seq, c);
+}
+
+static void dec_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REC_MAX)
+        len = REC_MAX;
+    uint8_t *p = flush_end(&g_dec.rec, in, len);
+    dec_check(p, len, 0, c);
 }
 
 // ── campaigns 3 and 4: encrypt -> decrypt, clean and tampered ───────
@@ -573,6 +609,7 @@ static int rt_seal(struct fuzz_rng *r, struct fuzz_ctx *c,
     *seq = fuzz_chance(r, 2) ? fuzz_below(r, 16) : fuzz_u64(r);
 
     fuzz_fill_random(r, g_rt.scratch, *pt_len);
+    fuzz_input(c, g_rt.scratch, *pt_len);
     *pt = g_rt.pt.data + g_rt.pt.size - *pt_len;
     memcpy(*pt, g_rt.scratch, *pt_len);
 
@@ -754,20 +791,40 @@ static void check_read_result(struct fuzz_ctx *c, struct parse_out o,
                "not hold");
 }
 
-static void read_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// From the bytes on the wire onward, so that a preserved input replays
+// through the same socket and the same invariants.
+static void read_check(const uint8_t *bytes, size_t n, uint64_t cap,
+                       struct fuzz_ctx *c)
 {
-    size_t n = gen_record(r, g_read.scratch, READ_MAX);
-    uint64_t cap = fuzz_chance(r, 4)
-                 ? fuzz_below(r, TLS_RECORD_HEADER_LEN + 1)  // below a header
-                 : fuzz_range(r, TLS_RECORD_HEADER_LEN, READ_MAX);
     uint8_t *dst = g_read.dst.data + g_read.dst.size - cap;
 
-    int fd = feed(g_read.scratch, n);
+    int fd = feed(bytes, n);
     FUZZ_CHECK(c, fd >= 0, "test bug: could not set up the socketpair");
 
     struct parse_out o = rec_read(fd, dst, cap);
     close(fd);
     check_read_result(c, o, dst, cap);
+}
+
+static void read_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_record(r, g_read.scratch, READ_MAX);
+    fuzz_input(c, g_read.scratch, n);
+    uint64_t cap = fuzz_chance(r, 4)
+                 ? fuzz_below(r, TLS_RECORD_HEADER_LEN + 1)  // below a header
+                 : fuzz_range(r, TLS_RECORD_HEADER_LEN, READ_MAX);
+    read_check(g_read.scratch, n, cap, c);
+}
+
+// A replayed input is the bytes a peer sent; the destination capacity
+// is the harness's own knob, so it replays at the full buffer — the
+// case that is reachable from the server, where the destination is a
+// whole record buffer.
+static void read_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > READ_MAX)
+        len = READ_MAX;
+    read_check(in, len, READ_MAX, c);
 }
 
 // tls_read_record_prefilled subtracts what is already in the buffer
@@ -778,6 +835,7 @@ static void read_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 static void read_pre_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 {
     size_t n = gen_record(r, g_read.scratch, READ_MAX);
+    fuzz_input(c, g_read.scratch, n);
     uint64_t cap = fuzz_range(r, TLS_RECORD_HEADER_LEN, READ_MAX);
     uint8_t *dst = g_read.dst.data + g_read.dst.size - cap;
 
@@ -880,29 +938,13 @@ static void pad_nonce(const uint8_t *iv, uint64_t seq, uint8_t *out)
         out[11 - i] ^= (uint8_t)(seq >> (8 * i));
 }
 
-static void pad_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The inner plaintext is the whole input here: content, type octet and
+// padding are just names for byte positions in it. So a preserved case
+// is that buffer, and the replay seals it and reads it back exactly as
+// a generated one does.
+static void pad_check(uint8_t *pt, size_t pt_len, uint64_t seq,
+                      struct fuzz_ctx *c)
 {
-    size_t content = (size_t)fuzz_below(r, PAD_MAX_CONTENT + 1);
-    size_t pad     = fuzz_chance(r, 2) ? (size_t)fuzz_below(r, PAD_MAX_PAD + 1)
-                                       : 0;
-    // 1 in 8 is all zeros — the malformed case of Appendix C.3, with
-    // no type octet anywhere.
-    int all_zero = fuzz_chance(r, 8);
-    uint64_t type = fuzz_chance(r, 4) ? fuzz_u8(r) : fuzz_range(r, 20, 23);
-
-    uint8_t *pt = g_pad.plain;
-    size_t pt_len;
-    if (all_zero) {
-        pt_len = content + 1 + pad;
-        if (pt_len == 0) pt_len = 1;
-        memset(pt, 0, pt_len);
-    } else {
-        fuzz_fill_random(r, pt, content);
-        pt[content] = (uint8_t)type;
-        memset(pt + content + 1, 0, pad);
-        pt_len = content + 1 + pad;
-    }
-
     // What §5.4 says the reader must find, derived from the bytes as
     // built rather than from the knobs that built them. The two differ
     // more often than it looks: a type octet of 0 is padding, and then
@@ -917,7 +959,6 @@ static void pad_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     const size_t exp_content = zeros_only ? 0 : scan - 1;
     const int    type_ok     = !zeros_only && exp_type >= 20 && exp_type <= 23;
 
-    const uint64_t seq = fuzz_chance(r, 2) ? fuzz_below(r, 8) : fuzz_u64(r);
     const size_t frag = pt_len + TLS_TAG_LEN;
 
     uint8_t *rec = g_pad.rec.data + g_pad.rec.size
@@ -976,20 +1017,66 @@ static void pad_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     fuzz_tally(c, (pt_len - scan) ? PB_PADDED : PB_OK);
 }
 
+static void pad_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t content = (size_t)fuzz_below(r, PAD_MAX_CONTENT + 1);
+    size_t pad     = fuzz_chance(r, 2) ? (size_t)fuzz_below(r, PAD_MAX_PAD + 1)
+                                       : 0;
+    // 1 in 8 is all zeros — the malformed case of Appendix C.3, with
+    // no type octet anywhere.
+    int all_zero = fuzz_chance(r, 8);
+    uint64_t type = fuzz_chance(r, 4) ? fuzz_u8(r) : fuzz_range(r, 20, 23);
+
+    uint8_t *pt = g_pad.plain;
+    size_t pt_len;
+    if (all_zero) {
+        pt_len = content + 1 + pad;
+        if (pt_len == 0) pt_len = 1;
+        memset(pt, 0, pt_len);
+    } else {
+        fuzz_fill_random(r, pt, content);
+        pt[content] = (uint8_t)type;
+        memset(pt + content + 1, 0, pad);
+        pt_len = content + 1 + pad;
+    }
+
+    fuzz_input(c, pt, pt_len);
+    const uint64_t seq0 = fuzz_chance(r, 2) ? fuzz_below(r, 8) : fuzz_u64(r);
+    pad_check(pt, pt_len, seq0, c);
+}
+
+static void pad_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > PAD_MAX_PLAIN)
+        len = PAD_MAX_PLAIN;
+    if (len == 0)
+        return;                     // there is no zero-length inner plaintext
+    memcpy(g_pad.plain, in, len);
+    pad_check(g_pad.plain, len, 0, c);
+}
+
+// The last field of each entry is the byte-level replay entry (Step
+// 14): the campaigns whose input is one flat string a peer controls
+// can run a preserved file through the same invariants, and are the
+// ones whose findings become regression tests. `roundtrip` and
+// `tamper` have none — their input is the server's own plaintext plus
+// a bit position, not a peer's bytes.
 static const struct fuzz_target g_targets[] = {
     { "parse", parse_case, parse_setup, parse_teardown, 1000000, 0,
-      PARSE_BUCKETS },
+      PARSE_BUCKETS, parse_replay },
     // decrypt never authenticates by chance, so "accepted" is not
     // required here — campaign 3 owns the accepting path.
     { "decrypt", dec_case, dec_setup, dec_teardown, 60000, 0,
       { "accepted", "!short", "type", "version", "!bad length",
-        "!past the buffer", "!bad mac", "inner", "other", 0 } },
+        "!past the buffer", "!bad mac", "inner", "other", 0 },
+      dec_replay },
     { "roundtrip", rt_case, rt_setup, rt_teardown, 20000, 0,
       { "!round-tripped", "short", "type", "version", "length", "bounds",
-        "mac", "inner", "!zero-length refusal", 0 } },
+        "mac", "inner", "!zero-length refusal", 0 }, 0 },
     { "tamper", tamper_case, rt_setup, rt_teardown, 20000, 0,
       { "accepted (a finding)", "short", "type", "version", "!bad length",
-        "past the buffer", "!bad mac", "inner", "zero-length refusal", 0 } },
+        "past the buffer", "!bad mac", "inner", "zero-length refusal", 0 },
+      0 },
     // The read paths cannot produce BOUNDS, and that is a property of
     // the code rather than a gap in the corpus: tls_read_record reads
     // exactly `total` bytes and then hands tls_record_parse a buffer
@@ -998,17 +1085,20 @@ static const struct fuzz_target g_targets[] = {
     // against the destination buffer (LENGTH) that stands in its place,
     // and that one is required.
     { "read_record", read_case, read_setup, read_teardown, 20000, 0,
-      READ_BUCKETS },
+      READ_BUCKETS, read_replay },
     { "read_prefilled", read_pre_case, read_setup, read_teardown, 20000, 0,
-      READ_BUCKETS },
+      READ_BUCKETS, 0 },
     { "inner_plaintext", pad_case, pad_setup, pad_teardown, 20000, 0,
       { "!unpadded", "!padded", "!all-zero refused", "!bad type refused",
-        0 } },
+        0 },
+      pad_replay },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argc;
     fuzz_disarm_harness_timeout();
+    fuzz_suite("tls_record", argv[0]);
 
     printf("\n╔══════════════════════════════════════════════════════════╗\n");
     printf("║  sarm — TLS record layer fuzzing (SECURITY.md Step 6)   ║\n");
@@ -1017,8 +1107,7 @@ int main(void)
            (unsigned long long)fuzz_seed(), (unsigned long long)fuzz_mult());
 
     TEST_SUITE("TLS record layer — generated inputs");
-    for (size_t i = 0; i < sizeof g_targets / sizeof g_targets[0]; i++)
-        fuzz_run(&g_targets[i]);
+    fuzz_run_all(g_targets, sizeof g_targets / sizeof g_targets[0]);
 
     test_summary();
     return 0;

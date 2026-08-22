@@ -138,6 +138,24 @@ while a probe times fresh connections. `--iterations` and `--stress-seconds`
 turn it into a soak; `--workers` picks the server's worker count. It found the
 `SA_NOCLDWAIT` zombie bug described in `docs/MULTICORE-BASELINE.md`.
 
+`scripts/fuzz_soak.py` and `scripts/fuzz_minimize.py` are Step 14 — the two
+halves of continuous fuzzing. The soak runner (`make fuzz-soak`, or
+`SOAK_ARGS='--minutes 60 --minimize' make fuzz-soak`) runs the five seeded fuzz
+suites on random seeds, one fresh process per suite per round, logging every
+seed to `tests/security/findings/soak.log`; `make test` keeps its fixed seed,
+so the soak widens the input space without making the committed suite
+irreproducible. A campaign that crashes, hangs or breaks an invariant has
+already written the failing case's bytes into `tests/security/findings/` —
+the harness does that itself, because a seed-based reproducer stops meaning
+anything the moment its generator changes. `fuzz_minimize.py` then shrinks such
+a file by delta debugging, using the harness's replay mode (`SARM_FUZZ_TARGET`
++ `SARM_FUZZ_REPLAY`, exit code as the oracle) — it took a real 238-byte
+preserved crash down to the five bytes of `docs/security/fuzzing.md` §9 in 49
+replays — and `--keep <name>` installs the result under
+`tests/security/corpus/`, where every later run of that suite replays it as a
+regression test. Write-up:
+[docs/security/continuous-fuzzing.md](security/continuous-fuzzing.md).
+
 `tests/h2_browser_sim.py` is a dependency-free HTTP/2 client (stdlib `ssl`/`socket`
 plus its own frame writer and encode-side HPACK) that mimics real browser frame
 patterns — which is how three flow-control bugs `curl` and `nghttp` both hid were

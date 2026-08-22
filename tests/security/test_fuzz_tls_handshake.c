@@ -408,14 +408,14 @@ static void ch_teardown(struct fuzz_ctx *c)
     guard_free(&g_ch.body);
 }
 
-static void ch_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The body from the ClientHello bytes on, so that a preserved input
+// runs the same invariants as a generated one (Step 14).
+static void ch_check(const uint8_t *bytes, size_t n, struct fuzz_ctx *c)
 {
-    size_t n = gen_ch(r, g_ch.scratch);
-
     // Flush against the guard page: the parser's own bounds checks are
     // the only thing standing between it and a fault.
     uint8_t *body = g_ch.body.data + g_ch.body.size - n;
-    memcpy(body, g_ch.scratch, n);
+    memcpy(body, bytes, n);
 
     // Poison the two length fields the parser owns. They are read
     // later by tls_server_hello_write and tls_encrypted_extensions_
@@ -450,6 +450,20 @@ static void ch_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     FUZZ_CHECK(c, *alpn_len == 2 &&
                   memcmp(sym_alpn(), "h2", 2) == 0,
                "tls_parse_client_hello: accepted without negotiating \"h2\"");
+}
+
+static void ch_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_ch(r, g_ch.scratch);
+    fuzz_input(c, g_ch.scratch, n);
+    ch_check(g_ch.scratch, n, c);
+}
+
+static void ch_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > g_ch.body.size)
+        len = g_ch.body.size;
+    ch_check(in, len, c);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -616,10 +630,12 @@ static int flight_setup(struct fuzz_ctx *c)
     return 0;
 }
 
-static void flight_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The body from the peer's bytes on. This is the campaign that found
+// the five-byte pre-authentication crash of §9, and a byte-level replay
+// is what turns that input into a regression test that survives every
+// later change to gen_flight.
+static void flight_check(const uint8_t *bytes, size_t n, struct fuzz_ctx *c)
 {
-    size_t n = gen_flight(r);
-
     int sv[2];
     if (make_pair(sv) < 0) {
         fuzz_fail(c, "socketpair failed");
@@ -627,7 +643,7 @@ static void flight_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     }
 
     if (n) {
-        long w = write(sv[0], g_flight.flight, n);
+        long w = write(sv[0], bytes, n);
         (void)w;                                 // a short write is one
     }                                            // more truncated flight
     shutdown(sv[0], SHUT_WR);
@@ -670,6 +686,20 @@ static void flight_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     unsigned recs = count_records(g_flight.back, back);
     fuzz_tally(c, recs == 0 ? FB_NO_REPLY
                             : (recs >= 5 ? FB_FULL_FLIGHT : FB_SH_ONLY));
+}
+
+static void flight_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_flight(r);
+    fuzz_input(c, g_flight.flight, n);
+    flight_check(g_flight.flight, n, c);
+}
+
+static void flight_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > sizeof g_flight.flight)
+        len = sizeof g_flight.flight;
+    flight_check(in, len, c);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -992,7 +1022,8 @@ static const struct fuzz_target g_targets[] = {
       { "!accepted", "!decode_error", "!protocol_version",
         "!handshake_failure", "!no_application_protocol",
         "!unrecognized_name", "!illegal_parameter",
-        "an alert it does not document", 0 } },
+        "an alert it does not document", 0 },
+      ch_replay },
 
     // "ServerHello sent, then rejected" is not required, and that is a
     // property of the driver rather than a gap in the corpus: between
@@ -1004,19 +1035,23 @@ static const struct fuzz_target g_targets[] = {
     // fails.
     { "flight", flight_case, flight_setup, 0, 6000, 0,
       { "!rejected before the ServerHello", "ServerHello sent, then rejected",
-        "!full flight sent, then rejected", "connected (a finding)", 0 } },
+        "!full flight sent, then rejected", "connected (a finding)", 0 },
+      flight_replay },
 
     { "finished", fin_case, fin_setup, 0, 1000, 0,
       { "!completed (valid Finished)", "!completed after change_cipher_spec",
         "!rejected: verify_data", "!rejected: message or framing",
         "!rejected: key, sequence or ciphertext", "!rejected: not encrypted",
         "!rejected: nothing sent", "accepted an invalid transition (a finding)",
-        0 } },
+        0 },
+      0 },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argc;
     fuzz_disarm_harness_timeout();
+    fuzz_suite("tls_handshake", argv[0]);
 
     printf("\n");
     printf("╔══════════════════════════════════════════════════════════╗\n");
@@ -1026,8 +1061,7 @@ int main(void)
            (unsigned long long)fuzz_seed(), (unsigned long long)fuzz_mult());
 
     TEST_SUITE("TLS handshake — generated inputs and transitions");
-    for (size_t i = 0; i < sizeof g_targets / sizeof g_targets[0]; i++)
-        fuzz_run(&g_targets[i]);
+    fuzz_run_all(g_targets, sizeof g_targets / sizeof g_targets[0]);
 
     test_summary();
     return 0;

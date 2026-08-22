@@ -170,7 +170,7 @@ failure. It is the second-highest-value fuzz target.
 |---|---|---|---|
 | request bytes read | `src/sarm/child.S:127-137` | `BUF_SIZE` (16384); buffer full without `\r\n\r\n` → 431 | `buf` (16385 B, rounded) |
 | header terminator scan | `src/parse/parse_header_end.S` | bounded by bytes read | — |
-| path | `src/parse/parse_path.S` | 4096 cap → 414; `DOCROOT` prefix prepended; repeated slashes collapsed; reads bounded by the length argument (three off-by-ones fixed in Step 8, observation 16) | `filename_buf` (4097 B) |
+| path | `src/parse/parse_path.S` | 4096 cap → 414; `DOCROOT` prefix prepended; repeated slashes collapsed; reads bounded by the length argument (three off-by-ones fixed in Step 8, observation 16; each covered by a corpus entry in Step 14) | `filename_buf` (4097 B) |
 | query string | `parse_path.S` | `query_buf_size` (4096) | `query_buf` |
 | `Host:` / `:authority` | `get_header_field.S`, `h2_build_request.S` | `AUTHORITY_BUF_SIZE` (256) | `authority_buf` (257 B) |
 | `Range:` value | `parse_range.S`, `h2_parse_range.S`, `atoi_n.S` | resolved against the embedded entry size by `h2_resolve_range.S` | `response` range fields |
@@ -663,7 +663,9 @@ on by Step 1.
    record; the check belongs to the driver and is now there. Recorded rather
    than closed because the class is what matters: this is the only place in
    the tree where a peer-controlled length was consumed before being bounded,
-   and §3.1's table now names the bound. → fixed.
+   and §3.1's table now names the bound. Step 14 kept the input: the five
+   bytes, and the three neighbouring fragment lengths, are corpus entries
+   replayed by every run of the handshake suite. → fixed.
 14. **An unbounded number of `change_cipher_spec` records is tolerated**
    before the client's Finished (RFC 8446 Appendix D.4 requires tolerating
    them and sets no limit). A peer can hold a handshake open indefinitely with
@@ -681,8 +683,11 @@ on by Step 1.
     the load) while the minimum length it required was 16. Not reachable from
     `parse_request` — `child.S` NUL-terminates `buf` past the header, and a
     header ends `\r\n\r\n` so the copy loop stops at the `\r` — but both
-    reasons are properties of the caller, not of the routine. → fixed; see
-    `fuzzing.md` §16.
+    reasons are properties of the caller, not of the routine. Step 14 asked
+    which of the three instructions the preserved inputs actually cover, and
+    the answer was two of three — the corpus now has a fourth entry, derived
+    by re-fuzzing the copy loop's bound on its own. → fixed; see
+    `fuzzing.md` §16 and `continuous-fuzzing.md` §5.
 17. **`http1_should_keep_alive` is not the pure predicate its header says it
     is**, and the order of its checks is load-bearing. It calls
     `get_header_field`, which answers a header name that is a strict prefix of

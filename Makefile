@@ -114,6 +114,18 @@ clean:
 test-security:
 	@$(MAKE) -s -C tests/security
 
+.PHONY: fuzz-soak
+# Step 14 (continuous fuzzing). `make test` runs every fuzz campaign on a
+# fixed seed, because a suite whose corpus moves cannot tell a regression
+# from a coincidence. This one runs the same campaigns on seeds nobody has
+# run before, and preserves the input of anything it finds under
+# tests/security/findings/. Not part of `make test`: it is meant for the
+# machines and hours nobody is waiting on. SOAK_ARGS passes options
+# through (--minutes, --forever, --mult, --suite, --minimize).
+#   docs/security/continuous-fuzzing.md
+fuzz-soak:
+	@./scripts/fuzz_soak.py $(SOAK_ARGS)
+
 .PHONY: test
 test: sarm
 	@./tests/test_files.sh --no-build --quiet

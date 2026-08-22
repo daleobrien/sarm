@@ -18,6 +18,10 @@ www_gz/
 *.o
 tests/unit/_obj/
 tests/security/_obj/
+# Step 14: what a soak run finds, before anyone has decided what it is.
+# A finding that turns out to matter is minimised and committed under
+# tests/security/corpus/, which is tracked.
+tests/security/findings/
 scripts/benchmarks/_bench_obj/
 scripts/benchmarks/_bench_bin/
 IMPROVEMENTS-3.md

@@ -521,16 +521,20 @@ static void pipe_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 
 static const struct fuzz_target g_targets[] = {
     { "header_end", he_case,    sweep_setup, sweep_teardown, 40000, 0,
-      HE_BUCKETS },
+      HE_BUCKETS, 0 },
     { "probe",      probe_case, sweep_setup, sweep_teardown, 40000, 0,
-      { "!looks like the preface", "!does not", "!diverged and stayed so", 0 } },
+      { "!looks like the preface", "!does not", "!diverged and stayed so", 0 },
+      0 },
     { "pipeline",   pipe_case,  sweep_setup, sweep_teardown, 20000, 0,
-      { "!a request was served", "!none was", "!more than one, pipelined", 0 } },
+      { "!a request was served", "!none was", "!more than one, pipelined", 0 },
+      0 },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argc;
     fuzz_disarm_harness_timeout();
+    fuzz_suite("frag_http", argv[0]);
 
     printf("\n╔══════════════════════════════════════════════════════════╗\n");
     printf("║  sarm — fragmentation of the read loop (Step 9)         ║\n");
@@ -539,8 +543,7 @@ int main(void)
            (unsigned long long)fuzz_seed(), (unsigned long long)fuzz_mult());
 
     TEST_SUITE("the plaintext read loop — every prefix of the same bytes");
-    for (size_t i = 0; i < sizeof g_targets / sizeof g_targets[0]; i++)
-        fuzz_run(&g_targets[i]);
+    fuzz_run_all(g_targets, sizeof g_targets / sizeof g_targets[0]);
 
     test_summary();
     return 0;

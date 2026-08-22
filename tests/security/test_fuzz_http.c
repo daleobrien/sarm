@@ -993,11 +993,10 @@ static void he_teardown(struct fuzz_ctx *c)
     guard_free(&g_he.in);
 }
 
-static void he_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The body from the request bytes on, so a preserved input runs the
+// same invariants as a generated one (Step 14).
+static void he_check(uint8_t *p, size_t n, struct fuzz_ctx *c)
 {
-    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
-    uint8_t *p = place_flush(&g_he.in, g_he.scratch, n);
-
     struct hdrend_out o;
     call_header_end(p, n, &o);
 
@@ -1015,6 +1014,19 @@ static void he_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     }
 }
 
+static void he_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
+    fuzz_input(c, g_he.scratch, n);
+    he_check(place_flush(&g_he.in, g_he.scratch, n), n, c);
+}
+
+static void he_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REQ_MAX) len = REQ_MAX;
+    he_check(place_flush(&g_he.in, in, len), len, c);
+}
+
 // ── campaign 2: get_header_field ────────────────────────────────────
 // Four callers depend on this one walk: the Host lookup in
 // verify_http_version and parse_request, the two body-header lookups in
@@ -1028,15 +1040,9 @@ static const char *const g_field_names[] = {
     "X", "Accept", "content-length", "CONNECTION", "If-None-Match",
 };
 
-static void hf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+static void hf_check(uint8_t *p, size_t n, const char *name, size_t name_len,
+                     struct fuzz_ctx *c)
 {
-    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
-    uint8_t *p = place_flush(&g_he.in, g_he.scratch, n);
-
-    const char *name = g_field_names[
-        fuzz_below(r, sizeof g_field_names / sizeof g_field_names[0])];
-    size_t name_len = strlen(name);
-
     size_t ref_off = 0;
     int expect = ref_header_field(p, n, name, name_len, &ref_off);
 
@@ -1073,6 +1079,24 @@ static void hf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     FUZZ_CHECK(c, o.ptr >= (uint64_t)p && o.ptr + o.rem == (uint64_t)(p + n),
                "get_header_field: value pointer outside the buffer");
     fuzz_tally(c, HF_FOUND);
+}
+
+static void hf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
+    fuzz_input(c, g_he.scratch, n);
+    const char *name = g_field_names[
+        fuzz_below(r, sizeof g_field_names / sizeof g_field_names[0])];
+    hf_check(place_flush(&g_he.in, g_he.scratch, n), n, name, strlen(name), c);
+}
+
+// A preserved input carries bytes, not the field that was being looked
+// for; "Host" is the lookup every request reaches (verify_http_version
+// and parse_request both make it) and is the one worth regressing.
+static void hf_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REQ_MAX) len = REQ_MAX;
+    hf_check(place_flush(&g_he.in, in, len), len, "Host", 4, c);
 }
 
 // ── campaign 3: the front door ──────────────────────────────────────
@@ -1130,11 +1154,8 @@ static void check_path_contract(struct fuzz_ctx *c, const uint8_t *path,
                "docroot-prefixed");
 }
 
-static void fd_case(struct fuzz_rng *r, struct fuzz_ctx *ctx)
+static void fd_check(uint8_t *p, size_t n, struct fuzz_ctx *ctx)
 {
-    size_t n = gen_request(r, g_fd.scratch, REQ_MAX - 1);
-    uint8_t *p = place_nul(&g_fd.in, g_fd.scratch, n);
-
     struct hdrend_out he;
     call_header_end(p, n, &he);
     if (he.idx == 0) {                  // child.S reads more, or replies 431
@@ -1234,6 +1255,19 @@ static void fd_case(struct fuzz_rng *r, struct fuzz_ctx *ctx)
     fuzz_tally(ctx, FD_SERVED);
 }
 
+static void fd_case(struct fuzz_rng *r, struct fuzz_ctx *ctx)
+{
+    size_t n = gen_request(r, g_fd.scratch, REQ_MAX - 1);
+    fuzz_input(ctx, g_fd.scratch, n);
+    fd_check(place_nul(&g_fd.in, g_fd.scratch, n), n, ctx);
+}
+
+static void fd_replay(const uint8_t *in, size_t len, struct fuzz_ctx *ctx)
+{
+    if (len > REQ_MAX - 1) len = REQ_MAX - 1;
+    fd_check(place_nul(&g_fd.in, in, len), len, ctx);
+}
+
 // ── campaign 4: parse_path ──────────────────────────────────────────
 // The routine with the most state in the module: a 17-byte window to
 // find " /" or " *", a copy loop that collapses runs of '/' and stops
@@ -1279,23 +1313,12 @@ static void pp_teardown(struct fuzz_ctx *c)
     guard_free(&g_pp.in);
 }
 
-static void pp_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// The body from the request-line bytes on. This is the campaign that
+// found the three reads past the length argument of §16, and a
+// byte-level replay is what keeps that input a regression test after
+// gen_request changes (Step 14).
+static void pp_check(uint8_t *p, size_t n, uint64_t dflt, struct fuzz_ctx *c)
 {
-    size_t n = gen_request(r, g_pp.scratch, REQ_MAX - 1);
-
-    // Most of the time the length is the whole generated request; the
-    // rest of the time it is cut short, including at exactly 16, the
-    // boundary the routine's first comparison tests.
-    if (fuzz_chance(r, 4)) {
-        uint64_t cut = fuzz_chance(r, 3) ? fuzz_range(r, 14, 20)
-                                         : fuzz_below(r, n + 1);
-        if (cut < n) n = (size_t)cut;
-    }
-
-    uint8_t *p = place_flush(&g_pp.in, g_pp.scratch, n);
-
-    const uint64_t dflt = fuzz_chance(r, 2) ? 1 : 0;
-
     canaries_arm();
 
     int expect = ref_parse_path(p, n, (int)dflt, g_pp.ref);
@@ -1361,6 +1384,35 @@ static void pp_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     fuzz_tally(c, PP_OK);
 }
 
+static void pp_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_request(r, g_pp.scratch, REQ_MAX - 1);
+
+    // Most of the time the length is the whole generated request; the
+    // rest of the time it is cut short, including at exactly 16, the
+    // boundary the routine's first comparison tests.
+    if (fuzz_chance(r, 4)) {
+        uint64_t cut = fuzz_chance(r, 3) ? fuzz_range(r, 14, 20)
+                                         : fuzz_below(r, n + 1);
+        if (cut < n) n = (size_t)cut;
+    }
+
+    fuzz_input(c, g_pp.scratch, n);
+    const uint64_t dflt = fuzz_chance(r, 2) ? 1 : 0;
+    pp_check(place_flush(&g_pp.in, g_pp.scratch, n), n, dflt, c);
+}
+
+// The truncation the generator applies is already baked into a
+// preserved input — its length is the length that failed. The
+// "default file" knob is not, and it replays both ways, because a
+// finding that only shows up under one of them is still a finding.
+static void pp_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REQ_MAX - 1) len = REQ_MAX - 1;
+    pp_check(place_flush(&g_pp.in, in, len), len, 0, c);
+    pp_check(place_flush(&g_pp.in, in, len), len, 1, c);
+}
+
 // ── campaign 5: the path filters ────────────────────────────────────
 // decode_url -> check_path_safety -> check_path_traversal, in that
 // order, is the whole of sarm's path policy (threat-model.md §3.4), and
@@ -1416,14 +1468,21 @@ static size_t gen_url(struct fuzz_rng *r, uint8_t *buf, size_t cap)
     return g.len;
 }
 
-static void pf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+// Placing the URL is part of the case: decode_url rewrites its input in
+// place, so the reference needs a copy of the bytes taken before the
+// call, and p[n] is the one accessible byte past the length that the
+// server really does put there.
+static uint8_t *pf_place(const uint8_t *src, size_t n)
 {
-    size_t n = gen_url(r, g_pf.scratch, 512);
     uint8_t *p = g_pf.in.data + g_pf.in.size - n - 1;
-    memcpy(p, g_pf.scratch, n);
+    memcpy(p, src, n);
     p[n] = POISON;              // decode_url NUL-terminates at out[len]
     memcpy(g_pf.before, p, n);
+    return p;
+}
 
+static void pf_check(uint8_t *p, size_t n, struct fuzz_ctx *c)
+{
     long want = ref_decode_url(g_pf.before, n, g_pf.refout);
 
     struct decode_out d;
@@ -1481,6 +1540,19 @@ static void pf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
         if (p[i] == '.') dots++;
     }
     fuzz_tally(c, PF_DECODED);
+}
+
+static void pf_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_url(r, g_pf.scratch, 512);
+    fuzz_input(c, g_pf.scratch, n);
+    pf_check(pf_place(g_pf.scratch, n), n, c);
+}
+
+static void pf_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > 512) len = 512;
+    pf_check(pf_place(in, len), len, c);
 }
 
 // ── campaign 6: parse_range ─────────────────────────────────────────
@@ -1554,11 +1626,8 @@ static int ref_range(const uint8_t *b, size_t len, struct ref_range *o,
     return 1;
 }
 
-static void rg_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+static void rg_check(uint8_t *p, size_t n, struct fuzz_ctx *c)
 {
-    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
-    uint8_t *p = place_flush(&g_he.in, g_he.scratch, n);
-
     canaries_arm();
     struct ref_range want = { 0, 0 };
     int want_escape = 0;
@@ -1599,6 +1668,19 @@ static void rg_case(struct fuzz_rng *r, struct fuzz_ctx *c)
                   (int64_t)o.start <= (int64_t)o.end,
                "parse_range: accepted a range whose start is past its end");
     fuzz_tally(c, RG_OK);
+}
+
+static void rg_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
+    fuzz_input(c, g_he.scratch, n);
+    rg_check(place_flush(&g_he.in, g_he.scratch, n), n, c);
+}
+
+static void rg_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REQ_MAX) len = REQ_MAX;
+    rg_check(place_flush(&g_he.in, in, len), len, c);
 }
 
 // ── campaign 7: keep-alive, and the smuggling question ──────────────
@@ -1676,27 +1758,9 @@ static int ref_keep_alive(const uint8_t *b, size_t len, uint64_t method,
     return 0;
 }
 
-static void ka_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+static void ka_check(uint8_t *p, uint64_t hdr, uint64_t method,
+                     uint64_t status, struct fuzz_ctx *c)
 {
-    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
-
-    // The predicate is handed the header length, so give it one: the
-    // terminator's index when there is one, and an arbitrary cut
-    // otherwise — including 0, which is the "no request observed" case
-    // the rule names first.
-    uint64_t hdr = ref_header_end(g_he.scratch, n);
-    if (!hdr || fuzz_chance(r, 8))
-        hdr = fuzz_chance(r, 16) ? 0 : fuzz_below(r, n + 1);
-    uint8_t *p = place_flush(&g_he.in, g_he.scratch, (size_t)hdr);
-
-    static const uint64_t statuses[] = {
-        200, 206, 304, 400, 403, 404, 408, 413, 416, 431, 500, 501, 505,
-    };
-    const uint64_t method = fuzz_below(r, 5);
-    const uint64_t status = fuzz_chance(r, 8)
-        ? fuzz_below(r, 600)
-        : statuses[fuzz_below(r, sizeof statuses / sizeof statuses[0])];
-
     int want_escape = 0;
     unsigned why = 0;
     int want = ref_keep_alive(p, (size_t)hdr, method, status,
@@ -1744,30 +1808,71 @@ static void ka_case(struct fuzz_rng *r, struct fuzz_ctx *c)
     fuzz_tally(c, got ? KA_KEEP : why);
 }
 
+static void ka_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    size_t n = gen_request(r, g_he.scratch, REQ_MAX);
+
+    // The predicate is handed the header length, so give it one: the
+    // terminator's index when there is one, and an arbitrary cut
+    // otherwise — including 0, which is the "no request observed" case
+    // the rule names first.
+    uint64_t hdr = ref_header_end(g_he.scratch, n);
+    if (!hdr || fuzz_chance(r, 8))
+        hdr = fuzz_chance(r, 16) ? 0 : fuzz_below(r, n + 1);
+    fuzz_input(c, g_he.scratch, (size_t)hdr);
+
+    static const uint64_t statuses[] = {
+        200, 206, 304, 400, 403, 404, 408, 413, 416, 431, 500, 501, 505,
+    };
+    const uint64_t method = fuzz_below(r, 5);
+    const uint64_t status = fuzz_chance(r, 8)
+        ? fuzz_below(r, 600)
+        : statuses[fuzz_below(r, sizeof statuses / sizeof statuses[0])];
+
+    ka_check(place_flush(&g_he.in, g_he.scratch, (size_t)hdr), hdr,
+             method, status, c);
+}
+
+// A preserved input is the header the predicate was handed; the method
+// and the status are the server's own, and replay at the pair that
+// keeps a connection open — GET and 200 — which is the answer the rule
+// has to get right for a request to be pipelined at all.
+static void ka_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
+{
+    if (len > REQ_MAX) len = REQ_MAX;
+    ka_check(place_flush(&g_he.in, in, len), len, 0, 200, c);
+}
+
+// The last field is the byte-level replay entry (Step 14). Every
+// campaign here has one: an HTTP request is a byte string, which is
+// exactly the shape a preserved finding keeps.
 static const struct fuzz_target g_targets[] = {
     { "header_end", he_case, he_setup, he_teardown, 400000, 0,
-      { "!terminator found", "!no terminator", 0 } },
+      { "!terminator found", "!no terminator", 0 }, he_replay },
     { "header_field", hf_case, he_setup, he_teardown, 400000, 0,
-      { "!found", "!absent", "!400 escape", 0 } },
+      { "!found", "!absent", "!400 escape", 0 }, hf_replay },
     { "front_door", fd_case, fd_setup, fd_teardown, 200000, 0,
       { "!served", "!brew/unknown", "!parse rejected", "!400 escape",
-        "!414 escape", "!505 escape", "!no terminator", 0 } },
+        "!414 escape", "!505 escape", "!no terminator", 0 }, fd_replay },
     { "path", pp_case, pp_setup, pp_teardown, 200000, 0,
-      { "!parsed", "!rejected", "!400 escape", "!414 escape", 0 } },
+      { "!parsed", "!rejected", "!400 escape", "!414 escape", 0 },
+      pp_replay },
     { "filters", pf_case, pf_setup, pf_teardown, 200000, 0,
       { "!decoded and clean", "!escape rejected", "!unsafe byte",
-        "!traversal", 0 } },
+        "!traversal", 0 }, pf_replay },
     { "range", rg_case, he_setup, he_teardown, 200000, 0,
-      { "!range accepted", "!no range", "!400 escape", 0 } },
+      { "!range accepted", "!no range", "!400 escape", 0 }, rg_replay },
     { "keepalive", ka_case, he_setup, he_teardown, 200000, 0,
       { "!kept alive", "!closed: body header", "!closed: Connection",
         "!closed: HTTP/1.0", "!closed: method or status", "!400 escape",
-        0 } },
+        0 }, ka_replay },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
+    (void)argc;
     fuzz_disarm_harness_timeout();
+    fuzz_suite("http", argv[0]);
 
     printf("\n╔══════════════════════════════════════════════════════════╗\n");
     printf("║  sarm — HTTP/1 request parsing fuzzing (Step 8)         ║\n");
@@ -1776,8 +1881,7 @@ int main(void)
            (unsigned long long)fuzz_seed(), (unsigned long long)fuzz_mult());
 
     TEST_SUITE("HTTP/1 request parsing — generated inputs");
-    for (size_t i = 0; i < sizeof g_targets / sizeof g_targets[0]; i++)
-        fuzz_run(&g_targets[i]);
+    fuzz_run_all(g_targets, sizeof g_targets / sizeof g_targets[0]);
 
     test_summary();
     return 0;
