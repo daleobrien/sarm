@@ -1,4 +1,5 @@
 rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+DETECTED_OS := $(shell uname -s)
 
 # Sources: every .S under src/ (recursively, so the per-function folders
 # are picked up), except the shared headers (config.S, defs.S), the
@@ -7,7 +8,14 @@ rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/tls/cert_data.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
 OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
-LDFLAGS := -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path) -e _main -arch arm64
+LDFLAGS := -e _main -arch arm64
+ifeq ($(DETECTED_OS),Darwin)
+	LDFLAGS += -l System -syslibroot $(shell xcrun --sdk macosx --show-sdk-path)
+else
+	LDFLAGS +=
+	CFLAGS += "-march=armv8-a+crypto"
+	CXXFLAGS += "-march=armv8-a+crypto"
+endif
 
 # sarm depends on 'assets', changing any file under:
 #  www triggers regeneration of src/embedded.S -> build/embedded.o
@@ -30,11 +38,24 @@ production: sarm
 .PHONY: assets
 assets: src/embedded.S src/tls/cert_data.S
 
-src/embedded.S: embed_www.sh $(call rwildcard,www,*)
-	sh embed_www.sh
+# Web assets:
+# embed_www.sh generates both www_gz/* and src/embedded.S.
+# The stamp gives Make a real file to track rather than tracking
+# the www_gz directory itself.
+www_gz/.stamp: embed_www.sh $(call rwildcard,www,*)
+	@rm -rf www_gz
+	@mkdir -p www_gz
+	@sh embed_www.sh
+	@touch $@
 
-src/tls/cert_data.S: certs/embed_cert.sh $(call rwildcard,certs,*)
-	sh certs/embed_cert.sh
+src/embedded.S: www_gz/.stamp
+	@test -f $@
+
+# TLS assets.
+src/tls/cert_data.S: certs/embed_cert.sh \
+                     certs/cert.der \
+                     certs/cert.pem
+	@sh certs/embed_cert.sh
 
 .PHONY: clean
 clean:
