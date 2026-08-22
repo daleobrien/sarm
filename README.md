@@ -1,4 +1,4 @@
-![](docs/face.svg)
+<img src="docs/face.svg" align="left" width="10%" alt="Description">
 
 # sarm — a web server in ARM64 assembly
 
