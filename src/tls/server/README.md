@@ -101,6 +101,66 @@ No error alert is ever sent back to the client on failure — this
 function reports carry-set to its caller, which closes the connection.
 Structured alerts are not implemented; this driver serves the happy
 path that gets the existing HTTP/2 stack running over real TLS bytes.
+Combined with the mandatory ALPN `h2` (requirement 12.4 in
+`src/tls/handshake/client_hello.S`), that means a client which does not
+offer `h2` — a bare `openssl s_client`, for instance — sees the
+connection close with no bytes and no explanation. That is intended;
+it is worth knowing before debugging one.
+
+### One message per record — a deliberate refusal
+
+RFC 8446 §5.1 lets a client coalesce several handshake messages into
+one record and fragment one message across several. **This server
+supports neither.** Each inbound handshake message must arrive as
+exactly one record, entire, and `tls_server_handshake` enforces that
+before parsing anything: it reads the message's own 3-octet length and
+requires `declared + 4 == fragment_len`, so a fragment carrying half a
+message, one and a bit messages, or two whole ones is rejected and the
+connection closed. The client's Finished gets the same treatment, with
+the declared length required to be 32.
+
+One thing this is *not* about: TCP segmentation. A ClientHello arriving
+in five packets is reassembled by `raw_read_exact` beneath
+`tls_read_record` and completes a handshake normally, as it must. The
+refusal is at the TLS record layer — one *record* per message — and the
+two are easy to conflate because both are called fragmentation.
+
+This is a refusal, not an oversight, and the argument for it is
+specific to how little this server reads:
+
+- **There are exactly two inbound handshake messages**, and both are
+  small. A Finished is 36 bytes. A ClientHello offering X25519 and
+  `h2` is a few hundred; even the largest thing a modern client sends
+  — one carrying a post-quantum key share alongside the classical one
+  — is on the order of 1.5 KB, an order of magnitude under the
+  16384-byte record limit. No conforming client has a reason to
+  fragment either message, and in practice none does: Python's `ssl`,
+  LibreSSL and OpenSSL `curl`, and browsers all send a single-record
+  ClientHello here.
+- **The failure mode is a closed connection, not a misparse.** The
+  check runs before `tls_transcript_add` and before
+  `tls_parse_client_hello`, so a fragmented message never reaches a
+  parser and never leaves partial state behind.
+- **Reassembly would cost exactly the wrong thing.** It means a buffer
+  spanning records, filled according to a length the peer controls,
+  before anything about that peer is authenticated. That is the shape
+  of the pre-authentication crash in `docs/SECURITY.md` §11 — the
+  five-byte record that made `tls_transcript_add` hash 2^64-4 bytes.
+  Buying interoperability nobody has asked for with new
+  attacker-driven length arithmetic is a bad trade at this size.
+
+**What would change the decision:** a peer that legitimately cannot fit
+a ClientHello in one record. If this server ever offers a group whose
+key share is large enough to push a ClientHello past 16384 bytes, or
+starts accepting client certificates (a Certificate message can be
+arbitrarily large), reassembly stops being optional and this section
+has to be rewritten rather than reread.
+
+The refusal is pinned by a test, not only by this paragraph: the
+`framing` campaign in `tests/security/test_fuzz_tls_handshake.c` sends
+a valid ClientHello split across two handshake records and requires
+the server to answer nothing. If reassembly is ever implemented, that
+case is the one that has to change, on purpose.
 
 ### Scratch buffers
 
@@ -113,9 +173,12 @@ of it doesn't need to link `src/data.S` too.
 
 ## Integration
 
-`src/sarm/main.S`'s accept loop peeks (`MSG_PEEK`) each new
-connection's first byte: `0x16` (a TLS handshake record, RFC 8446
-§5.1) runs `tls_server_handshake` and, on success, hands the connection
+`src/sarm/main.S`'s accept loop reads each new connection's first
+bytes for real and inspects the first of them (it used to `MSG_PEEK`
+one byte and leave it on the socket; Step 9 replaced that with a single
+read whose bytes are handed on to whichever path is chosen): `0x16` (a
+TLS handshake record, RFC 8446 §5.1) runs `tls_server_handshake`,
+passing it those already-read bytes, and, on success, hands the connection
 straight to `h2_connection_loop` — the existing HTTP/2 implementation,
 completely unaware that TLS is involved, matching the
 intended shape (`TCP socket → TLS transport → existing H2`). Any

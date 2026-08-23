@@ -60,6 +60,11 @@ WIRE_DIRS = [
 DECLARED = {
     "src/tls/record/parse.S": (8, 2,
         "legacy_record_version and the fragment length, both 2-octet (§3.1)"),
+    "src/tls/server/handshake.S": (16, 4,
+        "the ClientHello's and the client Finished's own 3-octet handshake "
+        "lengths, read as of §14 A1 — both are compared against a record "
+        "fragment length in an x register, so the 24-bit field cannot reach "
+        "the comparison wrapped"),
     "src/tls/handshake/client_hello.S": (8, 14,
         "every ClientHello list length is 2-octet — §3.5 calls this the "
         "width argument in its purest and most fragile form"),

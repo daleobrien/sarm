@@ -162,6 +162,40 @@ tls_server_handshake:
     // (docs/SECURITY.md §11).
     cmp     x2, #TLS_HS_HEADER_LEN
     b.lo    .Lhs_fail_generic
+
+    // ── the message's own framing (RFC 8446 §4, docs/SECURITY.md §14
+    //    A1) ──────────────────────────────────────────────────────
+    // Everything below reads the fragment as a ClientHello without
+    // ever consulting the two things the message says about itself:
+    // its HandshakeType octet and its uint24 length. Both are checked
+    // here, because nothing downstream can.
+    //
+    // tls_transcript_add *synthesises* the 4-byte header from the type
+    // and length it is handed (src/tls/transcript/add.S), so a
+    // fragment whose header disagrees with its contents is silently
+    // normalised into the transcript rather than rejected. The client
+    // hashed what it sent; the server would hash something else, and
+    // the mismatch surfaces — if it surfaces at all — five messages
+    // later as a Finished verification failure, after a signature has
+    // been computed and a full flight sent to a peer whose first
+    // message was already malformed. That is a bad place to find out.
+    //
+    // Requiring declared + 4 == fragment_len also settles the
+    // reassembly question in the only direction this server supports:
+    // one message per record, entire. See src/tls/server/README.md.
+    ldrb    w9, [x1]
+    cmp     w9, #TLS_HS_CLIENT_HELLO
+    b.ne    .Lhs_fail_generic
+    ldrb    w9, [x1, #1]
+    ldrb    w10, [x1, #2]
+    ldrb    w11, [x1, #3]
+    lsl     w9, w9, #16
+    orr     w9, w9, w10, lsl #8
+    orr     w9, w9, w11                 // declared body length (uint24)
+    add     x9, x9, #TLS_HS_HEADER_LEN  // ... a 24-bit field in a
+    cmp     x9, x2                      //     64-bit register: no wrap
+    b.ne    .Lhs_fail_generic
+
     mov     x20, x1                     // ClientHello: header+body ptr
     mov     x21, x2                     // ClientHello: header+body len
 
@@ -338,6 +372,23 @@ tls_server_handshake:
     adr_l   x9, tls_hs_msg_buf
     ldrb    w10, [x9]
     cmp     w10, #TLS_HS_FINISHED
+    b.ne    .Lhs_fail_generic
+
+    // The declared length, for the same reason as the ClientHello
+    // above. The plaintext is already known to be exactly 4 + 32
+    // bytes, so this is the one octet-triple left that the server was
+    // taking the client's word for: `14 00 00 ff` followed by 32 bytes
+    // of correct verify_data completed a handshake before this check.
+    // It never got as far as being exploitable — the verify_data still
+    // has to be right — but a length field nobody reads is a length
+    // field nobody notices changing.
+    ldrb    w10, [x9, #1]
+    ldrb    w11, [x9, #2]
+    ldrb    w12, [x9, #3]
+    lsl     w10, w10, #16
+    orr     w10, w10, w11, lsl #8
+    orr     w10, w10, w12
+    cmp     w10, #32                    // TLS_HASH_LEN, RFC 8446 §4.4.4
     b.ne    .Lhs_fail_generic
 
     // ── verify the client's verify_data ──────────────────────────

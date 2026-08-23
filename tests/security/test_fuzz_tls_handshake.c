@@ -724,6 +724,7 @@ enum {
     FK_BAD_VD,         // one bit of verify_data
     FK_BAD_TYPE,       // HandshakeType other than 20
     FK_BAD_BODY_LEN,   // a body that is not 32 bytes
+    FK_BAD_DECL_LEN,   // 32 correct bytes, and a uint24 that lies
     FK_BAD_INNER,      // sealed with an inner type other than handshake
     FK_WRONG_KEY,      // sealed under the server's handshake key
     FK_WRONG_SEQ,      // sealed at a sequence number other than 0
@@ -746,6 +747,7 @@ static unsigned kind_bucket(unsigned k)
     case FK_CCS: case FK_CCS_FLOOD:         return NB_OK_CCS;
     case FK_BAD_VD:                         return NB_VD;
     case FK_BAD_TYPE: case FK_BAD_BODY_LEN:
+    case FK_BAD_DECL_LEN:
     case FK_BAD_INNER: case FK_OTHER_MSG:   return NB_FRAMING;
     case FK_WRONG_KEY: case FK_WRONG_SEQ:
     case FK_GARBAGE:                        return NB_KEY;
@@ -929,6 +931,21 @@ static void fin_case(struct fuzz_rng *r, struct fuzz_ctx *c)
             msg_len = 4 + nl;
             break;
         }
+        case FK_BAD_DECL_LEN: {
+            // The counterpart. Here the body really is 32 bytes and
+            // the verify_data really is correct — only the message's
+            // own uint24 length disagrees, so the record length the
+            // driver checks is exactly right and the lie is in the
+            // one field nothing used to read (docs/SECURITY.md §14
+            // A1). `14 00 00 ff` followed by 32 good bytes completed
+            // a handshake before that changed.
+            uint32_t nl;
+            do { nl = (uint32_t)(fuzz_u64(r) & 0xFFFFFFu); } while (nl == 32);
+            msg[1] = (uint8_t)(nl >> 16);
+            msg[2] = (uint8_t)(nl >> 8);
+            msg[3] = (uint8_t)nl;
+            break;
+        }
         case FK_BAD_INNER:
             inner = fuzz_chance(r, 2) ? REC_APPLICATION_DATA : REC_ALERT;
             break;
@@ -1009,6 +1026,205 @@ collect:
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Campaign 4 — framing
+// ─────────────────────────────────────────────────────────────────────
+// Everything the other three campaigns send is correctly framed: the
+// handshake message's own HandshakeType and uint24 length always agree
+// with the record fragment carrying them, because wrap_handshake
+// writes both from the same number. So none of them could notice that
+// tls_server_handshake never read either field (docs/SECURITY.md §9
+// observation 12, §14 A1).
+//
+// It matters because tls_transcript_add *synthesises* the 4-byte
+// header from the type and length it is given, rather than hashing the
+// bytes that arrived. A message whose header disagreed with its
+// contents was therefore normalised into the transcript instead of
+// rejected — and the disagreement, if it surfaced at all, surfaced as
+// a Finished mismatch five messages later, after the server had signed
+// a transcript and sent a full flight to a peer whose first message
+// was already malformed.
+//
+// Six ways to disagree, one control, and one that is not a
+// disagreement at all: FR_SPLIT sends a perfectly legal ClientHello
+// spread over two handshake records, which RFC 8446 §5.1 permits a
+// client to do and this server deliberately does not support. It is
+// here so the refusal is pinned by a test rather than only described
+// in src/tls/server/README.md — if reassembly is ever implemented,
+// this case is the one that has to change, on purpose.
+
+enum {
+    FR_VALID = 0,      // correct framing — the control
+    FR_DECL_LONG,      // declared length one past the fragment
+    FR_DECL_SHORT,     // ... one short of it
+    FR_DECL_ZERO,      // ... zero
+    FR_DECL_MAX,       // ... 0xFFFFFF, the uint24 ceiling
+    FR_BAD_TYPE,       // HandshakeType is not client_hello
+    FR_TRAILING,       // a second message packed in behind the first
+    FR_SPLIT,          // one message across two records
+    FR_COUNT
+};
+
+enum { RB_CONTROL = 0, RB_DECL, RB_TYPE, RB_TRAILING, RB_SPLIT, RB_FINDING };
+
+static unsigned frame_bucket(unsigned k)
+{
+    switch (k) {
+    case FR_VALID:                            return RB_CONTROL;
+    case FR_BAD_TYPE:                         return RB_TYPE;
+    case FR_TRAILING:                         return RB_TRAILING;
+    case FR_SPLIT:                            return RB_SPLIT;
+    default:                                  return RB_DECL;
+    }
+}
+
+// Room for two whole messages in one record, plus two record headers.
+#define FRAME_CAP (2 * (CH_CAP + 4) + 16)
+
+static struct {
+    uint8_t ch[CH_CAP];
+    uint8_t rec[FRAME_CAP];
+    uint8_t back[SOCK_BUF];
+} g_frame;
+
+static int frame_setup(struct fuzz_ctx *c)
+{
+    (void)c;
+    signal(SIGPIPE, SIG_IGN);
+    return 0;
+}
+
+static void put_u24(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 16); p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)v;
+}
+
+static void frame_check(const uint8_t *bytes, size_t n, unsigned kind,
+                        struct fuzz_ctx *c)
+{
+    int sv[2];
+    if (make_pair(sv) < 0) { fuzz_fail(c, "socketpair failed"); return; }
+
+    if (n) { long w = write(sv[0], bytes, n); (void)w; }
+    shutdown(sv[0], SHUT_WR);
+
+    *(uint64_t *)sym_transport_mode() = TRANSPORT_PLAIN;
+    *(uint64_t *)sym_hs_state() = 0xEE;
+
+    uint64_t carry = sarm_hs_run(sv[1]);
+
+    size_t back = 0;
+    for (;;) {
+        long got = recv(sv[0], g_frame.back + back,
+                        sizeof g_frame.back - back, MSG_DONTWAIT);
+        if (got <= 0) break;
+        back += (size_t)got;
+        if (back == sizeof g_frame.back) break;
+    }
+    close(sv[0]);
+    close(sv[1]);
+
+    unsigned recs = count_records(g_frame.back, back);
+
+    // No case here can complete a handshake — none of them sends a
+    // client Finished — so every one fails. What separates them is how
+    // far the server got first, and that is the whole measurement.
+    if (!carry) {
+        fuzz_tally(c, RB_FINDING);
+        fuzz_fail(c, "tls_server_handshake: connected without a client "
+                     "Finished");
+        return;
+    }
+    FUZZ_CHECK(c, *(uint64_t *)sym_hs_state() == TLS_HS_FAILED,
+               "tls_server_handshake: failed without leaving tls_hs_state "
+               "at TLS_HS_FAILED");
+    FUZZ_CHECK(c, *(uint64_t *)sym_transport_mode() == TRANSPORT_PLAIN,
+               "tls_server_handshake: failed with transport_mode switched "
+               "to TLS");
+
+    if (kind == FR_VALID) {
+        // The control. A correctly framed ClientHello must still get
+        // the whole server flight, or every rejection below is a
+        // statement about a ClientHello this server cannot parse
+        // rather than about its framing.
+        if (recs == 0) {
+            fuzz_tally(c, RB_FINDING);
+            fuzz_fail(c, "a correctly framed ClientHello got no reply — the "
+                         "framing checks are rejecting valid messages");
+            return;
+        }
+    } else if (recs != 0) {
+        fuzz_tally(c, RB_FINDING);
+        fuzz_fail(c, "a mis-framed ClientHello was answered: the server "
+                     "sent its flight before noticing");
+        return;
+    }
+    fuzz_tally(c, frame_bucket(kind));
+}
+
+static void frame_case(struct fuzz_rng *r, struct fuzz_ctx *c)
+{
+    const unsigned kind = (unsigned)fuzz_below(r, FR_COUNT);
+
+    uint8_t ks[32];
+    fuzz_fill_random(r, ks, sizeof ks);
+    size_t chlen = build_ch(&CH_VALID, ks, g_frame.ch);
+
+    uint8_t *rec = g_frame.rec;
+    size_t n = wrap_handshake(rec, HS_CLIENT_HELLO, g_frame.ch, chlen);
+    const size_t body = 4 + chlen;               // header + body, the fragment
+
+    switch (kind) {
+    case FR_VALID:
+        break;
+    case FR_DECL_LONG:
+        put_u24(rec + 6, (uint32_t)chlen + 1);
+        break;
+    case FR_DECL_SHORT:
+        put_u24(rec + 6, (uint32_t)chlen - 1);
+        break;
+    case FR_DECL_ZERO:
+        put_u24(rec + 6, 0);
+        break;
+    case FR_DECL_MAX:
+        put_u24(rec + 6, 0xFFFFFFu);
+        break;
+    case FR_BAD_TYPE:
+        rec[5] = 2;                              // server_hello, from a client
+        break;
+    case FR_TRAILING: {
+        // The declared length still describes the first message
+        // exactly; the record simply carries a second one behind it.
+        // Accepting this would hash one message and parse the bytes of
+        // two.
+        memcpy(rec + 5 + body, rec + 5, body);
+        size_t frag = body * 2;
+        rec[3] = (uint8_t)(frag >> 8); rec[4] = (uint8_t)frag;
+        n = 5 + frag;
+        break;
+    }
+    case FR_SPLIT: {
+        // Legal on the wire, unsupported here: the declared length is
+        // correct and the first record carries only part of it, with
+        // the rest in a second handshake record.
+        size_t half = body / 2;
+        size_t rest = body - half;
+        memmove(rec + 5 + half + 5, rec + 5 + half, rest);
+        rec[3] = (uint8_t)(half >> 8); rec[4] = (uint8_t)half;
+        rec[5 + half + 0] = REC_HANDSHAKE;
+        rec[5 + half + 1] = 3;
+        rec[5 + half + 2] = 1;
+        rec[5 + half + 3] = (uint8_t)(rest >> 8);
+        rec[5 + half + 4] = (uint8_t)rest;
+        n = 5 + half + 5 + rest;
+        break;
+    }
+    }
+
+    fuzz_input(c, rec, n);
+    frame_check(rec, n, kind, c);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Campaigns
 // ─────────────────────────────────────────────────────────────────────
 // Case counts differ by three orders of magnitude because the
@@ -1044,6 +1260,16 @@ static const struct fuzz_target g_targets[] = {
         "!rejected: key, sequence or ciphertext", "!rejected: not encrypted",
         "!rejected: nothing sent", "accepted an invalid transition (a finding)",
         0 },
+      0 },
+
+    // Cheap: one socketpair and, for the control only, one full server
+    // flight. Nothing here forks.
+    { "framing", frame_case, frame_setup, 0, 4000, 0,
+      { "!control accepted (the server replied)",
+        "!rejected: declared length", "!rejected: message type",
+        "!rejected: trailing bytes in the record",
+        "!rejected: message split across records",
+        "answered a mis-framed message (a finding)", 0 },
       0 },
 };
 

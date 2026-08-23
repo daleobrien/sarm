@@ -80,7 +80,7 @@ surface is pre-authentication by definition.
 | Length | Source | Bound enforced | Destination |
 |---|---|---|---|
 | record fragment length (2 octets) | `record/parse.S` | `<= 2^14` for types 20/21/22, `<= 2^14+256` for type 23; must not run past the buffer end | `tls_hs_record_buf` / `tls_read_raw_buf` (16448 B) |
-| handshake message length (3 octets) | `server/handshake.S` | the fragment must be at least `TLS_HS_HEADER_LEN` (added by Step 7 — §11); the message's own declared length is **not** checked (§14 A1) | `tls_hs_msg_buf` (2048 B) |
+| handshake message length (3 octets) | `server/handshake.S` | the fragment must be at least `TLS_HS_HEADER_LEN` (Step 7 — §11), and since §14 A1 `declared + 4` must equal the fragment length exactly — so one message per record, entire, is enforced rather than assumed (`src/tls/server/README.md`) | `tls_hs_msg_buf` (2048 B) |
 | `legacy_session_id` | `client_hello.S` | `<= 32` and must fit the body remainder | `tls_session_id` (32 B) |
 | `cipher_suites` | `client_hello.S` | `>= 2`, even, must fit the remainder | scanned, not copied |
 | extensions block / per-extension | `client_hello.S` | block must *exactly* fill the body; each extension must fit inside it | key_share → 32 B, ALPN → 16 B |
@@ -199,8 +199,9 @@ in the only form it honestly can be: a guard, not a proof
 verifies no sum. It asserts the premises the verdicts above were reached
 under: that nowhere in the 99 wire-parsing files is a multi-octet field
 composed in a 64-bit register — a sweep, so a new file cannot escape it — and
-that six named files still assemble the number of fields, at the widths, they
-did when the verdicts were written. Widening a field, or moving one into an
+that seven named files still assemble the number of fields, at the widths,
+they did when the verdicts were written (six at Step 5; `tls/server/
+handshake.S` joined them when §14 A1 gave it two 3-octet reads of its own). Widening a field, or moving one into an
 `x` register, now fails a check instead of silently invalidating a paragraph.
 Its own two controls damage a scratch copy of the tree and require the guard
 to notice. What it does not catch: a field that keeps its width and its idiom
@@ -498,7 +499,7 @@ source comments; gaps are deliberate.
 | 9 | `hkdf_expand`, `hkdf_expand_label` and `x25519_fe_sqr_times` had preconditions enforced by documentation only | **fixed** (Step 5, §11) |
 | 10 | The GCM length block is assembled in three places; the exported `ghash` has no caller in the server | **fixed** (§14 A2) — one `.Lgcm_ghash_lengths` in `gcm/data.S`, called by all three. Sabotage: corrupting it now turns the `ghash`, `aes_gcm_encrypt` *and* `aes_gcm_decrypt` sweeps red; on the three-copy version the same edit to `ghash.S` left the other two green. `ghash` stays exported and stays caller-less **by decision** — it is the differential oracle for the shared core, and a routine no test can call on its own is a routine no sweep can isolate |
 | 11 | `tls_read_record` cannot return `TLS_RECORD_ERR_BOUNDS` | recorded — it reads exactly `total` bytes and hands parse a buffer of exactly `total`, so one of parse's five branches is dead from the socket's perspective. The real check is the `_LENGTH` size test. Stated so an empty bucket is not mistaken for coverage |
-| 12 | `tls_server_handshake` ignores the handshake message's own 3-octet length | **open** — §14 A1 |
+| 12 | `tls_server_handshake` ignores the handshake message's own 3-octet length | **fixed** (§14 A1) — both inbound messages now have their HandshakeType and uint24 length checked against the record fragment before anything parses them, and one-message-per-record is a written refusal (`src/tls/server/README.md`) pinned by a test rather than an unstated assumption. Sabotage: drop the ClientHello length check and the `framing` campaign fails on case 1; drop the Finished one and `finished` reports **accepted an invalid client Finished** on case 0 — `14 00 00 ff` with 32 correct bytes completed a handshake before this |
 | 13 | A handshake record with a fragment shorter than 4 bytes crashed the server pre-auth | **fixed** (Step 7, §11) |
 | 14 | An unbounded number of `change_cipher_spec` records is tolerated | **fixed** (Step 12, §8) |
 | 16 | `parse_path` read one byte past its length argument, in three places | **fixed** (Step 8, §11) |
@@ -807,15 +808,41 @@ until §9's register says so.
 
 ### Phase A — gaps that could become defects
 
-**A1 — Handshake message framing and reassembly.** Observation 12. Read each
-handshake message's 3-octet length and require it to agree with the fragment
-the record carries (cheap, and it closes the "almost always"). Then either
-implement a reassembly layer between `tls_read_record` and the driver, or write
-down in `src/tls/server/README.md` that sarm deliberately requires each message
-to arrive in exactly one record, with the argument for why that is safe. A
-recorded refusal is an acceptable outcome; silence is not. *Test:* new
-`test_fuzz_tls_handshake.c` cases for a declared length longer and shorter than
-the fragment, and a Finished with a wrong declared length — currently accepted.
+**A1 — Handshake message framing and reassembly.** **Done**, and the second
+half was the recorded refusal rather than a reassembly layer — see
+`src/tls/server/README.md`, which now carries the argument and the condition
+that would overturn it.
+
+The checks: `tls_server_handshake` reads both inbound messages' HandshakeType
+and uint24 length and requires them to agree with the record fragment, before
+`tls_transcript_add` or `tls_parse_client_hello` sees anything. Fourteen
+instructions across the two sites.
+
+Two things this turned up that the item did not anticipate. The first is *why*
+a wrong declared length was survivable rather than exploitable:
+`tls_transcript_add` synthesises the 4-byte header from the type and length it
+is handed rather than hashing the bytes that arrived, so a mis-framed message
+was silently normalised into the transcript. The disagreement surfaced — when
+it surfaced — as a Finished mismatch five messages later, after the server had
+signed a transcript and sent a full flight to a peer whose first message was
+already malformed. Second, the ClientHello's *type* octet was not read either.
+Nothing checked that the first inbound message claimed to be a ClientHello;
+the driver simply told `tls_transcript_add` that it was. Same three
+instructions, same place, so it is closed here too.
+
+*Tests:* a new `framing` campaign in `test_fuzz_tls_handshake.c` — declared
+length long, short, zero and `0xFFFFFF`, a wrong HandshakeType, a second
+message packed in behind the first, and a legal ClientHello split across two
+records, each required to be answered with nothing, against a correctly framed
+control that must still draw the full flight. Plus `FK_BAD_DECL_LEN` in the
+`finished` campaign, the counterpart to the existing `FK_BAD_BODY_LEN`: 32
+bytes of correct verify_data behind a uint24 that lies. That one is the item's
+"currently accepted", and it was — sabotage confirms it completes a handshake
+without the check.
+
+The split-across-records case is the refusal's teeth. It asserts today's
+behaviour, so implementing reassembly later means changing a test on purpose
+rather than discovering that nothing was pinning the decision.
 
 **A2 — The GCM length block, written three times.** **Done** — see §9,
 observation 10. `.Lgcm_ghash_lengths` in `src/crypto/gcm/data.S` now owns the
@@ -941,7 +968,10 @@ and called it minimal.
 
 **D3 — Three fragmentation gaps.** The handshake driver is not fragmented end
 to end ("a ClientHello split across five packets still completes a handshake"
-is asserted nowhere — do this with A1, which needs the same client); EOF is not
+is asserted nowhere). Note this is *TCP* fragmentation, which the server
+handles and nothing tests — not TLS-record fragmentation, which §14 A1 closed
+by refusing it outright. The two are easy to conflate and have opposite
+answers. EOF is not
 swept at every byte (a small extension of `frag_plan` — truncate rather than
 cut — with a different invariant: not equality, but "fails cleanly with
 `_SHORT`, having written nothing past what arrived"); and a reset during the
