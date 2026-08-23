@@ -34,3 +34,4 @@ __pycache__
 certs/*.der
 certs/*.pem
 certs/*.raw
+perf-results/
