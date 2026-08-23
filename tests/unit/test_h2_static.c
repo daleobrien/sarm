@@ -381,6 +381,23 @@ static void test_h2_resolve_range(void) {
 	          h2_resolve_range_wrapper(99, 100, 17, &end, &status));
 	ASSERT_EQ("99-100/17 status 416", 416, status);
 
+	// An inverted range. Both parsers upstream reject start > end, so
+	// the resolver is never reached with one — but it had no check of
+	// its own, and the clamp would have handed back a window whose
+	// length underflows (docs/SECURITY.md §3.5, carried-forward item 4).
+	ASSERT_EQ("9-0/17 (inverted) → 416", -1,
+	          h2_resolve_range_wrapper(9, 0, 17, &end, &status));
+	ASSERT_EQ("9-0/17 status 416", 416, status);
+	// one apart, either side of the boundary: start == end must still
+	// be a satisfiable one-byte window
+	ASSERT_EQ("5-5/17 → start 5", 5,
+	          h2_resolve_range_wrapper(5, 5, 17, &end, &status));
+	ASSERT_EQ("5-5/17 → end 5", 5, end);
+	ASSERT_EQ("5-5/17 → 206", 206, status);
+	ASSERT_EQ("6-5/17 (inverted by one) → 416", -1,
+	          h2_resolve_range_wrapper(6, 5, 17, &end, &status));
+	ASSERT_EQ("6-5/17 status 416", 416, status);
+
 	// bytes=-0 → 416; empty-file edge cases
 	ASSERT_EQ("-0/17 → 416", -1, h2_resolve_range_wrapper(-1, 0, 17, &end, &status));
 	ASSERT_EQ("-0/17 status 416", 416, status);

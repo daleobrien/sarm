@@ -179,13 +179,33 @@ negative count as 2^64. A future change from `b.gt` to `b.ne` would be a bug.
 
 HPACK was the exception, and produced three of the four findings in §11.
 
-**Carried forward** (see §14 A3): `h2_huffman_decode` still trusts its length
-argument, and is one new caller away from being the same defect again;
-`h2_hpack_dyn_insert`'s entry-size sum reads as unbounded and is safe only by
-a width established two functions away; `h2_resolve_range` would accept
-`start > end` if it were ever reached with one; and **the width argument is not
-machine-checkable** — every verdict above is a human reading two functions, and
-nothing in the build re-derives it when a field changes size.
+**Carried forward, now closed** (§14 A3). Three routines borrowed their bound
+from a caller and now hold their own: `h2_huffman_decode` takes the block end
+as an argument and `ckrange`s it before reading a byte (it was one new caller
+away from being §11's defect again); `h2_hpack_dyn_insert`'s entry-size sum is
+a `ckadd` pair, so a wrapping sum takes §4.4's evict-and-drop path rather than
+`memcpy`ing a colossal name into a 4 KB arena; and `h2_resolve_range` rejects
+`start > end` instead of producing a window whose length underflows. None was
+reachable — that is what made them carried-forward items rather than §11
+defects — so the tests reach past the callers and call each routine directly,
+against a guard page (`tests/security/test_overflow_hpack.c`). Sabotage: remove
+any one of the three and between two and four of those cases fail, the
+`h2_huffman_decode` and `h2_hpack_dyn_insert` ones as **OUT OF BOUNDS** rather
+than as a wrong answer.
+
+The fourth item — **the width argument is not machine-checkable** — is closed
+in the only form it honestly can be: a guard, not a proof
+(`scripts/width_guard.py`, `tests/test_width_guard.sh`, in `make test`). It
+verifies no sum. It asserts the premises the verdicts above were reached
+under: that nowhere in the 99 wire-parsing files is a multi-octet field
+composed in a 64-bit register — a sweep, so a new file cannot escape it — and
+that six named files still assemble the number of fields, at the widths, they
+did when the verdicts were written. Widening a field, or moving one into an
+`x` register, now fails a check instead of silently invalidating a paragraph.
+Its own two controls damage a scratch copy of the tree and require the guard
+to notice. What it does not catch: a field that keeps its width and its idiom
+and acquires a new consumer that composes it with something unbounded. That
+half is the fuzzers'.
 
 ---
 
@@ -445,7 +465,7 @@ source comments; gaps are deliberate.
 | 1 | The private scalar is embedded in the binary, and `certs/key.pem` is in the repository | **partly fixed** (Step 13 — no longer writable); deployment story open, §13.3 |
 | 2 | No section is read-only | **fixed** (Step 13, §13.1) |
 | 3 | Key material is adjacent to attacker-filled record buffers | recorded — raises the value of over-read testing at the `tls_hs_record_buf`/`tls_hs_msg_buf` boundaries, which Steps 2, 3 and 10 do |
-| 4 | Bounds are enforced by end-pointer comparison, never a checked-add idiom | **partly fixed** (Step 5, §3.5); residual is that the width argument is a human reading two functions |
+| 4 | Bounds are enforced by end-pointer comparison, never a checked-add idiom | **fixed** (Step 5, §3.5; the four carried-forward items by §14 A3). The width argument is still a human reading two functions — what changed is that its premises are now machine-checked by `scripts/width_guard.py`, so a field cannot widen without failing `make test` |
 | 5 | Fail-closed entropy is asserted by construction, never tested | **open** — §14 A4 |
 | 6 | `defs.S` defines ~20 filesystem/process syscalls nothing calls | **fixed** by the allowlist (§6) |
 | 7 | No concurrent-connection cap, no handshake-duration cap | **half closed** (Step 12); the connection cap is a recorded decision, §14 C1 |
@@ -784,12 +804,18 @@ tests, not of a single linked instance. And nothing in either Makefile treats
 `data.S` as a dependency, so an edit to it rebuilds nothing: the first run of
 this sabotage passed against stale objects and looked like a disproof.
 
-**A3 — The four length-audit items.** §3.5's carried-forward list. Items 1, 2
-and 4 are small defensive checks giving each routine the bound it currently
-borrows from its caller, using `ckrange`. Item 3 — machine-checking the width
-argument — should be attempted last, and the useful version is a *guard*, not a
-proof: assert the field widths the verdicts depend on, so widening one fails
-something. *Test:* an HPACK/HTTP-2 fuzz campaign, which does not exist yet.
+**A3 — The four length-audit items.** **Done** — see §3.5, which now records
+what each of the four became, and §9 observation 4. Two notes for whoever
+reads this next. The test this item asked for was "an HPACK/HTTP-2 fuzz
+campaign, which does not exist yet"; it still does not, and the checks are
+covered instead by direct guard-page cases in
+`tests/security/test_overflow_hpack.c` that call each routine past its callers
+— which is the right shape for a bound nothing reachable can violate, but is
+not the campaign, and a campaign would still be worth having. And the first
+version of the `h2_huffman_decode` test passed with and without the fix: a
+plain unit test cannot tell "refused the length" from "read 2.5 KB of adjacent
+memory and then hit its output cap", because both come back carry-set. It only
+became evidence once it ran against a guard page.
 
 **A4 — Fail-closed entropy is never tested.** Observation 5, sitting under a P0
 row ("ECDSA nonce/randomness failure → private-key compromise"). Make the

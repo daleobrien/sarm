@@ -191,6 +191,31 @@ static void test_h2_huffman(void) {
 	int64_t len, consumed, carry;
 	const uint8_t *s;
 
+	// The routine's own input bound (docs/SECURITY.md §3.5,
+	// carried-forward item 1). h2_hpack_decode_string checks this too,
+	// but h2_huffman_decode no longer depends on it having done so:
+	// called directly with an end short of the encoded run, it must
+	// refuse before reading a byte rather than expand off the end.
+	static const uint8_t hb[] = { 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a,
+	                              0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff };
+	s = h2_huffman_decode_bounded(hb, (int64_t)sizeof(hb),
+	                              hb + sizeof(hb) - 1, &len, &consumed, &carry);
+	ASSERT_TRUE("encoded run one past the end is refused", carry == 1);
+	s = h2_huffman_decode_bounded(hb, (int64_t)sizeof(hb), hb,
+	                              &len, &consumed, &carry);
+	ASSERT_TRUE("zero-length block with a non-zero run is refused", carry == 1);
+	// The wrapping case (len = INT64_MAX) is deliberately *not* here:
+	// without the bound it still reports carry set, having filled its
+	// output area from ~2.5 KB of adjacent memory first, so this suite
+	// cannot tell a refusal from the defect. It is in
+	// tests/security/test_overflow_hpack.c, where the block ends at a
+	// guard page and the difference is a fault.
+	// ...and the exactly-fitting bound is still accepted
+	s = h2_huffman_decode_bounded(hb, (int64_t)sizeof(hb), hb + sizeof(hb),
+	                              &len, &consumed, &carry);
+	check_string("a run that exactly fills the block is accepted", carry, s,
+	             len, "www.example.com", consumed, (int64_t)sizeof(hb));
+
 	// RFC 7541 Appendix C.4.1 — the canonical Huffman test vector
 	static const uint8_t auth[] = { 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a,
 	                                0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff };

@@ -83,9 +83,14 @@ h2_hpack_decode_string:
     mov x21, x1                 // prefix bytes consumed
     add x0, x19, x21            // the Huffman code bytes
     // h2_huffman_decode reads all x20 of them, so the bound has to hold
-    // before the call, not after it
+    // before the call, not after it. It is checked twice on purpose:
+    // here, because this is the check §11's defect was missing and the
+    // ordering is the whole lesson; and inside the callee, which as of
+    // Step 5's carried-forward item no longer borrows the bound from
+    // whoever called it.
     ckrange x5, x0, x20, x22, .Lhpack_str_bad
     mov x1, x20
+    mov x2, x22                 // block end — the callee's own bound
     bl h2_huffman_decode
     b.cs .Lhpack_str_error
     // h2_huffman_decode: x0 -> decoded, x1 = decoded len, x2 = consumed

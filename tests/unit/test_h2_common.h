@@ -773,9 +773,13 @@ static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t le
 	return count;
 }
 
-// h2_huffman_decode(ptr=x0, len=x1) → (str=x0, out_len=x1, consumed=x2,
-//                                     carry)
-static inline const uint8_t *h2_huffman_decode_wrapper(const uint8_t *p, int64_t n,
+// h2_huffman_decode(ptr=x0, len=x1, end=x2) → (str=x0, out_len=x1,
+//                                              consumed=x2, carry)
+// The end defaults to p + n — the exactly-fitting bound, which is what
+// every existing caller of this wrapper means. h2_huffman_decode_bounded
+// below is for the cases that want to pass a different one.
+static inline const uint8_t *h2_huffman_decode_bounded(const uint8_t *p, int64_t n,
+                                                      const uint8_t *end,
                                                       int64_t *len_out,
                                                       int64_t *consumed_out,
                                                       int64_t *carry_out) {
@@ -785,13 +789,14 @@ static inline const uint8_t *h2_huffman_decode_wrapper(const uint8_t *p, int64_t
 		"cmp xzr, xzr\n"
 		"mov x0, %4\n"
 		"mov x1, %5\n"
+		"mov x2, %6\n"
 		"bl h2_huffman_decode\n"
 		"mov %0, x0\n"
 		"mov %1, x1\n"
 		"mov %2, x2\n"
 		"cset %3, cs\n"
 		: "=r"(s), "=r"(len), "=r"(consumed), "=r"(carry)
-		: "r"(p), "r"(n)
+		: "r"(p), "r"(n), "r"(end)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
 		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
 		  "x30", "memory");
@@ -799,6 +804,14 @@ static inline const uint8_t *h2_huffman_decode_wrapper(const uint8_t *p, int64_t
 	*consumed_out = consumed;
 	*carry_out = carry;
 	return s;
+}
+
+static inline const uint8_t *h2_huffman_decode_wrapper(const uint8_t *p, int64_t n,
+                                                      int64_t *len_out,
+                                                      int64_t *consumed_out,
+                                                      int64_t *carry_out) {
+	return h2_huffman_decode_bounded(p, n, p + n, len_out, consumed_out,
+	                                 carry_out);
 }
 
 // ── Stage 8 wrappers for asm functions ──────────────────────────────

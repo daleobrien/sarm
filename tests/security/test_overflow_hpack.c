@@ -115,7 +115,48 @@ static int64_t hpack_decode_block(const uint8_t *p, int64_t len,
     return count;
 }
 
+// h2_huffman_decode called directly, which is the point: every case
+// above reaches it through h2_hpack_decode_string, and the question
+// carried forward from Step 5 was what it does when a caller has *not*
+// checked first (docs/SECURITY.md §3.5, item 1).
+static int64_t huffman_decode(const uint8_t *p, int64_t len,
+                              const uint8_t *end)
+{
+    int64_t carry;
+    __asm__ volatile(
+        "mov x0, %1\n"
+        "mov x1, %2\n"
+        "mov x2, %3\n"
+        "bl h2_huffman_decode\n"
+        "cset %0, cs\n"
+        : "=r"(carry)
+        : "r"(p), "r"(len), "r"(end)
+        // h2_huffman_decode's documented set: x0-x3, x8-x13, x30.
+        // x19-x28 are saved and restored by the routine itself, so
+        // naming them here only costs the compiler registers it does
+        // not have.
+        : "x0", "x1", "x2", "x3", "x8", "x9", "x10", "x11", "x12",
+          "x13", "x30", "cc", "memory");
+    return carry;
+}
+
 extern void h2_hpack_dyn_reset(void) __asm__("h2_hpack_dyn_reset");
+extern uint64_t h2_hpack_dyn_count __asm__("h2_hpack_dyn_count");
+
+static void hpack_dyn_insert(const uint8_t *name, int64_t name_len,
+                             const uint8_t *value, int64_t value_len)
+{
+    __asm__ volatile(
+        "mov x0, %0\n"
+        "mov x1, %1\n"
+        "mov x2, %2\n"
+        "mov x3, %3\n"
+        "bl h2_hpack_dyn_insert\n"
+        :
+        : "r"(name), "r"(name_len), "r"(value), "r"(value_len)
+        : "x0", "x1", "x2", "x3", "x4", "x9", "x10", "x11", "x12",
+          "x13", "x30", "cc", "memory");
+}
 
 // ── case contexts ───────────────────────────────────────────────────
 
@@ -175,6 +216,44 @@ static void probe_string(void *vctx)
         _exit(OV_BADSETUP);
     struct hpack_str_result r = hpack_decode_string(gb.data, gb.data + c->len);
     _exit(r.carry ? OV_REJECTED : OV_ACCEPTED);
+}
+
+struct dyn_ctx {
+    int64_t name_len, value_len;
+};
+
+// h2_hpack_dyn_insert sizes an entry as name_len + value_len + 32 and
+// compares that against the table maximum. Both lengths arrive from the
+// wire, bounded two functions away in h2_hpack_decode_field — so the sum
+// is safe by a width this routine cannot see, which is what Step 5
+// carried forward as item 2. If it wraps, a colossal entry passes the
+// maximum check as a tiny one and the name is memcpy'd into a 4096-byte
+// arena at its true length.
+static void probe_dyn_insert(void *vctx)
+{
+    struct dyn_ctx *c = vctx;
+    static const uint8_t src[16] = { 0 };
+    h2_hpack_dyn_reset();
+    hpack_dyn_insert(src, c->name_len, src, c->value_len);
+    // §4.4: an entry that cannot fit empties the table and is not added.
+    _exit(h2_hpack_dyn_count == 0 ? OV_REJECTED : OV_ACCEPTED);
+}
+
+struct huff_ctx {
+    const uint8_t *bytes;
+    size_t         len;      // bytes actually present, flush to the page
+    int64_t        declared; // what the routine is told to read
+};
+
+static void probe_huffman_direct(void *vctx)
+{
+    struct huff_ctx *c = vctx;
+    struct guarded_buffer gb;
+    if (ov_place(&gb, c->bytes, c->len) == NULL)
+        _exit(OV_BADSETUP);
+    const int64_t carry = huffman_decode(gb.data, c->declared,
+                                         gb.data + c->len);
+    _exit(carry ? OV_REJECTED : OV_ACCEPTED);
 }
 
 // ── 1. the 32-bit bound on RFC 7541 §5.1 integers ───────────────────
@@ -327,6 +406,56 @@ static void test_string_bounds(void)
     c = (struct str_ctx){ huff_fit, sizeof huff_fit };
     ov_case("Huffman string that exactly fills the block accepted",
             OV_ACCEPTED, probe_string, &c);
+
+    // The same questions asked of h2_huffman_decode itself, with no
+    // decode_string above it to have checked first. Until Step 5's
+    // carried-forward item 1 was closed the routine had no bound of its
+    // own, so every one of these walked off the end of the block and
+    // kept expanding until its 4096-byte output area filled — which is
+    // a fault here, not a rejection, because the block ends at a guard
+    // page. The exactly-fitting case is the control: the bound must not
+    // be off by one in the other direction.
+    static const uint8_t hw[] = {
+        0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab,
+        0x90, 0xf4, 0xff
+    };  // "www.example.com", 12 encoded octets
+    struct huff_ctx h = { hw, sizeof hw, (int64_t)sizeof hw };
+    ov_case("direct: a run that exactly fills the block accepted",
+            OV_ACCEPTED, probe_huffman_direct, &h);
+
+    h = (struct huff_ctx){ hw, sizeof hw - 1, (int64_t)sizeof hw };
+    ov_case("direct: a run one octet past the block rejected",
+            OV_REJECTED, probe_huffman_direct, &h);
+
+    h = (struct huff_ctx){ hw, sizeof hw, (int64_t)sizeof hw + 4096 };
+    ov_case("direct: a run past the block by a whole output area rejected",
+            OV_REJECTED, probe_huffman_direct, &h);
+
+    // ~2^32, the §11 shape, and INT64_MAX, where base + len wraps and a
+    // bare `cmp` against the end pointer would pass
+    h = (struct huff_ctx){ hw, sizeof hw, (int64_t)1 << 32 };
+    ov_case("direct: a run of ~2^32 rejected", OV_REJECTED,
+            probe_huffman_direct, &h);
+
+    h = (struct huff_ctx){ hw, sizeof hw, INT64_MAX };
+    ov_case("direct: a run that wraps the address space rejected",
+            OV_REJECTED, probe_huffman_direct, &h);
+
+    // ── the dynamic table's entry-size sum (item 2) ──
+    // A pair of lengths that sum past 2^64. Unreachable through the
+    // decoder, which bounds both against the block first; the routine
+    // doing the arithmetic had no way to know that.
+    struct dyn_ctx d = { INT64_MAX, INT64_MAX };
+    ov_case("dyn_insert: an entry size that wraps is refused",
+            OV_REJECTED, probe_dyn_insert, &d);
+    // and the +32 on its own, one below where the pair-sum wraps
+    d = (struct dyn_ctx){ (int64_t)-1, 0 };
+    ov_case("dyn_insert: an entry size that wraps on the RFC +32 is refused",
+            OV_REJECTED, probe_dyn_insert, &d);
+    // control: an ordinary entry is still inserted
+    d = (struct dyn_ctx){ 4, 8 };
+    ov_case("dyn_insert: an ordinary entry is still added", OV_ACCEPTED,
+            probe_dyn_insert, &d);
 }
 
 // ── 3. the same shapes, through the block decoder ───────────────────

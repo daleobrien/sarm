@@ -98,7 +98,9 @@
 // every input to know the result is trustworthy.
 //
 // docs/SECURITY.md §3.5 classifies every wire-derived length
-// site in the tree and says which of them use these.
+// site in the tree and says which of them use these. Its **width**
+// verdicts — the sites that do *not* use these macros — have their
+// premises checked by scripts/width_guard.py, in `make test`.
 
 // ckadd — d = a + b, branching away on unsigned wraparound.
 //   The `adds`/`b.cs` idiom from docs/SECURITY.md §3.5 "Integer overflow

@@ -55,8 +55,15 @@ h2_hpack_dyn_insert:
     mov x21, x2             // value ptr
     mov x22, x3             // value len
 
-    add x23, x20, x22
-    add x23, x23, #32       // entry_size (RFC 7541 §4.1)
+    // entry_size = name_len + value_len + 32 (RFC 7541 §4.1). Both
+    // lengths reach here from the wire through h2_hpack_decode_field,
+    // which bounds them against the header block — so the sum is safe
+    // by a width established two functions away, and reads as unbounded
+    // right here. Checked instead of argued: an entry that cannot be
+    // sized is an entry that does not fit, which §4.4 already has an
+    // answer for (empty the table, add nothing, not an error).
+    ckadd x23, x20, x22, .Ldyn_ins_too_big
+    ckadd x23, x23, #32, .Ldyn_ins_too_big
 
     ldr_l x9, h2_hpack_dyn_max, x10
     cmp x23, x9

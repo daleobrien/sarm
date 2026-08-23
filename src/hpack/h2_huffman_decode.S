@@ -14,16 +14,26 @@
 //   (§5.2): at most 7 bits, all ones — the most significant bits of the
 //   EOS code — and the EOS symbol itself is a decoding error.
 //
+//   The routine owns its own input bound. It reads all x1 encoded
+//   bytes, and until Step 5's carried-forward item was closed it simply
+//   trusted that count: h2_hpack_decode_string is its only caller and
+//   checks first, so a bad length was unreachable — but the bound lived
+//   entirely in the caller, one new caller away from being the same
+//   defect it was in §11 (a 4 GB Huffman string walking ~2.5 KB off the
+//   end of h2_frame_buf). x2 makes the bound the routine's own.
+//
 // Input/Arguments:
 //   x0 — Huffman-coded bytes
 //   x1 — encoded byte count
+//   x2 — one past the last readable octet of the enclosing header block
 //
 // Output/Returns:
 //   x0 — decoded string (h2_hpack_str_buf + old write offset)
 //   x1 — decoded byte count
 //   x2 — encoded bytes consumed (== x1-in: the length field is exact)
 //   (carry clear = success / carry set = failure — EOS symbol, invalid
-//   padding, output overflow, x0 = H2_ERR_COMPRESSION_ERROR)
+//   padding, output overflow, an encoded length running past x2,
+//   x0 = H2_ERR_COMPRESSION_ERROR)
 //
 // Clobbered Registers:
 //   x0-x3, x8-x13, x19-x28, x30 (x19-x28/x30 saved and restored)
@@ -46,6 +56,10 @@ h2_huffman_decode:
     str x30, [sp, #80]
     mov x19, x0             // src
     mov x20, x1             // encoded byte count
+    // Before anything is read: the whole encoded run has to lie inside
+    // the block. x2 is scratch from the next instruction on, so this is
+    // the only place the bound can be taken.
+    ckrange x9, x19, x20, x2, .Lhuff_bad_input
     adr_l x9, h2_hpack_str_off
     ldr x21, [x9]           // write offset
     adr_l x22, h2_hpack_str_buf
@@ -125,6 +139,7 @@ h2_huffman_decode:
 .Lhuff_eos:
 .Lhuff_overflow:
 .Lhuff_bad_padding:
+.Lhuff_bad_input:
     cmp xzr, xzr            // failure — carry set
     mov x0, #H2_ERR_COMPRESSION_ERROR
 .Lhuff_epilogue:

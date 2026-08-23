@@ -13,6 +13,7 @@ Rule of thumb for which to reach for:
 | know how often a function runs | `scripts/count_calls.py` |
 | know if one function got faster | `scripts/benchmarks/` |
 | know if a register/ABI change is legal | `scripts/abi.py`, `scripts/regpressure.py` |
+| change the width of a wire field | `scripts/width_guard.py` — it will tell you anyway |
 | change P-256 or GHASH arithmetic | the matching `scripts/*_derivation.py` — **first** |
 | let a machine try optimisations | `scripts/arm-optimize.py` |
 
@@ -255,6 +256,14 @@ python3 scripts/syscall_audit.py                                  # svc sites vs
 - **`regpressure.py`** — read-only. Reports pressure, callee-saved traffic and
   register moves. Note the metric that matters is *not* register count: nothing in
   this repo spills. It's fixed prologue/epilogue traffic that isn't earned.
+- **`width_guard.py`** — guards the premises of `docs/SECURITY.md` §3.5's
+  **width** verdicts: that no multi-octet wire field is composed in a 64-bit
+  register anywhere in the 99 wire-parsing files, and that six named files
+  still assemble the fields, at the widths, the verdicts were written against.
+  It proves no arithmetic safe — it makes changing a field's width fail a check
+  instead of silently invalidating a paragraph. `--report` prints what it sees.
+  Run by `tests/test_width_guard.sh` in `make test`, with two controls that
+  damage a scratch copy of the tree and require the guard to notice.
 - **`validate_clobbers.py`** — checks the analyzer against the 200+ hand-written
   `// Clobbered Registers:` headers. Where they disagree, exactly one is wrong.
   This is the cheapest strong oracle in the repo; it has found real bugs in both

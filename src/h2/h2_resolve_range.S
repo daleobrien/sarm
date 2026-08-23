@@ -54,7 +54,15 @@ h2_resolve_range:
     sub x1, x2, #1           // open-ended — end = size - 1
     b .Lh2rr_206
 3:
-    // both concrete — clamp the end to size - 1
+    // both concrete — reject an inverted range before clamping. Both
+    // parsers upstream (parse_range and h2_parse_range) already reject
+    // start > end, so this is unreachable today; the resolver had no
+    // check of its own, and an inverted pair that did reach it would
+    // produce a window whose length underflows at the subtraction in
+    // the caller. The bound belongs to whoever does the arithmetic.
+    cmp x0, x1
+    b.hi .Lh2rr_416
+    // clamp the end to size - 1
     sub x3, x2, #1
     cmp x1, x3
     csel x1, x3, x1, hi
