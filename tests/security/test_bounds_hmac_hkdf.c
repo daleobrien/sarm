@@ -11,7 +11,7 @@
 //
 // These are where TLS key material is derived, so a bound missed here
 // is a bound missed on every traffic key the server ever uses
-// (docs/security/threat-model.md §4.2).
+// (docs/SECURITY.md §4).
 //
 // The lengths that matter are not the same for each argument:
 //   * HMAC's key crosses the 64-byte block at which RFC 2104 switches
@@ -242,7 +242,7 @@ static void test_expand_info(void)
     // caller in the tree is hkdf_expand_label, whose own HkdfLabel
     // buffer caps info at 520 octets by construction, and every label
     // and context in src/tls/ is a compile-time constant. It is
-    // recorded in docs/security/threat-model.md as an unchecked
+    // recorded in docs/SECURITY.md as an unchecked
     // precondition, which is what it is.
     static const size_t infolens[] = {
         0, 1, 2, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129,

@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/application_secrets.S — TLS 1.3 application
-//   traffic keys (RFC 8446 §7.1, PLAN.MD Phase 19)
+//   traffic keys (RFC 8446 §7.1)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"

@@ -9,7 +9,7 @@
 //   (docs/SECURITY.md, Step 2)
 //
 // Description: sarm allocates nothing at runtime — every buffer is a
-//   fixed-size .bss/.data global (docs/security/threat-model.md §5).
+//   fixed-size .bss/.data global (docs/SECURITY.md §5).
 //   That removes every heap bug class, and with it every heap
 //   red zone: there is no allocator to notice that an assembly routine
 //   wrote one byte past the end of `filename_buf`, because the byte
@@ -36,7 +36,7 @@
 //     GUARD_UNDERRUN — payload starts at the guard: data[-1] traps.
 //                      Catches a pointer walked backwards, or a
 //                      negative index from a wrapped length.
-//   Test both sides to cover both, exactly as docs/SECURITY.md §4 asks
+//   Test both sides to cover both, exactly as docs/SECURITY.md §12 asks
 //   ("read before, read after, write before, write after").
 //
 //   guard_probe() runs a function that is *expected* to trap in a

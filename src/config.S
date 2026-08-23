@@ -42,7 +42,7 @@
 // handshake dribbled a record at a time, and of the unbounded run of
 // change_cipher_spec records RFC 8446 Appendix D.4 requires the server
 // to tolerate. This is the bound that makes those finite — see
-// docs/security/resource-limits.md (Step 12).
+// docs/SECURITY.md §8 (Step 12).
 //
 // It applies to the forked child only, never to a worker or to `no_fork`
 // debug mode, so an expiry costs exactly one connection.
@@ -82,7 +82,7 @@
 // Default: 1
 .equ ALLOW_DIR_LISTING, 1
 
-// ── Transport mode (PLAN.MD §1.3) ──────────────────────────────────
+// ── Transport mode ────────────────────────────────────────────────
 // The transport seam (src/transport/) can deliver bytes over raw TCP
 // (TRANSPORT_PLAIN) or, once implemented in later phases, TLS
 // (TRANSPORT_TLS). PLAIN is the default and the only mode with an

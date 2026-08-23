@@ -2,7 +2,7 @@
 // Function Name: tls_record_next_client_seq
 //
 // Description: Take the next record sequence number for client direction
-//   (PLAN.MD §11.4): return the current value of tls_client_seq and
+//: return the current value of tls_client_seq and
 //   increment that counter exactly once. RFC 8446 §5.3: the sequence
 //   starts at zero and is incremented after every record written under
 //   the current keys.

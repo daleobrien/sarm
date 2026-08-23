@@ -16,7 +16,7 @@
 //   Rejected, note — not merely survived. A parser that reads past a
 //   buffer and then notices is a parser that has already read past the
 //   buffer, and on a server whose static buffers sit next to the
-//   private scalar (threat-model.md §9.3) the read is the vulnerability
+//   private scalar (docs/SECURITY.md §9 obs. 3) the read is the vulnerability
 //   even when the answer is thrown away. So every case here asserts
 //   two things at once:
 //

@@ -1,5 +1,5 @@
 // Unit tests for tls_read_record from src/tls/record/read_record.S
-// (RFC 8446 §5.1, PLAN.MD Phase 20)
+// (RFC 8446 §5.1)
 //
 // tls_read_record is the network-level counterpart to tls_record_parse:
 // it reads a record's 5-byte header off a real fd, then its fragment,

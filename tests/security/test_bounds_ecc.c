@@ -14,7 +14,7 @@
 // 16-byte vector pair where 32 bytes were promised, or writes a 4-limb
 // result into a 3-limb buffer, traps here and nowhere else — the
 // globals these normally run against have neighbours, not guard pages
-// (docs/security/threat-model.md §5).
+// (docs/SECURITY.md §5).
 //
 // Correctness at these sizes is checked by algebraic identity rather
 // than by a reference implementation: a - a == 0, a * a^-1 == 1,
@@ -256,7 +256,7 @@ static void test_x25519(void)
     // first run hung here until guard_probe grew a child-side alarm.
     // A precondition whose violation is an infinite loop rather than a
     // wrong answer is a different risk class from one that returns
-    // garbage, so it is recorded in docs/security/threat-model.md.
+    // garbage, so it is recorded in docs/SECURITY.md.
     static const uint64_t counts[] = { 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 50, 100, 255 };
     for (size_t i = 0; i < BOUNDS_N(counts); i++) {
         struct sqr_times_case c = { counts[i], GUARD_OVERRUN };

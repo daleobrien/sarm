@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sarm syscall allowlist harness (docs/SECURITY.md §14/§15, Step 11)
+# sarm syscall allowlist harness (docs/SECURITY.md §6, Step 11)
 #
 # Step 11 asks for a syscall allowlist and a test that a traced workload
 # never successfully opens a file. This runs that test twice over, at two
@@ -194,7 +194,7 @@ if [ $QUIET -eq 0 ]; then
     echo "── dynamic: a traced normal and malformed workload ──"
 fi
 
-# An empty directory with nothing in it to find (SECURITY.md §15): if
+# An empty directory with nothing in it to find (SECURITY.md §6): if
 # some path did try to open a file by relative name, it would fail here
 # rather than quietly succeeding against the repo.
 RUNDIR="$WORK/empty"
@@ -315,7 +315,7 @@ dtruss)
 esac
 
 # ══════════════════════════════════════════════════════════════════════
-#   3. filesystem non-access, without a tracer (SECURITY.md §15)
+#   3. filesystem non-access, without a tracer (SECURITY.md §6)
 # ══════════════════════════════════════════════════════════════════════
 # Even where no tracer is available, one observable consequence of "the
 # server never opens a file" is testable directly: start it in an empty

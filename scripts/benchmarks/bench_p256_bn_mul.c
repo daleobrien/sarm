@@ -1,5 +1,5 @@
 // Isolated, per-call benchmark for p256_bn_mul
-// (src/crypto/p256/bn_mul.S:38) -- prompts/02-benchmark-substrate.md.
+// (src/crypto/p256/bn_mul.S:38) -- docs/SCRIPTS.md.
 // Not a register-optimization target itself (it is a hot leaf with no
 // frame -- see prompt 05); this exists to let bench_p256_fe_mul.c and
 // bench_p256_reduce.c isolate multiplication cost from reduction cost.

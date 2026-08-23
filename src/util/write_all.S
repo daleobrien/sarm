@@ -5,7 +5,7 @@
 //
 // Description: Generic write helper. Writes all nbytes, retrying
 //   partial writes. The socket I/O is delegated to transport_write —
-//   the transport seam introduced in PLAN.MD §1.2 — so HTTP/2 frame
+//   the transport seam — so HTTP/2 frame
 //   writers never issue a write syscall directly.
 //
 // Input/Arguments:

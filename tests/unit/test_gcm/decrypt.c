@@ -440,7 +440,7 @@ static const uint8_t X4_TAG[] = {
 // ── tests ───────────────────────────────────────────────────────────────
 
 // Run the NIST vectors through the full asm open pipeline
-// (PLAN.MD 7.5 acceptance: all NIST GCM vectors pass).
+// (acceptance: all NIST GCM vectors pass).
 static void test_gcm_decrypt_kat(void) {
     TEST_SUITE("aes_gcm_decrypt NIST SP 800-38D vectors");
     uint8_t pt[128];
@@ -532,7 +532,7 @@ static void test_gcm_reference_matches(void) {
     ASSERT_EQ("reference passes the NIST vectors", 0, failures);
 }
 
-// PLAN.MD 7.4 acceptance: valid ciphertext succeeds; modified ciphertext,
+// Acceptance: valid ciphertext succeeds; modified ciphertext,
 // modified AAD and modified tag all fail — and the plaintext buffer stays
 // untouched on failure (the tag is verified before decryption).
 static void test_gcm_auth_failures(void) {

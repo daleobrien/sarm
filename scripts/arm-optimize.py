@@ -127,7 +127,7 @@ def default_benchmark(
     at 0.01 s granularity, dominated by process startup -- it cannot
     resolve a change to a function that runs in nanoseconds, but the
     optimizer would accept a candidate on it anyway
-    (prompts/02-benchmark-substrate.md). Failing closed here -- refusing
+    (docs/SCRIPTS.md). Failing closed here -- refusing
     to run without a real benchmark -- is better than silently accepting
     noise as an improvement. Add scripts/benchmarks/bench_<function>.c to
     unlock a function for optimization.
@@ -156,7 +156,7 @@ def default_noise_floor(workdir: Path, function: str) -> float | None:
     with no calibrated noise floor cannot tell a real improvement from
     measurement noise, so ``Optimizer`` refuses to run against it rather
     than silently accepting anything faster than the current best
-    (prompts/02-benchmark-substrate.md, "fail closed").
+    (docs/SCRIPTS.md, "fail closed").
     """
     source = noise_floor_source(workdir, function)
     if source is None:
@@ -229,7 +229,7 @@ def main() -> None:
     parser.add_argument("--target", default="apple-silicon",
                         help="scheduling target hint (apple-m2, cortex-a76, ...)")
     parser.add_argument("--strategy", choices=STRATEGY_CHOICES, default="speed",
-                        help="what a candidate is judged by (prompts/06): "
+                        help="what a candidate is judged by (docs/SCRIPTS.md): "
                              "speed judges the function's own runtime; "
                              "algorithm/crypto dispatch by --function to a "
                              "registered algorithm-specific strategy (GHASH, "
@@ -324,7 +324,7 @@ def main() -> None:
         parser.error(
             f"no benchmark available for {args.function!r}; pass --benchmark, "
             "or add scripts/benchmarks/bench_<function>.c "
-            "(prompts/02-benchmark-substrate.md -- there is no wall-clock "
+            "(docs/SCRIPTS.md -- there is no wall-clock "
             "fallback; a candidate can never be accepted on one)"
         )
 
@@ -337,7 +337,7 @@ def main() -> None:
             "--noise-floor <pct>, or run "
             "scripts/benchmarks/measure_noise_floor.py first to write "
             f"scripts/benchmarks/bench_{args.function}.noise.json "
-            "(prompts/02-benchmark-substrate.md -- a benchmark that cannot "
+            "(docs/SCRIPTS.md -- a benchmark that cannot "
             "distinguish the expected improvement must fail closed, not "
             "silently accept a result inside the noise band)"
         )

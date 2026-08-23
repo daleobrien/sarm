@@ -31,7 +31,7 @@
 # reason test_leak.sh has them: a server that passed every measurement
 # by dying is not a server that passed.
 #
-#   1. nothing on stdout or stderr, ever (threat-model.md §4.5).
+#   1. nothing on stdout or stderr, ever (docs/SECURITY.md §4.5).
 #   2. no core dump — a SIGALRM'd child must terminate, not dump.
 #   3. the parent is alive at the end and never died on a signal.
 #
@@ -181,7 +181,7 @@ ulimit -c 0 2>/dev/null || true
 # ── the shipped configuration ───────────────────────────────────────
 # Everything below runs against a deliberately shortened build. This is
 # the check that the numbers the server actually ships with are the ones
-# docs/security/resource-limits.md documents.
+# docs/SECURITY.md §8 documents.
 check_default() {
     local name="$1" want="$2" got
     got=$(sed -n "s/^#define ${name} \([0-9]*\)$/\1/p" src/config.S | head -1)

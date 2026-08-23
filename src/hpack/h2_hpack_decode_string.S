@@ -10,7 +10,7 @@
 //   data follows verbatim.
 //
 //   The decoded length is checked against `end` before a single data
-//   byte is touched (docs/security/length-audit.md, Step 5). That
+//   byte is touched (docs/SECURITY.md §3.5, Step 5). That
 //   ordering is the whole point: h2_hpack_decode_block does verify that
 //   every representation fits the block, but it can only do so once
 //   this function has returned, and on the Huffman path the expansion

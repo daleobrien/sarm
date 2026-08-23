@@ -8,7 +8,7 @@ DETECTED_OS := $(shell uname -s)
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/tls/cert_data.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
 OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
-# Link-time hardening (docs/SECURITY.md Step 13 / docs/security/hardening.md).
+# Link-time hardening (docs/SECURITY.md §13).
 # tests/test_hardening.sh asserts every property these flags buy, by
 # inspecting the linked binary rather than trusting the flags.
 #
@@ -122,7 +122,7 @@ test-security:
 # tests/security/findings/. Not part of `make test`: it is meant for the
 # machines and hours nobody is waiting on. SOAK_ARGS passes options
 # through (--minutes, --forever, --mult, --suite, --minimize).
-#   docs/security/continuous-fuzzing.md
+#   docs/SECURITY.md §12
 fuzz-soak:
 	@./scripts/fuzz_soak.py $(SOAK_ARGS)
 

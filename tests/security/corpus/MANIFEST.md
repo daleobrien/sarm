@@ -40,7 +40,7 @@ nobody dares delete.
 
 ### `tls_handshake/flight`
 
-The five-byte pre-authentication crash — `docs/security/fuzzing.md` §9. A
+The five-byte pre-authentication crash — `docs/SECURITY.md` §11. A
 handshake record whose fragment is shorter than the 4-byte handshake header;
 `tls_server_handshake` subtracted the header from the fragment length
 unsigned, and `tls_transcript_add` was asked to hash 2^64 − 4 bytes. Reachable
@@ -63,7 +63,7 @@ report SIGSEGV, and the length-4 entry stays clean.
 ### `http/path`
 
 Three reads past the length argument in `parse_path` —
-`docs/security/fuzzing.md` §16 — and one entry per instruction of the fix, plus
+`docs/SECURITY.md` §11 — and one entry per instruction of the fix, plus
 the input the fuzzer originally found.
 
 | file | bytes | what it covers |

@@ -205,7 +205,7 @@ static void test_hkdf_rfc5869(void) {
     ASSERT_TRUE("reference agrees on case 1 PRK", buf_eq(TC1_PRK, prk, 32));
 }
 
-// PLAN.MD §5.1/§5.2 boundaries vs the C reference: every salt length
+// boundaries vs the C reference: every salt length
 // 0..97 (including 32 zeros and the > 64 long-key HMAC path) and IKM
 // lengths 0..100, plus the empty-ikm / empty-salt combinations.
 static void test_hkdf_extract_sweep(void) {

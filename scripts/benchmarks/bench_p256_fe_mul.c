@@ -1,7 +1,7 @@
 // Benchmark for p256_fe_mul (src/crypto/p256/sqr_mul.S:188) that also
 // reports p256_bn_mul and p256_reduce in the same run, so the fraction
 // of p256_fe_mul's time spent in reduction vs multiplication can be
-// computed directly (prompts/02-benchmark-substrate.md: "the benchmark
+// computed directly (docs/SCRIPTS.md: "the benchmark
 // must let you compute what fraction of p256_fe_mul's time is
 // reduction versus multiplication, both before and after prompt 04's
 // change"). p256_reduce is reached through p256_reduce_probe.S (see

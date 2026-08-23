@@ -221,7 +221,7 @@ static const uint8_t GHASH_K3_OUT[] = {
 // ── tests ───────────────────────────────────────────────────────────────
 
 // GHASH known-answer values recovered independently from the NIST vectors
-// (PLAN.MD 7.2 acceptance: NIST GCM vectors).
+// (acceptance: NIST GCM vectors).
 static void test_gcm_ghash_kat(void) {
     TEST_SUITE("ghash known answers (NIST-derived)");
     uint8_t out[16];

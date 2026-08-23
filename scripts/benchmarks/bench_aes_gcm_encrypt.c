@@ -1,6 +1,6 @@
 // Benchmark for src/crypto/gcm/encrypt.S:aes_gcm_encrypt -- complete
 // AES-128-GCM seal across realistic TLS record sizes, 16 B to 16 KB
-// (prompts/02-benchmark-substrate.md). Companion to bench_aes128_encrypt
+// (docs/SCRIPTS.md). Companion to bench_aes128_encrypt
 // (AES-only) and bench_gcm_ghash_run (GHASH-only, through the real
 // .Lgcm_ghash_run call path) -- together the three distinguish AES-only,
 // GHASH-only and complete AES-GCM cost, so a candidate change can be

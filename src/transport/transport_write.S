@@ -8,15 +8,15 @@
 //
 // Description: The transport write primitive. Writes content to a
 //   file descriptor, retrying partial writes until all nbytes are
-//   written. Dispatches on the runtime `transport_mode` (PLAN.MD
-//   §1.3, Phase 20): TRANSPORT_PLAIN tail-calls raw_write_all
+//   written. Dispatches on the runtime `transport_mode`:
+//   TRANSPORT_PLAIN tail-calls raw_write_all
 //   directly; TRANSPORT_TLS chunks the input into pieces of at most
 //   TLS_MAX_PLAINTEXT bytes, seals each with tls_app_data_write into
 //   tls_write_record_buf, and sends the sealed record with
 //   raw_write_all before sealing the next chunk — an ordinary large
 //   H2 response body becomes a short run of application_data records
 //   this way, transparently to every existing caller (write_all,
-//   h2_send_goaway, etc., PLAN.MD Phase 11).
+//   h2_send_goaway, etc.).
 //
 // Input/Arguments:
 //   x0 -> file descriptor (same as write() syscall)

@@ -52,7 +52,7 @@
 //   SARM_FUZZ_MULT=<n>     scale every campaign's case count by n. The
 //                          default (1) is sized for `make test`; the
 //                          long campaigns recorded in
-//                          docs/security/fuzzing.md were run with
+//                          docs/SECURITY.md §10 were run with
 //                          larger values.
 //   SARM_FUZZ_CASE=<index> run only this case, in-process, and exit.
 //   SARM_FUZZ_SECS=<n>     per-campaign deadline (default

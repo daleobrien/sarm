@@ -1,5 +1,5 @@
 // ====================================================================
-// ARM64 (AArch64) Neon Assembly - AES-128 Block Cipher (PLAN.MD 6)
+// ARM64 (AArch64) Neon Assembly - AES-128 Block Cipher
 //
 // aes128_encrypt — FIPS-197 §5.1 block cipher, one 16-byte block
 //

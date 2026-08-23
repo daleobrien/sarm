@@ -11,7 +11,7 @@
 // Function Name: tls_record_encrypt
 //
 // Description: Seal one plaintext fragment into a TLS 1.3
-//   TLSCiphertext record (PLAN.MD §11.3, RFC 8446 §5.2): the outer
+//   TLSCiphertext record (RFC 8446 §5.2): the outer
 //   header is `23 03 03 len(2)` with length = pt_len + 1 + 16, the
 //   AEAD plaintext is `fragment || inner_content_type` (no padding is
 //   ever added), the additional data is the 5-byte header itself, and

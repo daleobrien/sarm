@@ -7,7 +7,7 @@
 // Suite: tests/security/test_overflow_hpack.c
 //
 // Description: HPACK is the deepest attacker-controlled decode path in
-//   the tree (threat-model.md §3.3): a 24-bit frame length reaches a
+//   the tree (docs/SECURITY.md §3.3): a 24-bit frame length reaches a
 //   block decoder, which reaches a field decoder, which reaches a
 //   string decoder, which reaches an integer decoder whose value is
 //   then used as a length, an index or a table size. Every one of those

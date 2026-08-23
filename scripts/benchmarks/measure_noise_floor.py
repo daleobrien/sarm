@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Establish and record a benchmark's noise floor.
 
-prompts/02-benchmark-substrate.md: "For each benchmark, measure the same
+docs/SCRIPTS.md: "For each benchmark, measure the same
 unchanged binary >=20 times and report the spread. The noise floor is the
 number every later prompt compares against. An improvement smaller than it
 is not an improvement." This script does that measurement and writes the
@@ -154,7 +154,7 @@ def main() -> None:
     if spread_pct >= args.max_pct:
         print(f"\nFAIL: spread {spread_pct:.3f}% >= {args.max_pct}% -- "
               "this benchmark cannot yet distinguish a real improvement "
-              "from noise (prompts/02-benchmark-substrate.md). Fix it "
+              "from noise (docs/SCRIPTS.md). Fix it "
               "(more iterations per round, more rounds, a quieter "
               "machine) before trusting it; the harness will still read "
               "the noise floor just written and gate on it, so a bad "

@@ -9,7 +9,7 @@
 // Description: Steps 6 and 7 fuzzed everything an attacker says before
 //   the server knows who they are. This one fuzzes what they say
 //   afterwards, which on a plaintext port is the first thing they say:
-//   the HTTP/1 request header (threat-model.md §3.4). It is a
+//   the HTTP/1 request header (docs/SECURITY.md §3.4). It is a
 //   line-oriented text grammar parsed by hand in assembly, with six
 //   routines walking the same attacker-supplied bytes with their own
 //   cursors, and three fixed-size .bss buffers on the other side of it.
@@ -1415,7 +1415,7 @@ static void pp_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
 
 // ── campaign 5: the path filters ────────────────────────────────────
 // decode_url -> check_path_safety -> check_path_traversal, in that
-// order, is the whole of sarm's path policy (threat-model.md §3.4), and
+// order, is the whole of sarm's path policy (docs/SECURITY.md §3.4), and
 // the order is load-bearing: decoding first is what makes %2e%2e%2f a
 // traversal rather than a filename. Each is checked against a
 // reference, and then the composition is checked for the property the
@@ -1451,7 +1451,7 @@ static void pf_teardown(struct fuzz_ctx *c)
 // slashes and raw bytes. Never zero-length — decode_url's loop reads
 // its first byte before consulting the length, so a caller passing 0
 // walks memory until it meets a NUL, and every caller in the tree
-// passes a length of at least four (see docs/security/fuzzing.md).
+// passes a length of at least four (see docs/SECURITY.md §9).
 static size_t gen_url(struct fuzz_rng *r, uint8_t *buf, size_t cap)
 {
     struct gen g = { buf, cap, 0 };
@@ -1684,7 +1684,7 @@ static void rg_replay(const uint8_t *in, size_t len, struct fuzz_ctx *c)
 }
 
 // ── campaign 7: keep-alive, and the smuggling question ──────────────
-// threat-model.md §7.3 argues that request smuggling is out of scope
+// docs/SECURITY.md §7.3 argues that request smuggling is out of scope
 // structurally rather than by careful parsing: sarm never reads a body,
 // so it closes the connection rather than guess where the next request
 // starts. That argument is only as good as one predicate, and §7.3 says

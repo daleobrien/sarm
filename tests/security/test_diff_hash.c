@@ -207,7 +207,7 @@ static int case_hkdf_extract(struct diff_rng *rng, char *detail, size_t len)
 
 // okm lengths cross the 32-byte T(i) boundary repeatedly; infolen stays
 // within the 607 the routine's header declares (see
-// docs/security/threat-model.md §9, where the missing check on that
+// docs/SECURITY.md §9, where the missing check on that
 // bound is recorded for Step 5).
 #define MAX_INFO 607
 #define MAX_OKM  1024

@@ -400,7 +400,7 @@ static void test_gcm_large_message(void) {
 }
 
 // 5000 random (aad_len, pt_len) trials biased toward the boundaries of
-// .Lgcm_ghash_run's 4-block aggregated path (prompts/03-aes-gcm-throughput.md):
+// .Lgcm_ghash_run's 4-block aggregated path (docs/HISTORY.md):
 // 0-3 blocks (scalar-only), exactly 4/8/12 blocks (aggregation with no
 // scalar remainder), N*4+{1,2,3} blocks (aggregation plus a scalar
 // remainder), all with and without a trailing partial block. Every trial

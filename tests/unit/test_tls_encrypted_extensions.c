@@ -1,5 +1,4 @@
-// Unit tests for src/tls/handshake/encrypted_extensions.S (PLAN.MD
-// Phase 14)
+// Unit tests for src/tls/handshake/encrypted_extensions.S
 //
 // tls_encrypted_extensions_write(out) -> length is a pure wire-format
 // writer, driven off tls_alpn_len/tls_alpn (already filled in by

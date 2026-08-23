@@ -541,7 +541,7 @@ static inline int64_t h2_send_settings_wrapper(int64_t fd, int64_t *carry_out) {
 // ── Stage 7 wrappers for asm functions (h2_hpack.S) ────────────────
 
 // The HPACK decoders take the end of the enclosing header block and
-// refuse to read past it (Step 5, docs/security/length-audit.md). The
+// refuse to read past it (Step 5, docs/SECURITY.md §3.5). The
 // _end wrappers below pass a real bound; the plain wrappers pass an
 // unbounded one, so the Stage 7 tests keep asking exactly what they
 // asked before the bound existed. The bound itself is what

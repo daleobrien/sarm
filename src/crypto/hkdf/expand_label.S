@@ -20,7 +20,7 @@
 //   derivations); its pointer is then ignored.
 //
 //   Those constraints are checked, not assumed (Step 5,
-//   docs/security/length-audit.md). The 520-byte HkdfLabel buffer is
+//   docs/SECURITY.md §3.5). The 520-byte HkdfLabel buffer is
 //   sized for the maxima exactly, so an over-long label or context
 //   would run the assembly off the end of the frame — and the length
 //   octet it writes would silently truncate on the way, producing a

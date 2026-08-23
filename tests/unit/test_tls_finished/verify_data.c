@@ -1,9 +1,8 @@
 // Unit tests for tls_finished_verify_data from
-// src/tls/handshake/finished/verify_data.S (RFC 8446 §4.4.4, PLAN.MD
-// Phase 18)
+// src/tls/handshake/finished/verify_data.S (RFC 8446 §4.4.4)
 //
 // tls_finished_verify_data(finished_key, transcript_hash, out) is a
-// thin wrapper around the already-verified hmac_sha256 (PLAN.MD §3.3).
+// thin wrapper around the already-verified hmac_sha256.
 // Vectors are (finished_key, transcript_hash) -> HMAC-SHA256(finished_key,
 // transcript_hash), computed in Python and cross-checked against
 // cryptography.hazmat.primitives.hmac.HMAC -- a real, independently-

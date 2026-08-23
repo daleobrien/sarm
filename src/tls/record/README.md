@@ -40,7 +40,7 @@ This module has been split into focused submodules for clarity and maintainabili
   - Removes padding (everything after the inner type byte)
   - Validates inner type in range 20-23
 
-- **`read_record.S`** — `tls_read_record` (PLAN.MD Phase 20)
+- **`read_record.S`** — `tls_read_record`
   - The network-level counterpart to `tls_record_parse`: reads one
     complete record straight off a file descriptor (header, then
     exactly `fragment_length` more bytes, via `raw_read_exact` —
@@ -55,10 +55,10 @@ This module has been split into focused submodules for clarity and maintainabili
 - **`next_client_seq.S`** / **`next_server_seq.S`** — `tls_record_next_client_seq`, `tls_record_next_server_seq`
   - Manage per-connection, per-direction sequence counters
   - Return current counter, then increment exactly once per call
-  - Reset to zero at connection start and on key change (key schedule responsibility — see `tls_derive_application_secrets`, PLAN.MD Phase 19)
+  - Reset to zero at connection start and on key change (key schedule responsibility — see `tls_derive_application_secrets`)
   - Sequence stored in `src/tls/data.S` as `tls_client_seq` / `tls_server_seq`
 
-- **`application_write.S`** — `tls_app_data_write` (PLAN.MD Phase 19)
+- **`application_write.S`** — `tls_app_data_write`
   - Seal one outgoing application_data record under the server's
     application traffic key/IV (`tls_derive_application_secrets`,
     `src/tls/handshake/application_secrets.S`)
@@ -69,7 +69,7 @@ This module has been split into focused submodules for clarity and maintainabili
   - Mechanical composition of two already-verified primitives — no
     algorithmic content of its own
 
-- **`application_read.S`** — `tls_app_data_read` (PLAN.MD Phase 19)
+- **`application_read.S`** — `tls_app_data_read`
   - Open one incoming TLSCiphertext record under the client's
     application traffic key/IV, mirroring `tls_app_data_write` for the
     read direction
@@ -87,7 +87,7 @@ This module has been split into focused submodules for clarity and maintainabili
 ### Common Header
 
 **`common.S`** — Shared documentation
-- Contains the full RFC 8446 and PLAN.MD context for the record layer
+- Contains the full RFC 8446 context for the record layer
 - Included by submodules for reference (documentation only)
 
 ## API Reference
@@ -256,7 +256,7 @@ All 773 record-layer tests pass:
 - Sequence counter increment and independence
 - Error cases: tag tamper, key mismatch, truncation, all-zero plaintext, invalid inner types
 
-`tests/unit/test_tls_application/` (PLAN.MD Phase 19) covers
+`tests/unit/test_tls_application/` covers
 `tls_app_data_write`/`tls_app_data_read` alongside
 `tls_derive_application_secrets`:
 - `write.c` / `read.c` — RFC 8448 §3's actual server/client
@@ -267,7 +267,7 @@ All 773 record-layer tests pass:
   increment check per call, an oversized-plaintext rejection, and a
   tampered-tag MAC-failure rejection
 
-`tests/unit/test_tls_record/read_record.c` (PLAN.MD Phase 20) covers
+`tests/unit/test_tls_record/read_record.c` covers
 `tls_read_record` over a real `socketpair()`: a full record delivered
 across two separate `write()` calls (forcing the underlying
 `raw_read_exact` to loop across short reads), EOF before a complete
@@ -289,5 +289,3 @@ connection, byte-for-byte matching the plaintext response. See
   sequence numbers, §7.1: key schedule)
 - RFC 8448 — Example Handshake and Traffic Keys for TLS 1.3 (§3: Wire
   Formats, including the client/server application_data records)
-- PLAN.MD — Phase 11: TLS Record Layer Implementation, Phase 19: TLS
-  application data

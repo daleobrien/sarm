@@ -1,6 +1,6 @@
 // Unit tests for src/crypto/x25519.S
 //
-// The asm file exports eleven symbols (PLAN.MD §8):
+// The asm file exports eleven symbols:
 //   x25519                — X25519 scalar multiplication: out = scalar * point
 //                           (out=x0, scalar=x1, point=x2), RFC 7748 §5
 //   x25519_fe_frombytes   — expand 32 little-endian bytes to 5x51 limbs
@@ -370,8 +370,8 @@ static int fe_eq(const fe a, const fe b) {
 
 // ── tests ───────────────────────────────────────────────────────────────
 
-// RFC 7748 §5.2 known-answer vectors through the asm (PLAN.MD 8.7
-// acceptance: RFC 7748 vectors pass).
+// RFC 7748 §5.2 known-answer vectors through the asm
+// (acceptance: RFC 7748 vectors pass).
 static void test_x25519_rfc7748_vectors(void) {
     TEST_SUITE("x25519 RFC 7748 §5.2 vectors");
     uint8_t scalar[32], point[32], out[32], want[32];

@@ -1,5 +1,5 @@
 // Benchmark for the real GHASH implementation, .Lgcm_ghash_run
-// (src/crypto/gcm/data.S:131) -- prompts/02-benchmark-substrate.md.
+// (src/crypto/gcm/data.S:131) -- docs/SCRIPTS.md.
 //
 // Every GCM caller (aes_gcm_encrypt, aes_gcm_decrypt, and the standalone
 // `ghash` entry point) reaches this local label directly; it is the actual
@@ -87,7 +87,7 @@ int main(void) {
 	// Correctness: bench_ghash_run_once must agree with the real `ghash`
 	// global byte-for-byte across block-count and tail-length edge cases.
 	// A benchmark that cannot prove it exercises the right calling
-	// convention is worse than none (prompts/02-benchmark-substrate.md).
+	// convention is worse than none (docs/SCRIPTS.md).
 	static const int64_t check_lens[] = {0, 1, 15, 16, 17, 63, 64, 65, 1024};
 	int failures = 0;
 	for (size_t i = 0; i < sizeof(check_lens) / sizeof(check_lens[0]); i++) {
@@ -130,7 +130,7 @@ int main(void) {
 	// Primary metric: steady-state per-16-byte-block cost at the largest
 	// (most-blocks) size, not a mean across sizes. .Lgcm_ghash_run's loop
 	// is a serialized multiply-then-reduce Horner chain
-	// (prompts/03-aes-gcm-throughput.md) -- a single-block call has no
+	// (docs/SCRIPTS.md) -- a single-block call has no
 	// preceding iteration to serialize against, so small sizes read
 	// artificially cheap per block (confirmed here: ~2.2 ns/block at 16 B
 	// vs ~8.0 ns/block at 16 KB) and would understate the real cost if

@@ -5,7 +5,7 @@
 // bench_primitives.c's trampoline, no v0-v31 clobber is needed. It is a
 // real open("/dev/urandom")+read+close per call, so unlike the arithmetic
 // primitives elsewhere in this directory this number is dominated by
-// syscall cost, not instruction count (prompts/05 measured ~8.3-8.5 us/call
+// syscall cost, not instruction count (docs/SCRIPTS.md measured ~8.3-8.5 us/call
 // here, three orders of magnitude above the field-arithmetic primitives
 // this directory otherwise benchmarks).
 //

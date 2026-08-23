@@ -99,7 +99,7 @@ class Optimizer:
         self.target = target
         self.apply = apply
         self.quiet = quiet
-        # Defaults to today's runtime-only behaviour (prompts/06's
+        # Defaults to today's runtime-only behaviour (docs/SCRIPTS.md's
         # regression test: --strategy speed must reproduce it exactly).
         self.strategy = strategy or SpeedStrategy(function=function, workdir=workdir)
 
@@ -128,7 +128,7 @@ class Optimizer:
         match = pattern.search(source_text)
         if match:
             return match.group(0)
-        # File-local ".L" targets (e.g. .Lgcm_ghash_run, prompts/06's GHASH
+        # File-local ".L" targets (e.g. .Lgcm_ghash_run, docs/SCRIPTS.md's GHASH
         # strategy) have no .global to anchor on and sit among other .L
         # labels with no clean textual boundary a regex can find safely.
         # asmparse's region parser (prompt 01) already solves this via a
@@ -235,7 +235,7 @@ class Optimizer:
     def gather_evidence(self, function_text: str) -> dict:
         """Disassembly + objdump instruction count for the current source;
         mca/perf if available (they are not, on macOS -- see
-        prompts/02-benchmark-substrate.md, "Replace the missing evidence").
+        docs/SCRIPTS.md, "Replace the missing evidence").
         """
         evidence: dict = {
             "disassembly": None, "mca": None, "perf": None,
@@ -258,7 +258,7 @@ class Optimizer:
     @staticmethod
     def _instruction_count(dis: str) -> int:
         """Static instruction count from objdump output: exact, zero-noise
-        (prompts/02-benchmark-substrate.md) -- what a plain instruction
+        (docs/SCRIPTS.md) -- what a plain instruction
         count buys when perf/llvm-mca aren't available to say anything
         about scheduling or throughput.
         """
@@ -272,7 +272,7 @@ class Optimizer:
                           cand_dis: str | None) -> str:
         """Structural diff between two disassemblies, addresses/bytes
         stripped so only real machine-code changes show
-        (prompts/02-benchmark-substrate.md, "structural disassembly diff
+        (docs/SCRIPTS.md, "structural disassembly diff
         between baseline and candidate").
         """
         if not base_dis or not cand_dis:
@@ -319,7 +319,7 @@ class Optimizer:
         """Every metric a Strategy might judge a candidate by, for
         whatever is *currently on disk* at ``self.source`` -- callers must
         collect this right after writing the state they want measured
-        (prompts/06's Metrics model; strategy.register_metrics()'s own
+        (docs/SCRIPTS.md's Metrics model; strategy.register_metrics()'s own
         docstring explains why the on-disk requirement exists)."""
         instr, loads, stores = strategy_mod.instruction_counts(disassembly)
         peak, save_restore, frame = strategy_mod.register_metrics(
@@ -409,7 +409,7 @@ class Optimizer:
 
         # A benchmark that cannot distinguish the expected improvement from
         # noise must fail closed rather than let a candidate inside the
-        # noise band become the new best (prompts/02-benchmark-substrate.md).
+        # noise band become the new best (docs/SCRIPTS.md).
         if self.benchmark_cmd and self.noise_floor_pct is None:
             raise RuntimeError(
                 "no noise floor calibrated for this benchmark -- refusing "
@@ -622,7 +622,7 @@ class Optimizer:
                 # Hard constraints reject outright, regardless of any score;
                 # only a survivor is then judged against the
                 # strategy-appropriate metric -- never one universal score
-                # for every optimization type (prompts/06's Acceptance
+                # for every optimization type (docs/SCRIPTS.md's Acceptance
                 # section).
                 decision = self.strategy.accept(
                     best_metrics, cand_metrics,
@@ -733,7 +733,7 @@ class Optimizer:
                          f"{self.noise_floor_pct:.3f}%)",
             # No `perf` on macOS (docs/SCRIPTS.md, "Tooling
             # reality on this machine") -- say so plainly rather than
-            # fabricate counter data (prompts/02-benchmark-substrate.md).
+            # fabricate counter data (docs/SCRIPTS.md).
             "perf": "(perf stat unavailable on this platform -- no `perf` "
                     "command; the objdump instruction count and "
                     "disassembly above substitute for it)"
@@ -804,7 +804,7 @@ class Optimizer:
             entry["runtime_ns"] = runtime_ns
         if improvement_percent is not None:
             entry["improvement_percent"] = improvement_percent
-        # Which rule fired and which metric decided it (prompts/06's
+        # Which rule fired and which metric decided it (docs/SCRIPTS.md's
         # acceptance criterion) -- None for the pipeline gates
         # (correctness/ABI/differential/benchmark-failure) that already
         # named themselves in ``reason`` before this field existed.

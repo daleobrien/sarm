@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: aes_gcm_encrypt
 //
-// Description: AES-128-GCM seal (PLAN.MD 7.3): C = GCTR_K(J1..Jn, P) and
+// Description: AES-128-GCM seal: C = GCTR_K(J1..Jn, P) and
 //   tag = GCTR_K(J0, GHASH_H(A, C)) with J0 = IV || 0^31 || 1 and a
 //   96-bit (12-byte) IV — the TLS 1.3 nonce form. The ciphertext is
 //   produced first, then hashed, so in-place operation (ct == pt) is

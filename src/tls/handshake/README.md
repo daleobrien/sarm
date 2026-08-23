@@ -1,8 +1,8 @@
-# TLS Handshake Message Module (PLAN.MD Phases 10, 12-15, 17-19)
+# TLS Handshake Message Module
 
 > The live handshake *driver* that sequences everything in this
 > module against a real connection — `tls_server_handshake` — lives in
-> `src/tls/server/` (PLAN.MD Phase 20), not here: see
+> `src/tls/server/`, not here: see
 > `src/tls/server/README.md`.
 
 ## Overview
@@ -211,7 +211,7 @@ split into three files (one function each, the same convention as
   keying off (only `write.S` below pins it to the server's).
 - **`verify_data.S`** — `tls_finished_verify_data`: computes
   `verify_data = HMAC(finished_key, transcript_hash)`, wrapping
-  `hmac_sha256` (`src/crypto/hmac.S`, PLAN.MD §3.3) the same way
+  `hmac_sha256` (`src/crypto/hmac.S`) the same way
   `finished_key.S` wraps `hkdf_expand_label`. Unlike Phase 17's
   content hash, the transcript hash here is passed through unchanged
   — RFC 8446 §4.4.4 hashes the running transcript directly, with no
@@ -274,7 +274,7 @@ Output (carry set — failure):
 compression method, `null`, and anything else is a parameter error
 rather than a decode error. It was missing from this list until Step 7's
 fuzzer reached it and reported an alert the documentation did not
-mention — see `docs/security/fuzzing.md`.
+mention — see `docs/SECURITY.md` §10.
 
 ### `tls_build_server_hello`
 ```
@@ -530,7 +530,4 @@ random P-256 scalars
   ClientHello wire trace and the key-schedule values)
 - RFC 5280 — X.509 (informational only: this server does not parse
   it — see `certs/README.md` for the certificate generated for Phase 15)
-- PLAN.MD — Phase 10: TLS 1.3 key schedule, Phase 12: ClientHello
-  Parser, Phase 13: ServerHello, Phase 14: EncryptedExtensions,
-  Phase 15: Certificate handling, Phase 16: ECDSA P-256, Phase 17:
   CertificateVerify, Phase 18: Finished, Phase 19: TLS application data

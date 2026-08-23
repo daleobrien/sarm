@@ -11,7 +11,7 @@
 //   partially accepted; since Step 5 the end of the block is also
 //   handed *down* to h2_hpack_decode_field, so an oversized field is
 //   refused before it is read rather than after
-//   (docs/security/length-audit.md). The fixed output area bounds the field
+//   (docs/SECURITY.md §3.5). The fixed output area bounds the field
 //   count — a block that needs more than H2_HPACK_MAX_FIELDS is also a
 //   decoding error. On error the fields decoded so far remain readable,
 //   but the caller must treat the whole connection as failed

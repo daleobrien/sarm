@@ -1,5 +1,5 @@
 // Benchmark for p256_point_mul (src/crypto/p256_point/mul.S:26) --
-// prompts/02-benchmark-substrate.md. Reports two numbers:
+// docs/SCRIPTS.md. Reports two numbers:
 //
 //   - "generator": k*G against the fixed basepoint, the operation
 //     ECDSA signing and key generation use.

@@ -55,7 +55,7 @@ the built binary and every `SCWINUM` in `src/`, against
 Linux, `dtruss` as root on macOS — traces the same hostile workload and checks
 no filesystem syscall appears. On macOS the trace is *skipped*, not passed; the
 static audit is the platform-independent half and is the stronger claim. Both
-are documented in [docs/security/leak-and-containment.md](../../../docs/security/leak-and-containment.md).
+are documented in [docs/SECURITY.md §6](../../../docs/SECURITY.md).
 
 `tests/test_limits.sh` (with `tests/limit_checks.py`) is Step 12: four
 campaigns measuring what hostile traffic *costs* rather than what it does —
@@ -72,7 +72,7 @@ short-deadline binary the script builds with `make variant BIN=... \
 VARIANT_CFLAGS='-DCONN_DEADLINE_SECONDS=N -DRECV_TIMEOUT_SECONDS=N'` — use that
 target, not a hand-edited `config.S`, whenever a timeout needs to be exercised
 in seconds. Write-up:
-[docs/security/resource-limits.md](../../../docs/security/resource-limits.md).
+[docs/SECURITY.md §8](../../../docs/SECURITY.md).
 
 `make test` builds `sarm` first, so it's always the safe default after a
 source change. The individual `test_*.sh` scripts accept `--no-build
@@ -104,10 +104,8 @@ for the outcome histogram that shows which branches the corpus is reaching, and
 debugger — the reproducer every failure prints.
 It links no part of the server and needs no built binary. Don't confuse it with
 `tests/test_security.sh`, which probes a *running* server with `curl`. See
-[tests/security/README.md](../../../tests/security/README.md),
-[docs/security/threat-model.md](../../../docs/security/threat-model.md) and
-[docs/security/length-audit.md](../../../docs/security/length-audit.md) and
-[docs/security/fuzzing.md](../../../docs/security/fuzzing.md).
+[tests/security/README.md](../../../tests/security/README.md) and
+[docs/SECURITY.md](../../../docs/SECURITY.md).
 
 `tests/unit/` is generated in large part by the `scripts/*_derivation.py`
 crypto scripts — see [verified-asm-crypto](../verified-asm-crypto/SKILL.md)

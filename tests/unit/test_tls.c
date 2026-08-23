@@ -1,4 +1,4 @@
-// Unit tests for the TLS constants and connection state (PLAN.MD §2)
+// Unit tests for the TLS constants and connection state
 //
 // §2.1 — TLS constants: the wire-format constants in defs.S (protocol
 // versions, cipher suites, named groups, signature schemes, ALPN,
@@ -127,7 +127,7 @@
 #define TLS_HS_CONNECTED   7
 #define TLS_HS_FAILED      8
 
-// ── tls_state layout, mirroring defs.S (PLAN.MD §2.2) ──────────────
+// ── tls_state layout, mirroring defs.S ──────────────
 
 // field sizes (bytes)
 #define TLS_RANDOM_LEN    32

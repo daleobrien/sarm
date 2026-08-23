@@ -88,11 +88,11 @@ It is a fun project written by hand in assembly. Assume it has vulnerabilities.
 | Doc | What's in it |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the server is put together — modules, seams, request lifecycle |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, attack surface, the security test programme and what it found |
 | [docs/HISTORY.md](docs/HISTORY.md) | What was changed, what it measured, and what was learned doing it |
 | [docs/MULTICORE-BASELINE.md](docs/MULTICORE-BASELINE.md) | The throughput work in order: what was measured, on what, and the noise band around it |
 | [docs/SCRIPTS.md](docs/SCRIPTS.md) | The tooling: tests, profilers, benchmarks, analyzers, the optimisation harness |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | `config.S` options, MIME table, status codes, certificates |
-| [docs/PLAN.MD](docs/PLAN.MD) | The phase plan the TLS work followed — source comments cite its phase numbers |
-| [docs/OPTIMISATION.MD](docs/OPTIMISATION.MD) | Design of the automated optimisation harness |
+| [Plan.md](Plan.md) | The completed performance plan — source comments cite its phase and step numbers |
 
 Licensed GPL-3.0 ([docs/COPYING](docs/COPYING)).

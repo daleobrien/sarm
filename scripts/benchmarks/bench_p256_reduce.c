@@ -1,5 +1,5 @@
 // Isolated benchmark for p256_reduce (src/crypto/p256/sqr_mul.S:37),
-// the prompt 04 target -- prompts/02-benchmark-substrate.md.
+// the prompt 04 target -- docs/SCRIPTS.md.
 //
 // p256_reduce has no `.global` (see p256_reduce_probe.S for why that
 // matters and how this driver reaches it anyway, through

@@ -15,7 +15,7 @@
 #
 # Unlike the production binary, test code may use libc freely: the
 # standalone, no-libc constraint is a property of `sarm`, not of the
-# things that measure it (docs/SECURITY.md §2).
+# things that measure it (docs/SECURITY.md §10).
 
 .PHONY: all test build clean
 

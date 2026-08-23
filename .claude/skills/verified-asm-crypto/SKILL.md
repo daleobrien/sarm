@@ -1,6 +1,6 @@
 ---
 name: verified-asm-crypto
-description: How to implement or modify hand-written ARM64 assembly cryptographic/bignum arithmetic in this repo (ymawky) correctly — via Python-prototype-then-cross-check-then-port, not by hand-deriving formulas from memory and reasoning about correctness abstractly. Use this whenever touching src/crypto/*.S or writing new field/scalar/point/bignum arithmetic in assembly, whenever implementing a new PLAN.MD crypto phase (e.g. CertificateVerify, Finished, HMAC-based key derivation, or any future ECDSA/X25519/AES/SHA work), and whenever a crypto assembly test is failing and the instinct is to just patch the .S file. Also apply this whenever asked to "implement Phase N" where N touches src/crypto/ or src/tls/handshake/ crypto plumbing.
+description: How to implement or modify hand-written ARM64 assembly cryptographic/bignum arithmetic in this repo (ymawky) correctly — via Python-prototype-then-cross-check-then-port, not by hand-deriving formulas from memory and reasoning about correctness abstractly. Use this whenever touching src/crypto/*.S or writing new field/scalar/point/bignum arithmetic in assembly, whenever implementing a new crypto phase (e.g. CertificateVerify, Finished, HMAC-based key derivation, or any future ECDSA/X25519/AES/SHA work), and whenever a crypto assembly test is failing and the instinct is to just patch the .S file. Also apply this whenever asked to "implement Phase N" where N touches src/crypto/ or src/tls/handshake/ crypto plumbing.
 ---
 
 # Verified ARM64 crypto implementation

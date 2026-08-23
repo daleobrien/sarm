@@ -5,7 +5,7 @@
 //
 // Description: HTTP/2 read primitive. Reads exactly len bytes from the
 //   fd into buf. The socket I/O is delegated to transport_read — the
-//   transport seam introduced in PLAN.MD §1.2 — so the HTTP/2 frame
+//   transport seam — so the HTTP/2 frame
 //   loop never issues a read syscall directly.
 //
 // Input/Arguments:

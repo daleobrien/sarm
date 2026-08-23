@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sarm secret-leak regression harness (docs/SECURITY.md §11, Step 10)
+# sarm secret-leak regression harness (docs/SECURITY.md §4.5, Step 10)
 #
 # Step 10: fire malformed and fuzzed traffic at a running server, capture
 # every byte it sends back, and assert that nothing secret is in it. The
@@ -9,13 +9,13 @@
 # rather than about its responses:
 #
 #   1. the server writes nothing to stdout or stderr, ever. sarm has no
-#      logging at all (threat-model.md §4.5) and that is a security
+#      logging at all (docs/SECURITY.md §4.5) and that is a security
 #      property, not an oversight — a log line is the cheapest way for a
 #      secret to escape, and the only way to keep the property is to
 #      assert it. Any byte on either descriptor fails the run.
 #
 #   2. the server leaves no core dump behind. A crash dump is a complete
-#      memory disclosure including the private key (SECURITY.md §10), so
+#      memory disclosure including the private key (SECURITY.md §13.2), so
 #      the run sets `ulimit -c 0`, and then checks that nothing appeared
 #      in the working directory or in /cores anyway.
 #

@@ -11,7 +11,7 @@
 //   suite and the Step 4 differential suites found no defect in it. What
 //   Step 3 did find was two routines whose *documented* preconditions,
 //   if violated, fail catastrophically rather than gracefully
-//   (threat-model.md §9.9):
+//   (docs/SECURITY.md §9 obs. 9):
 //
 //     hkdf_expand        infolen > 607 walks the assembled HMAC input
 //                        off the end of a 640-byte stack buffer, over

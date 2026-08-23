@@ -37,7 +37,7 @@
 //   compression methods are structurally validated then discarded.
 //
 //   Five requirements are enforced, each mapped to the RFC 8446 §6.2
-//   alert a real TLS stack would expect (PLAN.MD §12.1-§12.5):
+//   alert a real TLS stack would expect:
 //     12.1 — supported_versions must offer TLS 1.3 (0x0304), else
 //            protocol_version.
 //     12.2 — cipher_suites must offer TLS_AES_128_GCM_SHA256 (0x1301),

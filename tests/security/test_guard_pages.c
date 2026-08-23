@@ -266,7 +266,7 @@ int main(void)
 
     // Alignment sweep: the reason shifting exists. A routine that
     // quietly assumes 16-byte alignment must be callable at every
-    // alignment its ABI permits (docs/SECURITY.md §12).
+    // alignment its ABI permits (docs/SECURITY.md §14 B2).
     for (size_t align = 1; align <= 64; align <<= 1) {
         char label[96];
         // shift so that (page_end - shift - size) % align == 0

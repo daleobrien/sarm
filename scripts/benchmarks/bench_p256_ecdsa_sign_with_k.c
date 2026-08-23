@@ -1,5 +1,5 @@
 // Benchmark for p256_ecdsa_sign_with_k (src/crypto/p256_ecdsa/sign.S:36)
-// -- prompts/02-benchmark-substrate.md. Complete ECDSA sign: z = hash
+// -- docs/SCRIPTS.md. Complete ECDSA sign: z = hash
 // mod n, k*G, r = Rx mod n, s = k^-1*(z+r*d) mod n -- exercises
 // p256_point_mul plus the scalar-field chain, so the end-to-end effect
 // of prompt 04's reduction change on signing is measurable, not just

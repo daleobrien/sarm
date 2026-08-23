@@ -1,5 +1,5 @@
 // ====================================================================
-// ARM64 (AArch64) Neon Assembly - AES-128 Key Schedule (PLAN.MD 6)
+// ARM64 (AArch64) Neon Assembly - AES-128 Key Schedule
 //
 // aes128_key_expand — FIPS-197 §5.2 key schedule (176-byte RK0..RK10)
 //

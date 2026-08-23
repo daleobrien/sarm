@@ -1,5 +1,5 @@
 // Per-call cost of sarm's crypto primitives, linked against the repo's
-// own object files (prompts/00-workload-profile.md, steps 2 and 3).
+// own object files (docs/SCRIPTS.md, steps 2 and 3).
 //
 // This is the CPU-accurate half of the profile. sample(1) reports where
 // the server's *wall* time goes, blocked syscalls included; multiplying

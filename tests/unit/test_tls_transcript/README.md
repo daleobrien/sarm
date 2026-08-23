@@ -17,7 +17,7 @@ binary per module (same pattern as `test_tls_record/`).
   transcript
 - **add.c** — Tests + `main()` for `tls_transcript_add`: known TLS
   transcript sequences against externally computed SHA-256 values
-  (PLAN.MD §9 acceptance) and that message ordering changes the hash
+  and that message ordering changes the hash
 - **hash.c** — Tests + `main()` for `tls_transcript_hash`: every length
   0..300 at the SHA-256 padding boundaries cross-checked against the
   independent C reference, and the snapshot semantics (repeatable,

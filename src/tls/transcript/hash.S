@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: tls_transcript_hash
 //
-// Description: Snapshot the current transcript hash (PLAN.MD §9.2): the
+// Description: Snapshot the current transcript hash: the
 //   SHA-256 digest of everything fed so far, written as 32 big-endian
 //   bytes to [x0]. The running transcript is *not* touched — the digest
 //   is computed by finalising a scratch copy of tls_transcript_ctx — so

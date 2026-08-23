@@ -3,18 +3,18 @@
 // File: x25519.S
 //
 //   x25519_fe_frombytes   — decode 32 little-endian bytes to a field
-//                           element ("expand", PLAN.MD 8.1)
+//                           element ("expand")
 //   x25519_fe_tobytes     — encode a field element to 32 bytes,
-//                           canonical mod p ("contract", PLAN.MD 8.1)
-//   x25519_fe_add         — field addition (PLAN.MD 8.2)
-//   x25519_fe_sub         — field subtraction (PLAN.MD 8.2)
-//   x25519_fe_mul         — field multiplication (PLAN.MD 8.3)
-//   x25519_fe_sqr         — field squaring (PLAN.MD 8.4)
-//   x25519_fe_sqr_times   — repeated field squaring (PLAN.MD 8.4)
+//                           canonical mod p ("contract")
+//   x25519_fe_add         — field addition
+//   x25519_fe_sub         — field subtraction
+//   x25519_fe_mul         — field multiplication
+//   x25519_fe_sqr         — field squaring
+//   x25519_fe_sqr_times   — repeated field squaring
 //   x25519_fe_scalar_product — field element times a small scalar
-//   x25519_fe_recip       — inversion, z^(p-2) (PLAN.MD 8.5)
+//   x25519_fe_recip       — inversion, z^(p-2)
 //   x25519_swap_conditional — constant-time conditional swap
-//   x25519                — X25519 scalar multiplication (PLAN.MD 8.7)
+//   x25519                — X25519 scalar multiplication
 //
 // ── Field representation ──────────────────────────────────────────────
 // An "fe" is 5 x 64-bit limbs of 51 bits each, little-endian limb order
@@ -33,7 +33,7 @@
 // alias `a` and/or `b` (the Montgomery ladder relies on in-place
 // semantics like sub(nqz, nqx, nqz)).
 //
-// Scalar multiplication (PLAN.MD 8.6-8.7) is the RFC 7748 §5 Montgomery
+// Scalar multiplication is the RFC 7748 §5 Montgomery
 // ladder with the constant-time conditional-swap trick, using a24 =
 // (486662 - 2) / 4 = 121665 and the bit-254 pre-swap optimisation from
 // curve25519-donna. The ladder runs a fixed sequence of field
@@ -41,7 +41,7 @@
 //
 // All scratch state lives on the stack: the functions are re-entrant and
 // use no mutable globals. Read-only constants are materialised as
-// immediates. As per PLAN.MD 8.7 this is NOT yet connected to TLS.
+// immediates.
 //
 // Exported Symbols:
 //   x25519                  — one-shot X25519 (doc block below)

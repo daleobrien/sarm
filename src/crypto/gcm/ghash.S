@@ -8,7 +8,7 @@
 // Description: GHASH (NIST SP 800-38D §6.4) of the GCM input string
 //   A || 0^pad || C || 0^pad || [len(A)]_64 || [len(C)]_64 (bit lengths,
 //   big-endian) — exactly the construction the GCM tag is built on
-//   (PLAN.MD 7.2). H = E_K(0^128) must be supplied by the caller.
+//. H = E_K(0^128) must be supplied by the caller.
 //
 // Input/Arguments:
 //   x0 — pointer to the 16-byte hash subkey H

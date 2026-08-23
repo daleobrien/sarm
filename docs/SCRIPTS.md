@@ -83,7 +83,7 @@ and checks what actually happened, skipping rather than passing where no tracer
 exists. It also serves the workload from an empty read-only directory and
 checks nothing appeared on disk. `scripts/syscall_audit.py` is usable alone,
 with `--json` or `--skip-binary`. Write-up:
-[docs/security/leak-and-containment.md](security/leak-and-containment.md).
+[docs/SECURITY.md §6](SECURITY.md).
 
 `tests/test_limits.sh` (with `tests/limit_checks.py`) is Step 12 — the one
 that asks what hostile input *costs* rather than what it does. Four campaigns
@@ -102,7 +102,7 @@ instruments before any of them run. The timeout campaigns run against a
 short-deadline binary built by `make variant`; the shipped constants are
 asserted separately out of `src/config.S`. Knobs: `--connections`,
 `--cpu-cases`, `--deadline`, `--recv-timeout`. Write-up:
-[docs/security/resource-limits.md](security/resource-limits.md).
+[docs/SECURITY.md §8](SECURITY.md).
 
 `tests/test_hardening.sh` (with `tests/hardening_checks.py`) is Step 13 — the
 one that inspects the *binary* rather than the behaviour. It checks that the
@@ -120,7 +120,7 @@ can fail: `-DSARM_NO_RODATA` puts every constant back in writable `.data`, and
 on Linux an empty `LDFLAGS` gives a fixed-address image with an executable
 stack. `--docker` additionally inspects the binary inside the container image;
 the ELF side is parsed in Python, so that works from macOS. Write-up:
-[docs/security/hardening.md](security/hardening.md).
+[docs/SECURITY.md §13](SECURITY.md).
 
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they
@@ -150,11 +150,11 @@ the harness does that itself, because a seed-based reproducer stops meaning
 anything the moment its generator changes. `fuzz_minimize.py` then shrinks such
 a file by delta debugging, using the harness's replay mode (`SARM_FUZZ_TARGET`
 + `SARM_FUZZ_REPLAY`, exit code as the oracle) — it took a real 238-byte
-preserved crash down to the five bytes of `docs/security/fuzzing.md` §9 in 49
+preserved crash down to the five bytes of `docs/SECURITY.md` §11 in 49
 replays — and `--keep <name>` installs the result under
 `tests/security/corpus/`, where every later run of that suite replays it as a
 regression test. Write-up:
-[docs/security/continuous-fuzzing.md](security/continuous-fuzzing.md).
+[docs/SECURITY.md §12](SECURITY.md).
 
 `tests/h2_browser_sim.py` is a dependency-free HTTP/2 client (stdlib `ssl`/`socket`
 plus its own frame writer and encode-side HPACK) that mimics real browser frame

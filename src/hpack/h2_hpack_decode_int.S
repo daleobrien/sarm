@@ -13,7 +13,7 @@
 //   the number of continuation octets a hostile block can make the
 //   decoder read.
 //
-//   Two bounds, not one (docs/security/length-audit.md, Step 5). The
+//   Two bounds, not one (docs/SECURITY.md §3.5, Step 5). The
 //   32-bit bound is checked on the whole accumulator, because a
 //   continuation octet placed at shift 28 contributes up to 2^35 and
 //   can therefore leave the 32-bit range without ever setting bit 32 —

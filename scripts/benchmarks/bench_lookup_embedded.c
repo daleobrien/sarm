@@ -1,4 +1,4 @@
-// Benchmark for src/file/lookup_embedded.S -- prompts/10-embedded-lookup.md.
+// Benchmark for src/file/lookup_embedded.S -- docs/SCRIPTS.md.
 //
 // Measures the cleaned-up linear scan against the real six-entry asset
 // table (src/embedded.S, built by embed_www.sh) with representative

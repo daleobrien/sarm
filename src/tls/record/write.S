@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: tls_record_write
 //
-// Description: Generate one plaintext TLS record (PLAN.MD §11.2): the
+// Description: Generate one plaintext TLS record: the
 //   5-byte header — type, legacy_record_version 0x0303, big-endian
 //   length — followed by a copy of the fragment. The fragment must be
 //   at most 2^14 bytes; a zero-length handshake fragment is rejected

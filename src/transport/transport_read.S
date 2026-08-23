@@ -8,7 +8,7 @@
 //
 // Description: The transport read primitive. Reads exactly len bytes
 //   from the fd into buf. Dispatches on the runtime `transport_mode`
-//   (PLAN.MD §1.3, Phase 20): TRANSPORT_PLAIN stages whatever one real
+//   (Phase 20): TRANSPORT_PLAIN stages whatever one real
 //   read() returns in plain_read_stage_buf and serves callers out of
 //   it across as many calls as it takes (Plan.md Phase 2, Step 10);
 //   TRANSPORT_TLS decrypts application_data records (tls_read_record +
@@ -24,7 +24,7 @@
 //   (alerts, a stray handshake message) or a decrypt failure closes
 //   the read side with carry set — this server does not support TLS
 //   renegotiation, key updates, or post-handshake messages of any
-//   kind (PLAN.MD Phase 20 scope).
+//   kind.
 //
 // Input/Arguments:
 //   x0 — fd, x1 — buffer, x2 — length

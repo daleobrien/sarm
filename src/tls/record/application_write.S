@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/record/application_write.S — seal outgoing application
-//   data (RFC 8446 §5.2, §23.3, PLAN.MD Phase 19)
+//   data (RFC 8446 §5.2, §23.3)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"

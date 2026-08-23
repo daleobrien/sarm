@@ -56,7 +56,7 @@
 #define BOUNDS_BADSETUP  2   // the test itself could not set the case up
 
 // ── the boundary corpus ─────────────────────────────────────────────
-// docs/SECURITY.md §3.3: "0 1 2 15 16 17 31 32 33 63 64 65 127 128 129
+// docs/SECURITY.md §10 (Step 3): "0 1 2 15 16 17 31 32 33 63 64 65 127 128 129
 // — especially useful because your crypto and networking code will
 // probably have block boundaries at 16, 32, or 64 bytes." Plus the
 // large and maximum-supported cases Step 3 names.

@@ -1,6 +1,5 @@
 // Unit tests for tls_finished_key from
-// src/tls/handshake/finished/finished_key.S (RFC 8446 §4.4.4, PLAN.MD
-// Phase 18)
+// src/tls/handshake/finished/finished_key.S (RFC 8446 §4.4.4)
 //
 // tls_finished_key(base_key, out) is a thin wrapper around the
 // already-verified hkdf_expand_label (Phase 10) with a fixed

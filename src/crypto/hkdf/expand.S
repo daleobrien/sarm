@@ -24,7 +24,7 @@
 //   okm must hold okmlen bytes.
 //
 //   Both of those limits are now checked rather than merely documented
-//   (Step 5, docs/security/length-audit.md). They were the clearer of
+//   (Step 5, docs/SECURITY.md §3.5). They were the clearer of
 //   the two cases the Step 3 bounds suite found where a documented
 //   precondition, if violated, fails catastrophically instead of
 //   gracefully: infolen past 607 walks the assembled HMAC input off the

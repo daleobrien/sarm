@@ -17,7 +17,7 @@
 //         the decremented length for equality with zero, so a length of
 //         0 underflows past the test and keeps decoding in place until
 //         it meets a NUL byte or a '%'. Every caller passes at least
-//         the 4-byte docroot; recorded in docs/security/fuzzing.md §17
+//         the 4-byte docroot; recorded in docs/SECURITY.md §9
 //         rather than checked here.
 //
 // Output/Returns:

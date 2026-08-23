@@ -198,7 +198,7 @@
 //   partial block is zero-padded in a private 16-byte stack buffer.
 //
 //   When at least 4 full blocks remain, they are processed 4 at a time
-//   via aggregated Horner evaluation (prompts/03-aes-gcm-throughput.md):
+//   via aggregated Horner evaluation (docs/HISTORY.md):
 //   given Y and blocks X1..X4,
 //
 //       Y' = (Y⊕X1)·H^4 ⊕ X2·H^3 ⊕ X3·H^2 ⊕ X4·H^1

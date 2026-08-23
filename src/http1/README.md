@@ -31,7 +31,7 @@ status about to be sent, it returns a keep-alive/close boolean. It touches no
 per-connection state and calls nothing that does.
 
 With one exception, found by the Step 8 fuzzing
-(`docs/security/fuzzing.md` §17, `threat-model.md` observation 17): the three
+(`docs/SECURITY.md` §9 observation 17): the three
 `get_header_field` lookups below can *not return at all*. That routine answers
 a header name which is a strict prefix of the one being searched for —
 `Content-Lengths:` while looking for `Content-Length` — by branching to

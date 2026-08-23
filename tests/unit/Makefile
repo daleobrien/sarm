@@ -364,8 +364,8 @@ $(OBJ_DIR)/test_p256_scalar_%: test_p256_scalar/%.c $(HARNESS) $(crypto_objs) | 
 $(OBJ_DIR)/test_p256_point_%: test_p256_point/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
 
-# test_p256_ecdsa.c drives p256_ecdsa_sign_with_k/verify (PLAN.MD
-# Phase 16.5/16.6) against vectors cross-checked with (and, for verify,
+# test_p256_ecdsa.c drives p256_ecdsa_sign_with_k/verify against vectors
+# cross-checked with (and, for verify,
 # produced directly by) the `cryptography` library.
 $(OBJ_DIR)/test_p256_ecdsa_%: test_p256_ecdsa/%.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
@@ -384,7 +384,7 @@ $(TEST_CRYPTO_RANDOM): test_crypto_random.c $(HARNESS) $(crypto_objs) | $(OBJ_DI
 $(TEST_TRANSPORT): test_transport.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls: the tls module (PLAN.MD §2) — the wire constants in
+# test_tls: the tls module — the wire constants in
 # defs.S are compile-time, so this links src/tls/data.S: the tls_state
 # block and the tls_* field labels the offset tests check against the
 # TLS_* offsets. crypto is linked too: the tls_objs wildcard now also
@@ -407,8 +407,8 @@ $(TEST_TLS_CLIENT_HELLO): test_tls_client_hello.c $(HARNESS) $(util_objs) | $(OB
 $(TEST_TLS_SERVER_HELLO): test_tls_server_hello.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@
 
-# test_tls_key_schedule.c drives tls_derive_handshake_secrets (PLAN.MD
-# Phase 10) directly against tls_state, and cross-checks it with
+# test_tls_key_schedule.c drives tls_derive_handshake_secrets directly
+# against tls_state, and cross-checks it with
 # hkdf_expand_label from crypto_objs.
 $(TEST_TLS_KEY_SCHEDULE): test_tls_key_schedule.c $(HARNESS) $(util_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(util_objs) $(LDFLAGS) -o $@

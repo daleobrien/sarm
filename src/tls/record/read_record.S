@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/record/read_record.S — read one full TLS record off a
-//   file descriptor (RFC 8446 §5.1, PLAN.MD Phase 20)
+//   file descriptor (RFC 8446 §5.1)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"
@@ -23,7 +23,7 @@
 //   more bytes, then delegate to tls_record_parse for type/version/
 //   length validation and to hand back the parsed fields. Used both
 //   for the handshake (reading the ClientHello and later the client's
-//   Finished, tls_server_handshake, PLAN.MD Phase 20) and by
+//   Finished, tls_server_handshake) and by
 //   transport_read's own TRANSPORT_TLS branch to pull the next
 //   application_data record off the wire post-handshake.
 //

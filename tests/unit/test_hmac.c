@@ -1,7 +1,7 @@
 // Unit tests for src/crypto/hmac.S
 //
 // The asm file exports one symbol:
-//   hmac_sha256 — one-shot HMAC-SHA256 (PLAN.MD §4.1)
+//   hmac_sha256 — one-shot HMAC-SHA256
 //     (key=x0, keylen=x1, data=x2, datalen=x3, digest=x4)
 //   Computes SHA256((K0 ^ opad) || SHA256((K0 ^ ipad) || data)) with K0
 //   the key zero-padded to the 64-byte block size; keys longer than one
@@ -19,7 +19,7 @@
 //   2. an independent plain-C HMAC-SHA256 implementation in this file
 //      (whose SHA-256 core is itself cross-checked against NIST KATs),
 //      cross-checked over key-length and message-length sweeps — the
-//      PLAN.MD §4.2 boundaries (key < block size, key = block size,
+//      boundaries (key < block size, key = block size,
 //      key > block size, empty message, large message) — plus buffer
 //      alignment and aliased (in-place) digests.
 
@@ -254,7 +254,7 @@ static const uint8_t TC7_MAC[32] = {
     0xbf, 0xdc, 0x63, 0x64, 0x4f, 0x07, 0x13, 0x93, 0x8a, 0x7f, 0x51, 0x53, 0x5c, 0x3a, 0x35, 0xe2,
 };
 
-// ── PLAN.MD §4.2 boundary vectors (computed independently) ───────────
+// ── Boundary vectors (computed independently) ───────────────────────────
 
 // key = 64 bytes (exactly one block), empty message
 static const uint8_t K64_MAC[32] = {
@@ -345,7 +345,7 @@ static void test_hmac_rfc4231(void) {
     ASSERT_TRUE("reference agrees on case 1", digest_eq(TC1_MAC, got));
 }
 
-// PLAN.MD §4.2: explicit key-size boundaries — key < block (TC1 covers
+// Explicit key-size boundaries — key < block (TC1 covers
 // 20 bytes), key = block (64), key > block (131). Sweep 0..131 against
 // the C reference so every boundary and the long-key hashing path is
 // hit with a deterministic key pattern.
@@ -381,7 +381,7 @@ static void test_hmac_key_sizes(void) {
     ASSERT_TRUE("keylen = 0 (all-zero K0)", digest_eq(want, got));
 }
 
-// PLAN.MD §4.2: message-size boundaries — empty message and messages
+// Message-size boundaries — empty message and messages
 // spanning the padding boundaries (55/56/57/63/64/65/119/120/121...).
 static void test_hmac_msg_sizes(void) {
     TEST_SUITE("hmac message-size sweep vs reference (0-300)");
@@ -417,7 +417,7 @@ static void test_hmac_msg_sizes(void) {
                 digest_eq(expect, got));
 }
 
-// PLAN.MD §4.2: large message — 1,000,000 x 'a' (15,625 SHA-256 blocks)
+// Large message — 1,000,000 x 'a' (15,625 SHA-256 blocks)
 // against the independently computed KAT, with a short and a long key.
 static void test_hmac_large_message(void) {
     TEST_SUITE("hmac large message (1,000,000 x 'a')");
@@ -434,7 +434,7 @@ static void test_hmac_large_message(void) {
     hmac_sha256(key64, sizeof(key64), million_a, sizeof(million_a), got);
     ASSERT_TRUE("64-byte key, 1M message", digest_eq(K64_MILLION_MAC, got));
 
-    // and the 64-byte-key/empty-message KAT (PLAN.MD §4.2 key = block)
+    // and the 64-byte-key/empty-message KAT (key = block)
     hmac_sha256(key64, sizeof(key64), NULL, 0, got);
     ASSERT_TRUE("64-byte key, empty message", digest_eq(K64_MAC, got));
 }

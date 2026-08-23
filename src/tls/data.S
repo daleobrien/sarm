@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Data: TLS module state
 //
-// Description: Per-connection TLS 1.3 state (PLAN.MD §2.2). A
+// Description: Per-connection TLS 1.3 state. A
 //   connection handler starts from these initial values and the
 //   handshake phases (9-19) fill the rest. The fixed layout is the
 //   contract: the TLS_* offsets in defs.S are what the handshake and
@@ -17,7 +17,7 @@
 //                        access); the transcript-hash field is
 //                        tls_transcript_hash_field because
 //                        tls_transcript_hash is the snapshot function
-//                        (PLAN.MD §9.2)
+//
 //   tls_alpn_h2        — the "h2" ALPN identifier (RFC 7301), 16-aligned
 //   tls_transcript_ctx — the running handshake-transcript SHA-256
 //                        context, SHA256_CTX layout
@@ -122,8 +122,8 @@ tls_hs_record_buf: .skip 16448
 tls_alpn_h2:
     .ascii "h2"
 
-// tls_sni_hostname — the one hostname the ClientHello parser (PLAN.MD
-// Phase 12.5) matches server_name extensions against. No virtual-host
+// tls_sni_hostname — the one hostname the ClientHello parser matches
+// server_name extensions against. No virtual-host
 // infrastructure exists yet, so this is a single compile-time value
 // rather than a field in tls_state.
 .align 4
@@ -132,7 +132,7 @@ tls_sni_hostname:
     .ascii "localhost"
 
 // tls_transcript_ctx — the running SHA-256 context of the handshake
-// transcript (PLAN.MD §9). SHA256_CTX_SIZE bytes laid out by the
+// transcript. SHA256_CTX_SIZE bytes laid out by the
 // SHA256_CTX_* offsets in defs.S (the same contract as sha256_ctx in
 // src/crypto/data.S); each field is also exported under a
 // tls_transcript_ctx_* label so the unit test (test_tls_transcript.c)

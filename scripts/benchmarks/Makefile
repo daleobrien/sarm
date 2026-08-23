@@ -56,7 +56,7 @@ bench_primitives: _bench_bin/bench_primitives
 _bench_bin/bench_primitives: bench_primitives.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_primitives.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
 
-# ── AES-GCM / GHASH benchmark trio (prompts/02-benchmark-substrate.md) ──
+# ── AES-GCM / GHASH benchmark trio (docs/SCRIPTS.md) ──
 # Distinguishes AES-only, GHASH-only (through the real .Lgcm_ghash_run call
 # path) and complete AES-GCM cost as three separate numbers.
 
@@ -94,7 +94,7 @@ _bench_bin/bench_gcm_ghash_run: bench_gcm_ghash_run.c _bench_obj/gcm_ghash_run_p
 	$(CC) $(CFLAGS) bench_gcm_ghash_run.c _bench_obj/gcm_ghash_run_probe.o \
 	    _bench_obj/gcm_ghash.o $(LDFLAGS) -o $@
 
-# ── P-256 benchmark suite (prompts/02-benchmark-substrate.md) ──
+# ── P-256 benchmark suite (docs/SCRIPTS.md) ──
 # Isolates p256_reduce (the prompt 04 target) from p256_bn_mul, so
 # reduction cost can be separated from multiplication cost inside
 # p256_fe_mul, plus point_mul/ECDSA/ECDH so the reduction change's
@@ -146,7 +146,7 @@ bench_p256_ecdsa_sign_with_k: _bench_bin/bench_p256_ecdsa_sign_with_k
 _bench_bin/bench_p256_ecdsa_sign_with_k: bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a | _bench_bin
 	$(CC) $(CFLAGS) bench_p256_ecdsa_sign_with_k.c _bench_obj/libsarm.a $(LDFLAGS) -o $@
 
-# ── crypto_random_bytes (prompts/05-register-overhead-experiment.md) ──
+# ── crypto_random_bytes (docs/SCRIPTS.md) ──
 # The fresh re-profile found this hot enough post-03/04 to be worth its
 # own isolated number: a real open+read+close of /dev/urandom per call,
 # not arithmetic, so it belongs with the primitives it's compared against.
@@ -158,7 +158,7 @@ bench_crypto_random_bytes: _bench_bin/bench_crypto_random_bytes
 _bench_bin/bench_crypto_random_bytes: bench_crypto_random_bytes.c _bench_obj/random.o | _bench_bin
 	$(CC) $(CFLAGS) bench_crypto_random_bytes.c _bench_obj/random.o $(LDFLAGS) -o $@
 
-# ── lookup_embedded (prompts/10-embedded-lookup.md) ──
+# ── lookup_embedded (docs/SCRIPTS.md) ──
 # Links the real generated table (src/embedded.S -- run embed_www.sh
 # first) so the measurement reflects the actual six-entry asset set, not
 # a synthetic one.

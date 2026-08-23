@@ -180,7 +180,7 @@ static void test_sha256_streaming(void) {
     ASSERT_TRUE("streamed digest == one-shot digest", digest_eq(ref_d, got));
 }
 
-// PLAN.MD §3.2 acceptance: SHA256("abc") == SHA256("a" + "bc") ==
+// Acceptance: SHA256("abc") == SHA256("a" + "bc") ==
 // SHA256("ab" + "c") — and all must equal the NIST vector.
 static void test_sha256_streaming_equivalence(void) {
     TEST_SUITE("streaming equivalence (abc split)");

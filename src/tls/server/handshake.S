@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/server/handshake.S — drive one full TLS 1.3 server
-//   handshake over a live connection (RFC 8446 §2, PLAN.MD Phase 20)
+//   handshake over a live connection (RFC 8446 §2)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../defs.S"
@@ -52,9 +52,9 @@
 //       next record read again.
 //     - No error alert is ever sent back to the client on failure —
 //       this function just reports carry-set to its caller, who closes
-//       the connection. Structured alerts belong to PLAN.MD Phase 23
-//       (TLS negative tests); Phase 20's job is the happy path that
-//       gets the existing HTTP/2 stack running over real TLS bytes.
+//       the connection. Structured alerts are not implemented; this function
+//       serves the happy path that gets the HTTP/2 stack running
+//       over real TLS bytes.
 //
 // Input/Arguments:
 //   x0 — the connection's file descriptor (still TRANSPORT_PLAIN)
@@ -159,7 +159,7 @@ tls_server_handshake:
     // fragment length 0) makes tls_transcript_add hash 2^64-4 bytes
     // and walk off the end of memory, before anything about the peer
     // has been authenticated. Found in Step 7 by the handshake fuzzer
-    // (docs/security/fuzzing.md).
+    // (docs/SECURITY.md §11).
     cmp     x2, #TLS_HS_HEADER_LEN
     b.lo    .Lhs_fail_generic
     mov     x20, x1                     // ClientHello: header+body ptr
@@ -442,8 +442,8 @@ tls_server_handshake:
     ret
 
 // local helper: 32-byte compare. x0 = a, x1 = b -> x0 = 0 if equal,
-// nonzero otherwise. Not constant-time — MAC-timing hardening is
-// PLAN.MD Phase 25's job, not Phase 20's.
+// nonzero otherwise. Not constant-time; MAC-timing hardening
+// is not implemented.
 .Lhs_memcmp32:
     mov     x9, #0
     mov     x10, #0

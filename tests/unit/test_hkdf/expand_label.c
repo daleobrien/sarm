@@ -337,7 +337,7 @@ static void test_hkdf_tls13(void) {
     ASSERT_TRUE("reference agrees on \"iv\"", buf_eq(HS_IV, want, 12));
 }
 
-// PLAN.MD §5.3: label/context/length sweeps vs the C reference. Labels
+// label/context/length sweeps vs the C reference. Labels
 // from 1 to 36 octets, contexts 0..40, outputs crossing the T-block
 // boundary — the asm HkdfLabel encoder is exercised at every length.
 static void test_hkdf_expand_label_sweep(void) {

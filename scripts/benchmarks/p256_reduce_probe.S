@@ -1,5 +1,5 @@
 // Trampoline exposing p256_reduce for isolated benchmarking
-// (prompts/02-benchmark-substrate.md).
+// (docs/SCRIPTS.md).
 //
 // Historically p256_reduce (src/crypto/p256/sqr_mul.S) had no `.global`
 // and this file worked around that by #include-ing sqr_mul.S with its

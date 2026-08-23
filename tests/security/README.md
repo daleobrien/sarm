@@ -1,9 +1,8 @@
 # tests/security
 
-The security test suite from [docs/SECURITY.md](../../docs/SECURITY.md).
-Its baseline inventory — entrypoints, wire-derived lengths, secrets, buffers,
-syscalls, protocol states — is
-[docs/security/threat-model.md](../../docs/security/threat-model.md) (Step 1).
+The per-function half of the security programme. What each harness *is* and how
+to drive it; why it exists, what it found, and every sabotage table is in
+[docs/SECURITY.md](../../docs/SECURITY.md).
 
 ```bash
 make test-security          # from the repo root
@@ -14,37 +13,31 @@ make -C tests/security clean
 
 `make test` runs this suite after `tests/unit`.
 
-These tests link no part of the server. Test code may use libc freely — the
-standalone, no-libc constraint is a property of `sarm`, not of the things that
-measure it.
+These tests link no part of the server's build constraints: test code may use
+libc freely — standalone and no-libc is a property of `sarm`, not of the things
+that measure it.
 
-Not to be confused with `tests/test_security.sh`, which is the end-to-end
-probe suite (path traversal, `%00`, non-printables) run against a live binary
-with `curl`. That one tests the server; this one tests it from underneath, one
-function at a time.
+Not to be confused with `tests/test_security.sh`, the end-to-end probe suite
+(path traversal, `%00`, non-printables) run against a live binary with `curl`.
+That one tests the server; this one tests it from underneath, one function at a
+time.
 
-Three steps of the programme deliberately do **not** live here, because they
-are properties of a running process rather than of a function: Step 10's
-secret-leak probe (`tests/test_leak.sh`), Step 11's syscall allowlist
-(`tests/test_syscalls.sh`, `scripts/syscall_audit.py`) and Step 12's
-resource-limit harness (`tests/test_limits.sh`, `tests/limit_checks.py`). All
-three are in `tests/` alongside the other live-server harnesses, and all three
-run in `make test`. See
-[docs/security/leak-and-containment.md](../../docs/security/leak-and-containment.md)
-and
-[docs/security/resource-limits.md](../../docs/security/resource-limits.md).
+**Three steps of the programme are deliberately not here**, because they are
+properties of a running process rather than of a function: the secret-leak probe
+(`tests/test_leak.sh`), the syscall allowlist (`tests/test_syscalls.sh`,
+`scripts/syscall_audit.py`) and the resource-limit harness
+(`tests/test_limits.sh`). All three live in `tests/` with the other live-server
+harnesses, and all three run in `make test`. Binary hardening
+(`tests/test_hardening.sh`) is there too.
 
-## guard_pages — guarded buffers (Step 2)
+---
 
-`sarm` allocates nothing at runtime: every buffer is a fixed-size `.bss`/`.data`
-global. That removes every heap bug class and, with it, every heap red zone —
-there is no allocator to notice that a routine wrote one byte past the end of
-`filename_buf`, because the byte after `filename_buf` is just another global.
-ASan cannot instrument hand-written `.S` either.
+## guard_pages.h — guarded buffers
 
-A guarded buffer restores the missing detector in hardware. The payload is
-placed flush against a `PROT_NONE` page, so the *first* out-of-bounds access
-traps:
+`sarm` allocates nothing at runtime, so there is no allocator to notice a
+routine writing one byte past `filename_buf` — the byte after it is just
+another global. ASan cannot instrument hand-written `.S` either. A guarded
+buffer restores the missing detector in hardware:
 
 ```
 [ PROT_NONE ][ ...slack... | payload ][ PROT_NONE ]
@@ -52,624 +45,263 @@ traps:
 ```
 
 ```c
-#include "guard_pages.h"
-
 struct guarded_buffer out;
 guard_alloc(&out, 32);           // out.data[32] now traps
 guard_fill(&out, 0xA5);          // poison, so uninitialised reads look wrong
-
 sha256_something(out.data, in.data, in.size);
-
 guard_free(&out);
 ```
 
 A page boundary can only be exact on one side at a time, so the flush end is
-the caller's choice: `GUARD_OVERRUN` (default — `data[size]` traps) or
-`GUARD_UNDERRUN` (`data[-1]` traps). Test both to cover both directions.
+the caller's choice: `GUARD_OVERRUN` (default, `data[size]` traps) or
+`GUARD_UNDERRUN` (`data[-1]` traps). Test both to cover both.
 
 `guard_alloc_shifted(gb, size, side, shift)` inserts accessible slack between
-the payload and its guard. Two uses: alignment sweeps (with `GUARD_OVERRUN` the
-payload's start alignment is fixed by its size, so offering a routine a
-1/2/4/…/64-byte-aligned pointer means shifting it), and routines *documented*
-to read a bounded distance past their length. Detection is then exact to within
-`shift` bytes rather than one byte — which is why `shift` defaults to 0.
+payload and guard — for alignment sweeps (under `GUARD_OVERRUN` the payload's
+start alignment is fixed by its size, so offering a routine a 1/2/4/…/64-byte
+aligned pointer means shifting it), and for routines *documented* to read a
+bounded distance past their length. Detection is then exact to within `shift`
+bytes, which is why it defaults to 0.
 
 `size == 0` is legal and useful: under `GUARD_OVERRUN` the payload pointer
-lands on the first guard byte, so it is a valid non-NULL pointer that traps on
-any dereference — exactly the right probe for a zero-length call.
+lands on the first guard byte — a valid non-NULL pointer that traps on any
+dereference, which is the right probe for a zero-length call.
 
-`guard_probe(fn, ctx)` runs a function that is *expected* to trap in a forked
-child and reports `GUARD_PROBE_OK` / `_FAULT` / `_ERROR`. The child installs
-`SIGSEGV`/`SIGBUS` handlers that `_exit` immediately, so an expected fault costs
-no macOS crash report and no core file, and the test binary survives to assert
-about it.
+`guard_probe(fn, ctx)` runs a function expected to trap, in a forked child that
+installs `SIGSEGV`/`SIGBUS` handlers **and its own `alarm`**, so three outcomes
+are distinguishable: returned, trapped, or never returned
+(`GUARD_PROBE_TIMEOUT`). The third is not hypothetical — the first run of the
+bounds suite hung the whole binary on `x25519_fe_sqr_times(out, a, 0)`.
+`guard_probe_status` additionally reports the child's exit code, which is how
+the bounds suites answer both of their questions in one run.
 
-### guard_probe and non-terminating code
+**The helper has its own self-test** (`test_guard_pages.c`): four deliberately
+broken functions — read/write before/after — plus in-bounds controls. A guard
+page that is silently not there would make every later test pass by doing
+nothing. Both ways it can silently vanish were confirmed caught: `mprotect`ing
+the whole mapping RW fails 21 of 62 assertions; hard-coding the page size to
+4096 on a 16 KiB machine fails 33. **If you change `guard_pages.c`, repeat
+that.**
 
-`guard_probe(fn, ctx)` runs a function in a forked child that installs
-`SIGSEGV`/`SIGBUS` handlers **and its own `alarm`**, so three outcomes are
-distinguishable: the routine returned, it trapped on a guard page, or it never
-returned at all (`GUARD_PROBE_TIMEOUT`). The third case is not hypothetical —
-the first run of the Step 3 suite hung the whole binary and orphaned a child on
-`x25519_fe_sqr_times(out, a, 0)`. A harness for hand-written assembly has to
-survive the assembly not terminating.
+---
 
-`guard_probe_status(fn, ctx, &verdict)` additionally reports the child's exit
-code, which is how the bounds suites answer both of Step 3's questions in one
-run: the return value says whether the routine stayed in its buffers, the
-verdict says whether its output matched the reference.
+## The suites
 
-### Why the helper has its own self-test
+| Suite | Step | Covers |
+|---|---|---|
+| `test_guard_pages` | 2 | the helper itself |
+| `test_bounds_sha256` | 3 | `sha256`, `sha256_init/update/final`, `crypto_random_bytes` |
+| `test_bounds_hmac_hkdf` | 3 | `hmac_sha256`, `hkdf_extract`, `hkdf_expand`, `hkdf_expand_label` |
+| `test_bounds_gcm` | 3 | `aes128_key_expand`, `aes128_encrypt`, `gf_mult_128`, `ghash`, `aes_gcm_encrypt/decrypt` |
+| `test_bounds_ecc` | 3 | X25519 + field ops, `p256_fe_*`, `p256_reduce`, `p256_bn_mul`, `p256_scalar_*`, `p256_point_*`, `p256_ecdsa_*` |
+| `test_diff_hash` | 4 | SHA-256 compression, one-shot and streaming, HMAC, HKDF |
+| `test_diff_gcm` | 4 | the GCM set, including random-bit forgery attempts |
+| `test_diff_ecc` | 4 | X25519 and P-256 field, scalar, point and ECDSA operations |
+| `test_overflow_hpack` | 5 | RFC 7541 §5.1 integers at every prefix width, string lengths leaving the block, dynamic-table inserts and size updates, every truncation of a valid block |
+| `test_overflow_crypto` | 5 | `hkdf_expand`'s info/output limits, `hkdf_expand_label`'s label/context limits, `x25519_fe_sqr_times` at zero |
+| `test_fuzz_tls_record` | 6, 7 | 7 campaigns against the record layer |
+| `test_fuzz_tls_handshake` | 7 | 3 campaigns against the handshake |
+| `test_fuzz_http` | 8 | 7 campaigns against HTTP/1 request parsing |
+| `test_frag_socket`, `test_frag_http` | 9 | 7 campaigns delivering the same bytes whole and in pieces |
 
-`test_guard_pages.c` contains four deliberately broken functions — read before,
-read after, write before, write after — plus in-bounds controls. A guard page
-that is silently not there (wrong page size, payload not flush, `mprotect`
-quietly failing) would make every later security test pass by doing nothing,
-which is the worst failure mode a suite can have.
-
-Both of those failure modes were confirmed to be caught, by sabotaging the
-helper and re-running:
-
-| Sabotage | Result |
-|---|---|
-| `mprotect` the whole mapping RW (no guards at all) | 21 of 62 assertions fail — every fault assertion, including all four required cases |
-| hard-code the page size to 4096 (Apple silicon is 16 KiB) | 33 of 62 fail — the payload no longer ends on the guard |
-
-If you change `guard_pages.c`, repeat that: a green suite is only evidence when
-it can go red.
-
-## test_bounds_* — every crypto primitive at its length boundaries (Step 3)
+### Bounds (Step 3)
 
 ```
 0, 1, block-1, block, block+1, large, maximum supported
         -> no crash, and reference output matches
 ```
 
-Both halves are answered in one run. Every pointer the routine touches gets a
-guarded buffer sized to *exactly* what its header comment declares, and the
-call runs inside `guard_probe_status`:
+Every pointer gets a guarded buffer sized to **exactly** what the routine's
+header comment declares, and the call runs inside `guard_probe_status`:
 
 | outcome | reported as |
 |---|---|
 | touched memory outside a declared buffer | `OUT OF BOUNDS` |
 | never returned | `DID NOT TERMINATE` |
 | output disagreed with the C reference | `output differs from the reference` |
-| none of the above | pass |
 
-The fork per case is what makes the suite survivable *and* diagnostic. An
-out-of-bounds access in-process would take the binary down at the first bad
-length and hide every case after it; here one run reports all of them, which is
-the difference between "GHASH is broken somewhere" and "GHASH is broken at 17,
-33 and 49 — one past each block".
+The fork per case is what makes the suite both survivable and diagnostic: one
+run reports every failing case, which is the difference between "GHASH is
+broken somewhere" and "GHASH is broken at 17, 33 and 49 — one past each block".
 
-| suite | covers |
-|---|---|
-| `test_bounds_sha256` | `sha256`, `sha256_init/update/final`, `crypto_random_bytes` |
-| `test_bounds_hmac_hkdf` | `hmac_sha256`, `hkdf_extract`, `hkdf_expand`, `hkdf_expand_label` |
-| `test_bounds_gcm` | `aes128_key_expand`, `aes128_encrypt`, `gf_mult_128`, `ghash`, `aes_gcm_encrypt`, `aes_gcm_decrypt` |
-| `test_bounds_ecc` | `x25519` + field ops, `p256_fe_*`, `p256_reduce`, `p256_bn_mul`, `p256_scalar_*`, `p256_point_*`, `p256_ecdsa_*` |
-
-### crypto_ref.h — the second implementation
-
-"Reference output matches" needs an implementation that is not the one under
-test, or the assertion is that the assembly agrees with itself. `crypto_ref.h`
-is that: SHA-256, HMAC, HKDF, HkdfLabel, AES-128, GHASH and AES-128-GCM, all
-written for obviousness — byte at a time, block at a time, a bitwise GF(2^128)
-multiply, no SIMD, no vectorised tails. That is the point. The bug class being
-hunted is "the fast path handles a partial tail differently from the slow
-path", and a reference sharing the same trick shares the same bug.
-
-Each suite runs `ref_selfcheck_*` **first**, pinning the reference to published
-vectors (FIPS 180-4, FIPS 197, RFC 4231, RFC 5869, SP 800-38D) before it is
-used to judge anything.
+**`crypto_ref.h` is the second implementation**, written for obviousness: byte
+at a time, block at a time, a bitwise GF(2^128) multiply, no SIMD, no
+vectorised tails. That is the point — the bug class being hunted is "the fast
+path handles a partial tail differently from the slow path", and a reference
+sharing the trick shares the bug. Each suite runs `ref_selfcheck_*` **first**,
+pinning the reference to FIPS 180-4, FIPS 197, RFC 4231, RFC 5869 and
+SP 800-38D before it judges anything.
 
 The fixed-size routines (X25519, P-256) have no length argument, so their
-boundary question is "does it stay inside the size its header declares?" — a
-guarded buffer of exactly that size answers it. Correctness there is checked by
-algebraic identity (`a - a == 0`, `a * a^-1 == 1`, `P + P == 2P`,
-`k*G` by comb == `k*G` by ladder, sign-then-verify, tamper-then-reject) rather
-than by a reference; the full random-vector comparison is Step 4's job.
+boundary question is "does it stay inside the size its header declares?", which
+a guarded buffer of exactly that size answers. Correctness there is by
+algebraic identity — `a - a == 0`, `a * a⁻¹ == 1`, `P + P == 2P`, comb against
+ladder, sign-then-verify, tamper-then-reject.
 
-### Sweeps stop at the documented contract
+**Two sweeps stop where the routine's header says its contract does**, and both
+stopped there *after* the suite ran past the line and found out what happens:
+`hkdf_expand`'s info length at 607, and `x25519_fe_sqr_times`'s count at 1. If
+you widen either, expect the failure and read `docs/SECURITY.md` §9 obs. 9
+first.
 
-Two sweeps deliberately stop where the routine's header says its contract does,
-and both stopped there *after* the suite ran past the line and found what
-happens:
-
-- `hkdf_expand` info length stops at 607 (`32 + infolen + 1 <= 640`, a stack
-  buffer). Past it, the frame is silently overrun.
-- `x25519_fe_sqr_times` count starts at 1. At 0 the do-while wraps to 2^64-1
-  iterations and never returns.
-
-Neither is reachable from the network today — every caller passes a
-compile-time constant — and both are recorded in
-[docs/security/threat-model.md](../../docs/security/threat-model.md) §9 as
-unchecked preconditions rather than fixed here, because Step 3 is a test step.
-If you widen either sweep, expect the failure, and read that section first.
-
-## test_diff_* — random-vector differential testing (Step 4)
-
-Step 3 asks whether the assembly survives the edges someone thought to name.
-Step 4 asks whether it is *right everywhere*, by running each routine and its
-reference over hundreds of thousands of random inputs at random lengths and
-requiring the two to agree byte for byte.
+### Differential (Step 4)
 
 ```bash
-make -C tests/security                       # ~5s, ~430k vectors
-SARM_DIFF_ITERS=100 make -C tests/security   # 100x that, for a long soak
+make -C tests/security                       # ~5 s, ~430k vectors
+SARM_DIFF_ITERS=100 make -C tests/security   # 100x, for a soak
 SARM_DIFF_SEED=0x1234 ./_obj/test_diff_gcm   # replay a specific run
 ```
 
-| suite | covers |
-|---|---|
-| `test_diff_hash` | `sha256` compression, one-shot and streaming digests, `hmac_sha256`, `hkdf_extract/expand/expand_label` |
-| `test_diff_gcm` | `aes128_key_expand`, `aes128_encrypt`, `gf_mult_128`, `ghash`, `aes_gcm_encrypt`, `aes_gcm_decrypt` incl. random-bit forgery attempts |
-| `test_diff_ecc` | X25519 field ops + full scalar mult, `p256_fe_*`, `p256_reduce`, `p256_bn_mul`, `p256_scalar_*`, `p256_point_*`, `p256_ecdsa_sign_with_k` |
-
 Every vector comes from one 64-bit seed, so a failure is replayable rather than
-a ghost: the suite prints its seed on every run, each routine draws from its
-own stream (adding a case to one does not renumber another's vectors), and a
-failure report names the iteration, the per-vector seed and the first byte that
-differed.
+a ghost: the suite prints its seed, each routine draws from its own stream (so
+adding a case to one does not renumber another's vectors), and a failure names
+the iteration, the per-vector seed and the first byte that differed. The
+default seed is fixed rather than taken from the clock — a suite that tests
+different vectors every run fails on someone else's machine and passes on
+yours.
 
-The default seed is fixed rather than taken from the clock. A suite that tests
-different vectors every run is a suite that fails on someone else's machine and
-passes on yours; sweeping the space is what `SARM_DIFF_ITERS` and Step 14's
-continuous fuzzing are for.
+**Not guarded, deliberately.** Step 3 already proved each routine stays inside
+its declared buffers with a forked probe per case; forking a million times to
+re-prove it would cost exactly the vector count that is the point. Instead every
+output buffer carries a 32-byte poison tail that must come back untouched.
 
-### Not guarded, and why
+**`refbn.h` and `refcurve.h`** are references for the curves, where identities
+alone are too narrow (a field multiplier reducing modulo the wrong prime still
+satisfies `a * a⁻¹ == 1` — in the wrong field). `refbn.h` is 32-bit limbs,
+schoolbook multiplication, reduction by shift-and-subtract one bit at a time:
+every trick the assembly uses, absent on purpose. `refcurve.h` is P-256 in
+**homogeneous projective** coordinates against assembly working in **Jacobian**
+— different denominators, different intermediates, different special cases —
+and comparing across the two needs no inversion at all, since Jacobian
+`(X, Y, Z)` denotes affine `(x, y)` iff `X == x·Z²` and `Y == y·Z³`. There is no
+published projective vector to pin it to, so `refcurve_selfcheck()` pins it
+structurally: G is on the curve, `n*G` is infinity, `(a+b)*G == a*G + b*G`. A
+mistyped doubling formula does not survive `n*G == O`.
 
-These suites do not use `guard_pages.h`. Step 3 already proved each routine
-stays inside its declared buffers with a forked probe per case, and forking a
-million times to re-prove it would cost exactly the vector count that is the
-point of this step. Instead every output buffer carries a 32-byte poison tail
-that must come back untouched — a gross overwrite is still caught, without a
-syscall per vector.
+Counts per routine are deliberately uneven — the reference reduces one bit at a
+time, so a scalar multiplication costs thousands of those, and the field
+operations, where the carry bugs live, get the vectors.
 
-### refbn.h and refcurve.h — a reference for the curves
+### Overflow corpus (Step 5)
 
-Step 3 checked the ECC routines by identity because identities need no second
-implementation. They are also narrow: a field multiplier that reduces modulo
-the wrong prime still satisfies `a * a^-1 == 1` in the wrong field. Step 4
-needs the actual value, so it needs an actual reference:
-
-- **`refbn.h`** — 32-bit limbs, schoolbook multiplication, reduction by
-  shift-and-subtract long division one bit at a time. No Montgomery form, no
-  Solinas fold, no lazy carries, no 64-bit limbs: every trick the assembly
-  uses is absent on purpose.
-- **`refcurve.h`** — P-256 in *homogeneous projective* coordinates
-  (`x = X/Z`), against assembly that works in *Jacobian* (`x = X/Z^2`).
-  Different denominators, different intermediates, different special cases.
-  Comparing across the two needs no inversion at all: a Jacobian `(X, Y, Z)`
-  denotes affine `(x, y)` iff `X == x*Z^2` and `Y == y*Z^3`, so the check
-  multiplies up rather than dividing down.
-
-There is no published projective-coordinate vector to pin `refcurve.h` to, so
-`refcurve_selfcheck()` pins it structurally instead: G is on the curve,
-`n*G` is the point at infinity, and `(a+b)*G == a*G + b*G`. A mistyped
-doubling formula does not survive `n*G == O`.
-
-The counts per routine are deliberately uneven. The reference reduces modulo a
-256-bit prime one bit at a time, so a scalar multiplication costs thousands of
-those — and the field operations, where the carry bugs actually live, are the
-ones getting the vectors.
-
-### Verified by sabotage
-
-A green differential suite is the easiest thing in the world to fake, so each
-comparison was checked by breaking the assembly and confirming the suite went
-red:
-
-| break | result |
-|---|---|
-| one SHA-256 round constant, `0xc67178f2` → `f3` | every sha256, hmac and hkdf sweep failed |
-| `x25519_fe_mul` carry chain, `lsl #13` → `#12` | fe_mul, fe_recip and full x25519 failed |
-| `p256_point_dbl`, one `fe_add` → `fe_sub` | point dbl/add, point mul and ECDSA failed |
-| `ghash` length block, `lsl #3` → `#4` | the `ghash` sweep failed — **and nothing else did** |
-
-That last row is a finding, not a pass. `aes_gcm_encrypt` and
-`aes_gcm_decrypt` do not call the exported `ghash`: they share its absorb core
-(`.Lgcm_ghash_run`, `src/crypto/gcm/data.S`) but assemble the final
-`[len(A)] || [len(C)]` block themselves. Nothing outside `tests/` calls
-`ghash` at all. See
-[docs/security/threat-model.md](../../docs/security/threat-model.md) §9.
-
----
-
-## test_overflow_* — the integer-overflow corpus (Step 5)
-
-Step 5 audits every length calculation an attacker can influence and asks the
-`adds`/`b.cs` question of each: *can this sum wrap, and does anything notice?*
-The audit itself, site by site with a verdict for each, is
-[docs/security/length-audit.md](../../docs/security/length-audit.md). These two
-suites are its test half.
-
-| suite | covers |
-|---|---|
-| `test_overflow_hpack.c` | RFC 7541 §5.1 integers at every prefix width, string lengths that leave the header block, dynamic-table inserts and size updates, and every truncation of a valid block |
-| `test_overflow_crypto.c` | `hkdf_expand`'s info and output limits, `hkdf_expand_label`'s label and context limits, and `x25519_fe_sqr_times` with a zero count |
-
-The suites run in about a second and need no environment variables.
-
-### Rejected, not merely survived
-
-Every input is copied into a buffer placed flush against a `PROT_NONE` page, so
-`end` is a hardware boundary rather than a number the parser is hoped to be
-comparing against. That makes each case assert two things at once:
-
-* the routine returns its error rather than accepting the value or looping, and
-* it does so **without reading a byte outside the input it was given**.
-
-A parser that reads past the end and complains afterwards is reported as
-`OUT OF BOUNDS` whatever it would eventually have returned. That distinction is
-the point: three of the four Step 5 findings were exactly that shape — the
-overrun was always detected, but only after `h2_huffman_decode` had expanded
-2.5 KB of adjacent memory, or after `h2_hpack_dyn_insert` had copied it into
-the dynamic table.
-
-Each case runs in a forked child (`guard_probe_status`), so one run reports
-every failing case instead of dying on the first, and a routine that hangs is
-reported as `DID NOT TERMINATE` rather than taking the run with it.
+Every input is copied into a buffer flush against `PROT_NONE`, so `end` is a
+hardware boundary rather than a number the parser is *hoped* to be comparing
+against. Each case therefore asserts two things: the routine returns its error,
+and it does so **without reading a byte outside the input it was given**. A
+parser that reads past the end and complains afterwards is `OUT OF BOUNDS`
+whatever it would have returned — which matters, because three of the four
+Step 5 findings were exactly that shape.
 
 Every rejection case is paired with the largest value that must still be
 **accepted**. A check that rejects 608 and also rejects 607 has not made the
 routine safer, and only the second half of the pair notices.
 
-### Verified by sabotage
-
-Each fix was reverted in turn and the corpus re-run:
-
-| break | result |
-|---|---|
-| `lsr x3, x2, #32 / cbnz` → `tbnz x2, #32` | 8 failures — every value above bit 32 accepted |
-| remove `decode_int`'s per-octet end check | 3 failures, all `OUT OF BOUNDS` |
-| remove `decode_string`'s `ckrange` | 9 failures, 6 of them `OUT OF BOUNDS` |
-| remove `hkdf_expand`'s infolen check | 10 failures, 8 of them `OUT OF BOUNDS` |
-| remove `hkdf_expand_label`'s label check | 3 failures, 2 of them `OUT OF BOUNDS` |
-| remove `x25519_fe_sqr_times`'s zero guard | 2 failures, both `DID NOT TERMINATE` |
-
-The `OUT OF BOUNDS` rows are the MMU, not the test, confirming the
-pre-Step-5 code really did read past the buffer it was given.
-
-## test_fuzz_* — generated inputs (Steps 6 and 7)
-
-Steps 3–5 test the inputs somebody thought of. Step 6 tests the others:
-`test_fuzz_tls_record.c` runs seven campaigns against the TLS record layer —
-the first code an unauthenticated peer reaches. Step 7 points the same harness
-one layer up, at the handshake (`test_fuzz_tls_handshake.c`, below). The design, the invariants and the
-evidence are in
-[docs/security/fuzzing.md](../../docs/security/fuzzing.md); the summary is
-here.
-
-| campaign | target |
-|---|---|
-| `parse` | `tls_record_parse` over bytes ending flush against a guard page |
-| `decrypt` | `tls_record_decrypt` on records that essentially never authenticate |
-| `roundtrip` | `tls_record_encrypt` → `tls_record_decrypt` must return exactly what went in |
-| `tamper` | seal a record, flip one bit anywhere in it, require the open to fail |
-| `read_record` | `tls_read_record` against a real `socketpair` fed adversarial bytes |
-| `read_prefilled` | `tls_read_record_prefilled`, whose shortfall arithmetic runs twice on wire-derived values |
-| `inner_plaintext` | RFC 8446 §5.4's `content \|\| type \|\| zeros`, sealed with `aes_gcm_encrypt` directly — the only way to reach `decrypt`'s padding scan, since `tls_record_encrypt` appends the type octet last and never produces a plaintext ending in a zero (added in Step 7) |
-
-Default run: ~1.16M cases in about 1.4 s, no environment needed.
+### Fuzzing (Steps 6–8)
 
 ```bash
-SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_tls_record   # 114M cases
-SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_tls_record   # outcome histogram
+./tests/security/_obj/test_fuzz_tls_record                     # ~1.16M cases, ~1.4 s
+SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_tls_record  # 114M cases
+SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_tls_record  # outcome histogram
 SARM_FUZZ_SEED=<s> SARM_FUZZ_CASE=<i> ./tests/security/_obj/test_fuzz_tls_record
 ```
 
-The last one replays a single case **in-process** — no fork, no handler — so a
+The last replays a single case **in-process** — no fork, no handler — so a
 fault lands on the faulting instruction under a debugger. Every failure the
 suite reports ends with that exact command.
 
-### Three things it checks that "no crash" does not
-
-**The output contract, on every case.** A parser can return success while
-handing back a fragment pointer past the end of the buffer, and nothing crashes
-until a later caller uses it. Each campaign checks carry, error-code range,
-fragment placement and every length relation the module README publishes.
-
-**That a rejected record leaked nothing.** The decrypt output buffer is filled
-with poison before each case and verified byte-for-byte afterwards on every
-failure. `decrypt.S` claims a bad tag leaves the output untouched; this is that
-claim, tested, a few million times.
-
-**That the corpus still reaches the interesting paths.** A generator that
-drifts into producing only malformed input satisfies every invariant on the
-accepting path vacuously, and stays green. So each campaign declares the
-outcomes it must reach, and an empty one fails it:
-
-```
-✗ read_record — VACUOUS: 20000 cases and not one reached "past the buffer"
-```
-
-That fired on the first run, and it was right: `tls_read_record` structurally
-cannot produce `BOUNDS`, because it hands `tls_record_parse` a buffer length
-equal to the record length it just read. See `fuzzing.md` §4.
-
-### Verified by sabotage
-
-| break | result |
+| suite | campaigns |
 |---|---|
-| `tls_record_parse` drops its fragment-past-the-buffer check | `parse`: *success with a record running past the end of the buffer* |
-| `tls_record_parse` accepts content type 24 | `parse`, `read_record`, `read_prefilled`, all at the same case index |
-| `tls_record_decrypt` drops its bounds check | `decrypt`, `tamper`: **CRASH: SIGBUS** — the guard page |
-| `aes_gcm_decrypt` skips the tag comparison | `decrypt`: *wrote plaintext for a record it then rejected*; `roundtrip`: *accepted under the wrong sequence number*; `tamper`: *accepted a record with a flipped bit* |
-| `raw_read_exact` drops its EOF check | `read_record`, `read_prefilled`: **HANG**, caught by the heartbeat within seconds |
+| `test_fuzz_tls_record` | `parse`, `decrypt`, `roundtrip`, `tamper`, `read_record`, `read_prefilled`, `inner_plaintext` |
+| `test_fuzz_tls_handshake` | `client_hello`, `flight`, `finished` |
+| `test_fuzz_http` | `header_end`, `header_field`, `front_door`, `path`, `filters`, `range`, `keepalive` |
+| `test_frag_socket` | `record`, `prefilled`, `plain`, `tls` |
+| `test_frag_http` | `header_end`, `probe`, `pipeline` |
 
-Four distinct detection mechanisms — a returned-value invariant, a guard-page
-fault, a leaked-plaintext check, and the progress deadline — and the MAC row
-was caught by three of them independently.
+Three campaigns are worth naming for what they do rather than what they target.
+`inner_plaintext` seals RFC 8446 §5.4's `content || type || zeros` with
+`aes_gcm_encrypt` **directly**, because `tls_record_encrypt` appends the type
+octet last and so can never produce a plaintext ending in a zero — it is the
+only way to reach `decrypt`'s padding scan. `finished` forks the server and
+plays a **real client** — X25519, key schedule, decrypting the server's flight
+— so it can send a correct client Finished or one of ten deviations and require
+the server to connect on exactly the correct ones; without it, "invalid
+transitions are rejected" is satisfied by a function that rejects everything.
+`pipeline` transcribes `child.S`'s accumulate-scan-serve-shift loop and records
+each served request as a length **and a hash of its bytes**, because a
+length-only record calls a corrupted shift identical.
 
-## test_fuzz_tls_handshake — the handshake (Step 7)
+Three things every campaign checks that "no crash" does not: the routine's
+whole **output contract** on every case; that a **rejected record leaked
+nothing** (output buffers are poisoned before and verified after); and that the
+corpus still **reaches** the paths it claims to — each campaign declares the
+outcomes it must hit, and an empty one fails it as `VACUOUS`.
 
-Three campaigns, in `test_fuzz_tls_handshake.c`. The design and the evidence
-are in [docs/security/fuzzing.md](../../docs/security/fuzzing.md) §§8–14.
+Two things the HTTP target needed that the TLS ones did not. **Its own
+`reply_status`**: `parse_path`, `get_header_field` and `verify_http_version`
+answer some inputs by tail-branching there rather than returning, so the suite
+links the only `reply_status` in the binary, which records the status and
+`longjmp`s back to the case loop — turning "which inputs escape, with which
+code" into a counted outcome. And **poison canaries instead of a guard page on
+the output side**, because `filename_buf`, `query_buf` and `authority_buf` are
+the server's own globals: each is allocated larger than the bound its writer
+enforces, and the slack is filled with 0xA5 and checked. The input side still
+gets the guard page.
 
-| campaign | target |
-|---|---|
-| `client_hello` | `tls_parse_client_hello` over structured-then-mutated bodies ending flush against a guard page — the largest pre-auth parser in the tree |
-| `flight` | `tls_server_handshake` against a generated flight in a `socketpair`: no such flight can complete a handshake, so every case must end at `TLS_HS_FAILED`, plaintext, with no application traffic keys installed |
-| `finished` | the iff. The case forks the server and plays a **real client** — X25519, key schedule, decrypting the server's flight — so it can send either a correct client Finished or one of ten generated deviations, and require the server to connect on exactly the correct ones |
+### Fragmentation (Step 9)
 
-```bash
-./tests/security/_obj/test_fuzz_tls_handshake                    # ~2.0M cases, ~1.2 s
-SARM_FUZZ_MULT=200 ./tests/security/_obj/test_fuzz_tls_handshake # 401M cases
-SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_tls_handshake # outcome histogram
-```
-
-This is the suite that found the one production defect the fuzzing steps have
-turned up: a handshake record whose fragment is shorter than the 4-byte
-handshake header made `tls_server_handshake` hash 2^64-4 bytes and crash,
-before authentication, on five bytes from any peer. `fuzzing.md` §9 has the
-input, the instruction, and the fix.
-
-### Two detection mechanisms the record suite did not need
-
-**An invariant on global state after the call.** `tls_server_handshake` returns
-one bit; what matters as much is what it left behind. Every `flight` case
-checks `tls_hs_state`, `transport_mode`, and the four application traffic
-key/IV fields, which are filled with poison before the call — a handshake that
-fails *after* installing application keys would leave a live key schedule no
-peer ever authenticated.
-
-**An invariant on a second process's verdict.** The `finished` campaign's
-server runs in a forked child so it has its own `tls_state`; the child's exit
-code carries "connected" or "rejected", and the case compares it against what
-it knows it sent. That comparison is an iff in both directions: a correct
-Finished that is refused fails the campaign exactly as loudly as an incorrect
-one that is accepted.
-
-### Verified by sabotage
-
-| break | result |
-|---|---|
-| the fragment-length check from `fuzzing.md` §9 removed | `flight`: **CRASH: SIGSEGV**, case 83 — the original defect |
-| `tls_server_handshake` skips the `verify_data` comparison | `finished`: *accepted an invalid client Finished* |
-| `tls_server_handshake` accepts any inner type on the client's Finished | `finished`: same, at case 0 |
-| the application traffic secrets derived before the client's Finished is read | `flight`: *failed after installing application traffic keys* |
-| `TLS_HS_FAILED` computed but not stored | `flight`: *failed without leaving tls_hs_state at TLS_HS_FAILED* |
-| `tls_parse_client_hello` drops its `cipher_suites` bounds check | `client_hello`: **CRASH: SIGBUS** at case 79 of 2,000,000 — the guard page |
-| `tls_record_decrypt` accepts inner type 24 | `inner_plaintext`: *accepted an inner plaintext with no valid content type* — and **none** of the six Step 6 campaigns notice |
-
-## test_fuzz_http — HTTP/1 request parsing (Step 8)
-
-Seven campaigns, in `test_fuzz_http.c`. Steps 6 and 7 fuzzed what a peer says
-before the server knows who they are; this fuzzes what they say afterwards —
-which on the plaintext port is the first thing they say. The design and the
-evidence are in [docs/security/fuzzing.md](../../docs/security/fuzzing.md)
-§§15–22.
-
-| campaign | target |
-|---|---|
-| `header_end` | `parse_header_end` against a reference: the index it returns must be the first `\r\n\r\n` and nothing else — it is where every downstream length comes from |
-| `header_field` | `get_header_field` against a reference — the line walk, the `:` rule, the whitespace skip, and the three shapes it answers with 400 |
-| `front_door` | the whole entry path as `child.S` drives it: `parse_header_end` → `verify_http_version` → `parse_request`, checked against the output contract and the three `.bss` buffers behind it |
-| `path` | `parse_path` against a reference, over request lines whose length is *not* tied to a terminator, ending flush against a guard page |
-| `filters` | `decode_url` → `check_path_safety` → `check_path_traversal`, each against a reference, plus the property the three of them exist to provide |
-| `range` | `parse_range`, the one place an HTTP/1 header value becomes an integer |
-| `keepalive` | `http1_should_keep_alive` as an iff against the rule in `src/http1/README.md` — where the smuggling argument in `threat-model.md` §7.3 lives |
-
-```bash
-./tests/security/_obj/test_fuzz_http                    # ~1.6M cases, ~5 s
-SARM_FUZZ_MULT=100 ./tests/security/_obj/test_fuzz_http # 160M cases
-SARM_FUZZ_STATS=1  ./tests/security/_obj/test_fuzz_http # outcome histogram
-```
-
-### Two things this target needs that the TLS ones did not
-
-**A `reply_status` of its own.** `parse_path`, `get_header_field` and
-`verify_http_version` answer some malformed inputs by tail-branching to
-`reply_status` rather than returning — in the server that call writes an error
-page and ends the connection. The suite links its own `reply_status`, the only
-one in the binary: it records the status and `longjmp`s back to the case loop,
-which turns "which inputs escape, with which code" into an outcome the
-campaign checks and the histogram counts. Every campaign requires its escapes
-to still happen; a change that stopped 414 from being reachable would fail as
-`VACUOUS`.
-
-**Poison canaries instead of a guard page on the output side.**
-`filename_buf`, `query_buf` and `authority_buf` are the server's own globals,
-so the harness cannot place them against `PROT_NONE`. Each is allocated larger
-than the bound its writer enforces; the slack is filled with 0xA5 before every
-case and checked after. The input side still gets the guard page.
-
-### Verified by sabotage
-
-| break | result |
-|---|---|
-| `parse_header_end` drops the `\r` restart in its scan | `header_end`: *index is not the first \r\n\r\n*, case 50 |
-| `get_header_field` accepts a name not followed by `:` | `header_field`: *returned where the reference replied 400*; `front_door`: *an authority with no Host header* |
-| `parse_path`'s copy-loop bound put back to `b.hi` (the defect this step found) | `path`: **CRASH: SIGBUS** at case 38 — the guard page |
-| `parse_path`'s filename bound widened past `filename_buf` | `front_door`: *wrote past filename_buf…*; `path`: *returned where the reference escaped* |
-| `decode_url` allows a decoded NUL byte | `filters`: *accepted an escape the reference rejected*, case 5 |
-| `check_path_traversal` looks for three dots instead of two | `filters`: *verdict differs from the reference*; `front_door`: *accepted a path with a ".." segment* |
-| `parse_range`'s 19-digit cap raised to 31 | `range`: *wrote past range_buf* — the canary |
-| `http1_should_keep_alive` stops looking for `Transfer-Encoding` | `keepalive`: *verdict differs from the rule in src/http1/README.md*, case 14 |
-| `parse_request`'s authority bound widened past `authority_buf` | `front_door`: *wrote past … authority_buf …* |
-
-Nine breaks, nine catches, across five mechanisms: a differential verdict, a
-guard-page fault, a `.bss` canary, a contract invariant on the parsed request,
-and the escape status. The authority row is the reason the generator emits Host
-values around 256 bytes — it was **missed** on the first attempt, because
-nothing in the corpus was long enough to reach the truncation branch at all.
-
-## test_frag_* — the same bytes, delivered in pieces (Step 9)
-
-Steps 6–8 handed each parser a buffer that was already full, which is the one
-thing the network never does. Step 9 puts the bytes back on a socket and asks
-whether the answer depends on how they arrived:
-
-> Send every valid corpus item split at arbitrary byte positions.
-> **Test:** behaviour matches unsplit input.
-
-The bug it hunts is the assumption `docs/SECURITY.md` §7 names outright —
-`one recv() == one protocol message`. Nothing in TCP promises that, and a
-reader that believes it passes every test whose client writes a whole record
-with one `write()`.
-
-So a case is not one input and one invariant. It is *the same input twice* —
-written whole, then written in pieces the case chose — with the two outcomes
-compared byte for byte: every return value, every error code, and the whole
-destination buffer including the poison the reader was supposed to leave
-alone. Equality is the invariant, so the corpus does not have to be valid for
-the check to mean anything: a record rejected for a bad version must be
-rejected the same way, at the same point, however it arrived.
-
-The design and the evidence are in
-[docs/security/fuzzing.md](../../docs/security/fuzzing.md) §§23–28.
-
-| suite | campaign | target |
-|---|---|---|
-| `test_frag_socket` | `record` | `tls_read_record` — the first read of the connection, whose five header bytes decide how far the second read goes, split anywhere including inside them |
-| | `prefilled` | `tls_read_record_prefilled` — the same, for the ClientHello whose first bytes `main.S` already read. Two shortfall subtractions, both on wire-derived values |
-| | `plain` | `transport_read` in `TRANSPORT_PLAIN` — the staging buffer h2c reads frame headers and payloads out of |
-| | `tls` | `transport_read` in `TRANSPORT_TLS` — several records in one write, one record across several writes, a record header split down the middle |
-| `test_frag_http` | `header_end` | `parse_header_end` over *every prefix* of the same request, each placed flush against a guard page |
-| | `probe` | `h2_probe` over every prefix — a connection whose first read is three bytes is still an HTTP/2 connection |
-| | `pipeline` | the read loop transcribed from `child.S` — accumulate, scan, serve, shift the leftover bytes to the front with the server's own `memcpy`, repeat — over a pipelined stream chopped up arbitrarily |
-
-```bash
-./tests/security/_obj/test_frag_socket                     # 7200 cases, ~1 s
-./tests/security/_obj/test_frag_http                       # 100000 cases, ~0.5 s
-SARM_FUZZ_MULT=40 ./tests/security/_obj/test_frag_socket   # the soak
-SARM_FUZZ_STATS=1 ./tests/security/_obj/test_frag_socket   # outcome histogram
-```
-
-### Making a split a real split
-
-Writing the pieces back to back proves nothing: they land in the socket buffer
-together and the reader's first `read()` returns the lot — the unsplit case
-wearing a disguise. A split is only real if the reader consumes piece *k*
-before piece *k+1* arrives, and that needs two threads plus a way to know when.
-
-`frag_common.h` asks the kernel. `FIONREAD` on the read end is the number of
-bytes still waiting there, so the feeder thread spins until it reads 0 — the
-reader has taken everything sent so far and is, or is about to be, blocked in
-`read()` — and only then writes the next piece:
+The property here is a relation between two runs, not an assertion about one:
 
 ```
-write "\x17\x03"   ──▶  [ 2 bytes ]  ──▶ reader takes them, blocks
-       wait FIONREAD == 0
-write "\x03\x00\x40..."             ──▶ reader wakes with the rest
+        bytes ──┬── written whole ────▶ reader ──▶ result A
+                └── written in pieces ─▶ reader ──▶ result B     A == B
 ```
 
-Every wait is bounded and the feeder writes anyway when the bound expires, so a
-reader that stops reading stalls nothing; the campaign's own deadline is what
-catches a genuine hang.
+So the corpus does not have to be *valid* — a record with a nonsense content
+type must be rejected the same way from both deliveries — and "behaviour" means
+every return value, every error code **and the whole destination buffer**,
+poison included.
 
-The feeder then says EOF — `shutdown(wfd, SHUT_WR)` — and does *not* exit on
-saying it. On this kernel that message is sometimes not delivered to a thread
-already asleep inside `read()`: the state is set, the wakeup is lost, and the
-campaign hangs until its deadline. So the feeder stays alive until the reader
-says it has stopped reading, prodding the reading thread with `SIGURG` every
-2 ms until it does; the `EINTR` retry every read path in the tree already does
-re-enters `read()` and collects the EOF that was there all along. The prods are
-counted in the `EOF wakeups lost (prodded)` bucket. See
-[fuzzing.md §24](../../docs/security/fuzzing.md).
+**A split is only real if the reader consumes piece k before piece k+1
+arrives.** The naive `for (piece) write(fd, …)` lands them in the socket buffer
+together, tests nothing, and *passes*. `frag_common.h` asks the kernel:
+`FIONREAD` on the read end is what is still waiting, so the feeder spins until
+it reads 0 — the reader has taken everything sent and is, or is about to be,
+blocked in `read()` — and only then writes the next piece. Whether each
+boundary was real is counted (`real split boundaries`, a required bucket), and
+runs at 95–99%.
 
-Whether each boundary was real is **counted**, not
-assumed — `real split boundaries` is a required bucket, so a suite that
-degraded into writing everything at once would fail as `VACUOUS` rather than
-pass while testing nothing. In practice 95–99% of boundaries are confirmed.
+The delivery ends with `shutdown(wfd, SHUT_WR)`, and **on this kernel that
+sometimes fails to wake a peer already asleep inside `read()`** — the state is
+set, the wakeup is lost. So the feeder outlives its last write and prods the
+reading thread with `SIGURG` (handler does nothing, installed without
+`SA_RESTART`) every 2 ms until the reader confirms it has stopped. The prod
+interrupts the sleep, the `EINTR` retry every read path already does re-enters
+`read()`, and `read()` re-reads the state and returns the EOF that was there
+all along. It is counted as `EOF wakeups lost (prodded)` so it stays visible. A
+genuine hang in the code under test is still a hang. `docs/SECURITY.md` §14 D4.
 
-The *schedule* is deterministic — same seed, same case, same cuts at the same
-offsets, so every reproducer still works. The *interleaving* is not, and that
-asymmetry is the right way round: the invariant under test is that the
-interleaving does not matter.
+The plan generator offers four shapes — one cut, byte at a time, up to 32
+random cuts, and *on the seams* (a named offset, or one byte either side of it).
+The **schedule** is deterministic, so `SARM_FUZZ_CASE` replays the same cuts;
+the **interleaving** is not, and that asymmetry is the right way round, because
+the invariant under test is precisely that the interleaving does not matter.
 
-### The two runs may legitimately differ — in what?
+`test_frag_http` has no socket. `child.S` re-runs `h2_probe` and
+`parse_header_end` over everything accumulated after every read, so the
+question there is not "does the reader wait" but *whether the answer depends on
+where the reads landed* — a sweep over every prefix, not a socket. The guard
+page is what makes the sweep worth doing at every length: a scan that peeks one
+byte past its length argument works perfectly on a full buffer and reads
+whatever is there exactly when a read boundary lands on it.
 
-Not in anything the caller can see. How much sits in `plain_read_stage_buf`
-when the last span is served *does* depend on the split, and is nobody's
-business but `transport_read`'s, so the comparison is of return values and
-delivered bytes, and the state each run starts from (`transport_mode`, both
-stage cursors, the client sequence number) is reset to identical values rather
-than compared at the end.
+---
 
-### Why the HTTP/1 side has no socket
+## corpus/ and findings/ (Step 14)
 
-`src/sarm/child.S` reads with `read()` straight into `buf` and, after every
-read, re-runs `h2_probe` and `parse_header_end` over everything accumulated so
-far. The loop is what waits, so the fragmentation question for that path is not
-"does the reader wait for the rest" but *whether the answer depends on where
-the reads happened to land* — a property of the two scans over every prefix of
-the same bytes. That is what `test_frag_http` sweeps, with each prefix placed
-flush against `PROT_NONE`: a scan that peeks one byte past its length argument
-works fine on a full buffer, where the next byte is simply the one that has not
-arrived yet, and reads whatever is there exactly when a read boundary lands on
-it. Here it faults.
-
-The `pipeline` campaign is the other half of that path, and the item Step 8
-carried forward: a keep-alive connection does not start each request at the
-front of `buf`. `http1_keepalive_continue` shifts whatever followed the last
-header down to offset 0 with `memcpy` and re-enters the scan, so the bytes a
-request is parsed from have been moved — possibly several times — before the
-parser sees them. The campaign records each served request as its length *and*
-a hash of its bytes, because a length-only record calls a corrupted shift
-identical.
-
-That shift is also the reason the campaign calls `memcpy` through inline asm.
-In Mach-O a `.global memcpy` in assembly is the symbol `memcpy`, while C's
-`memcpy()` is libc's `_memcpy`: linking `util_memcpy.o` and writing `memcpy(…)`
-in the harness would have tested libc. The first sabotage run said so — a
-`memcpy` with a broken byte tail was **not** caught until the call went to the
-right routine.
-
-`h2_read_exact` is not listed above because it is one instruction — `b
-transport_read` — so the `plain` and `tls` campaigns are its coverage.
-
-### Verified by sabotage
-
-| break | result |
-|---|---|
-| `raw_read_exact` treats one `read()` as the whole request (the `one recv() == one message` bug itself) | `record`, `prefilled`, `tls`: *fragmented delivery differs from whole*, case 0 of each |
-| `transport_read`'s PLAIN drain loop serves one staged chunk and calls the span done | `plain`: *differs from whole at byte 128*, case 0 |
-| `parse_header_end` scans one byte past the length it was given | `header_end`: **CRASH: SIGBUS** at case 0 — the guard page |
-| `h2_probe` demands all 24 preface bytes at once | `probe`: *a prefix of the same bytes gives a different answer*, case 2 |
-| `memcpy`'s byte tail drops its last byte | `pipeline`: *a pipelined stream splits into different requests depending on where the reads landed*, case 0 |
-
-Five breaks, five catches, at case 0 or 2 of the campaign that owns them —
-which is the shape to expect here rather than the deep case numbers of Steps
-6–8. A fragmentation defect is not a rare input; it fails on the *first* input
-that arrives in more than one piece.
-
-The rows also say which campaign owns which code, and the passes are as
-informative as the failures. Sabotaging `raw_read_exact` leaves `plain`
-green, because `transport_read`'s PLAIN path does its own `read()` and its own
-staging loop; sabotaging that loop leaves `tls` green, because the TLS branch
-carries a second copy of it. Two copies of the same drain loop is a fact about
-`src/transport/transport_read.S` worth knowing, and this is the suite that
-demonstrates both are correct.
-
-## corpus/ and findings/ — inputs that failed once (Step 14)
-
-Step 14 is continuous fuzzing, and its rule is that a crash is never fixed
-without preserving the input that caused it. The preserving is automatic: every
-campaign hands its generated bytes to `fuzz_input()`, which copies them into the
-shared report page, and a campaign that crashes, hangs or breaks an invariant
-writes those bytes out before it reports.
+A crash is never fixed without preserving the input that caused it, and the
+preserving is automatic: every campaign hands its bytes to `fuzz_input()`,
+which copies them into the shared report page, and a campaign that crashes,
+hangs or breaks an invariant writes them out before it reports.
 
 ```
 findings/<suite>-<campaign>-seed…-case…-crash.bin     what failed, unshrunk
@@ -679,22 +311,28 @@ corpus/<suite>/<campaign>/<name>.bin                  the regression test
 
 `findings/` is scratch and is not committed. `corpus/` is, and every file in it
 is replayed — from bytes, through the same invariants a generated case runs —
-before its campaign starts, on every run of that suite and so on every
-`make test`:
+before its campaign starts, on every `make test`:
 
 ```
   ✓ flight — corpus: 5 preserved inputs replayed clean
   ✗ path — corpus REGRESSION: parse-path-overread-copy-loop.bin: SIGBUS …
 ```
 
-The inputs that are there, and which fix each one guards, are in
-[corpus/MANIFEST.md](corpus/MANIFEST.md). Bytes rather than seeds, because a
-seed-based reproducer means whatever its generator means today: replaying the
-seed and case of the five-byte crash of Step 7 now produces a 238-byte flight.
+Bytes rather than seeds, because a seed-based reproducer means whatever its
+generator means *today*: replaying the seed and case of the five-byte
+pre-auth crash now produces a 238-byte flight. What each entry guards is in
+[corpus/MANIFEST.md](corpus/MANIFEST.md) — a corpus file nobody can explain is
+a file nobody dares delete.
+
+**A campaign gets a corpus by having a replay entry**, which means splitting its
+case function into "generate the bytes" and "run the bytes and check
+everything". Thirteen of 24 campaigns have one. The seven fragmentation
+campaigns cannot, because a case there is bytes *plus cuts*, and the harness
+exits **2** for those rather than answering wrongly — before that exit code
+existed, the minimiser shrank a real hang to zero bytes and called it minimal.
 
 Soak runs are `scripts/fuzz_soak.py` (`make fuzz-soak`), which runs the seeded
-suites on random seeds while `make test` keeps its fixed one. Write-up:
-[docs/security/continuous-fuzzing.md](../../docs/security/continuous-fuzzing.md).
+suites on random seeds while `make test` keeps its fixed one.
 
 ### Environment
 
@@ -704,9 +342,11 @@ suites on random seeds while `make test` keeps its fixed one. Write-up:
 | `SARM_FUZZ_MULT` | scale every campaign's case count |
 | `SARM_FUZZ_CASE` | replay one case in-process, no fork |
 | `SARM_FUZZ_TARGET` | run only this campaign |
-| `SARM_FUZZ_REPLAY` | run a file's bytes through the campaign's replay entry; exit code is the oracle the minimiser bisects against |
+| `SARM_FUZZ_REPLAY` | run a file's bytes through the campaign's replay entry; the exit code is the oracle the minimiser bisects against |
 | `SARM_FUZZ_DUMP` | with `SARM_FUZZ_CASE`, write that case's input bytes to a file |
 | `SARM_FUZZ_CORPUS` | where the preserved corpus lives (default `corpus`) |
 | `SARM_FUZZ_FINDINGS` | where a failing campaign writes its input (default `findings`) |
 | `SARM_FUZZ_SECS` | per-campaign no-progress deadline |
 | `SARM_FUZZ_STATS` | print the outcome histogram |
+| `SARM_DIFF_ITERS` | scale the differential vector count |
+| `SARM_DIFF_SEED` | replay a differential run |

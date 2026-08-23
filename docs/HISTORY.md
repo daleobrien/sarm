@@ -6,8 +6,8 @@ Kept because the *method* is more reusable than any individual patch: every
 entry below says what was measured, what was proved, and what the result
 implied about where to look next.
 
-Full rationale for any entry is in its commit message (`git log`). The task
-briefs that drove the optimisation work are in `prompts/`.
+Full rationale for any entry is in its commit message (`git log`), which is
+where the archived task briefs that drove the optimisation work now live too.
 
 ---
 
@@ -61,7 +61,7 @@ transfer to Cortex/Neoverse.
 | | *Base: HTTP/1.1 static server, fork-per-connection, filesystem-backed* | |
 | | Embed all assets at build time; drop CGI/PUT/DELETE/dir-listing | no filesystem access at request time |
 | | HTTP/2 + HPACK (RFC 9113 / 7541) | |
-| | TLS 1.3 (`PLAN.MD` phases 1–22): SHA-256, HMAC, HKDF, AES-GCM, X25519, P-256, record layer, handshake | h2 over TLS in a real browser |
+| | TLS 1.3: SHA-256, HMAC, HKDF, AES-GCM, X25519, P-256, record layer, handshake | h2 over TLS in a real browser |
 | `1d6fce5`…`e784d45` | Three HTTP/2 bugs found via a browser simulator | Safari page loads complete |
 | `4e270df` | First real workload profile | 81% of a connection is the TLS handshake |
 | `8e55db9` | Made the static analysis tooling sound | three defects that produced confidently wrong answers |
@@ -80,6 +80,16 @@ transfer to Cortex/Neoverse.
 | `de62b76` | Multicore + mixed-workload stress harness (`Plan.md` Phase 4) | found the `SA_NOCLDWAIT` zombie bug |
 | `7ed82bb` | One `write` syscall per HTTP/2 response | **h2c +50%, h2+TLS +62%**; fixed a `writev` hang |
 | `716ada9` | Three correctness bugs: the flow-control wait loop's buffer, and two ABI violations | a desynchronised h2c connection, and two clobbers the checker had flagged |
+| `668de71` | Re-benchmark after those fixes | no throughput cost, as intended |
+| `9ef5e46` | `itoa` takes its buffer from the caller | removes a process-global write from the response path |
+| `3033ea9`…`c858e2a` | **The security programme, Steps 1–14** (`docs/SECURITY.md`) | inventory → guard pages → boundary → differential → length audit → fuzzing → fragmentation → leak probe → syscall allowlist → resource limits → hardening → continuous fuzzing |
+| `f660ab5` | ↳ Step 7 found a **five-byte pre-authentication crash** | `16 03 01 00 00` made SHA-256 walk the address space |
+| `61e73c4` | ↳ Step 5 found three HPACK length defects | a 4 GB Huffman string read ~2.5 KB of adjacent memory into a header value |
+| `e7c90de` | ↳ Step 8 found three reads past a length argument in `parse_path` | off-by-one in each of three bounds the comments described correctly |
+| `12cf790` | ↳ Step 12 added `CONN_DEADLINE` | a drip-fed connection held a process indefinitely; now one `setitimer` per connection |
+| `f7daedc` | ↳ Step 13: 154–160 KB moved out of writable memory, zero load-time relocations | which is also what made a PIE Linux build possible |
+| `d719b95`…`ea6fbb0` | Linux build and a Docker image to test it | `ET_EXEC` at a fixed address with an implicitly executable stack → randomised `ET_DYN` |
+| `5333da5` | A lost EOF wakeup in the fragmentation harness | 61 lost wakeups in 320,000 deliveries; not a server defect |
 
 ---
 
@@ -151,7 +161,7 @@ checker that found them was only trusted because
 `scripts/abi.py`'s "a load only restores from the stack" rule was itself
 written to catch exactly the `aes128_encrypt` case.
 
-### Making the analysis tooling sound (`prompts/01`)
+### Making the analysis tooling sound
 
 The static gate every optimiser candidate passes through was unsound three ways,
 each producing confidently wrong answers:
@@ -182,7 +192,7 @@ hide a bug. Also: hand-written doc headers are a free, strong correctness oracle
 
 ## Performance work
 
-### GHASH — 4 blocks per reduction (`prompts/03`)
+### GHASH — 4 blocks per reduction
 
 The Horner loop processed one block at a time, leaving PMULL/PMULL2 pipelining
 mostly unused. Precompute `H²..H⁴` once per call (only when ≥4 blocks remain, so
@@ -194,7 +204,7 @@ Python before any assembly was written.
 
 **GHASH ~3x (7.13 → 2.3–2.4 ns/block); `aes_gcm_encrypt` ~1.9x (2113 → ~1075 ns).**
 
-### P-256 reduction — Barrett → Solinas folding (`prompts/04`)
+### P-256 reduction — Barrett → Solinas folding
 
 `p256_reduce` was ~73% of `p256_fe_mul`. P-256's modulus is a Solinas prime, so
 a multiplication-free fold applies. The fold table was derived from first
@@ -210,7 +220,7 @@ linear-extrema search, not sampled.
 handshake CPU roughly halved.** No multiplies, no calls, no stack (was 192 bytes),
 still branchless.
 
-### P-256 `k*G` — fixed-base comb (`prompts/04`, gated on a re-profile)
+### P-256 `k*G` — fixed-base comb (gated on a re-profile)
 
 The generic ladder walks 256 bits doing a double *and* a general addition per
 bit — and the general addition internally computes a whole doubling plus twelve
@@ -359,6 +369,65 @@ regression had non-overlapping ranges and was still wrong. Full write-up in
 
 ---
 
+## Security work
+
+A fourteen-step programme — inventory, guard pages, boundary tests,
+differential crypto testing, a length-arithmetic audit, four fuzzing steps,
+a secret-leak probe, a syscall allowlist, resource limits, binary hardening,
+and continuous fuzzing. All of it is in `docs/SECURITY.md`; only what it
+*taught* is here.
+
+**Four defects, three of them found by a fuzzer on its first run.** A five-byte
+pre-authentication crash (`16 03 01 00 00` made `tls_transcript_add` hash 2^64-4
+bytes); three HPACK length defects, the worst of which decoded ~2.5 KB of
+adjacent memory into a header value; three off-by-one reads past a length
+argument in `parse_path`; and three internal preconditions that were enforced by
+documentation only, whose violation is a smashed frame or a hang rather than a
+wrong answer.
+
+**Learning: the shape of every one of them was the same.** Each was safe only
+because of a property of its *caller* — a NUL the caller writes, a length the
+caller happens to bound, a constant every current call site passes. None was
+reachable. All four became reachable the moment a second caller existed, and
+`parse_h2_path` already existed next door.
+
+**Nothing can instrument hand-written `.S`**, so the substitute is the MMU:
+every generated input ends flush against a `PROT_NONE` page and every output
+buffer is sized to exactly what the contract permits. "Did not read past the
+input" is then answered by hardware, on the instruction that got it wrong.
+
+**Learning: a check that has only ever passed is not evidence.** Every suite
+carries a table of production lines broken on purpose and the failure each
+produced — about forty of them. Two *missed*, and the misses were worth more
+than the catches: a bound widened past `authority_buf` was invisible because
+nothing in the corpus generated a `Host:` near 256 bytes, and a `memcpy`
+sabotage did nothing at all because in Mach-O a `.global memcpy` in assembly and
+C's `memcpy()` are different symbols — the harness had been testing libc's
+memcpy the whole time. *A sabotage that does not fail is a claim about the
+harness, not about the server.*
+
+**Learning: an empty test bucket is a finding or a gap, and you have to know
+which.** Every campaign declares the outcomes it must reach and fails when one
+goes to zero. The first run printed `VACUOUS: 20000 cases and not one reached
+"past the buffer"` — which turned out to be a true fact about the record layer
+nobody had written down, not a broken generator.
+
+**Learning: a reproducer that regenerates its input is not a preserved input.**
+The five-byte crash was recorded faithfully as a seed and a case index. Replayed
+after later work on that generator, the same recipe now cooks a well-formed
+238-byte flight. The harness keeps the *bytes* instead; a delta-debugging
+minimiser took that 238-byte capture back to the same five bytes in 49 replays,
+and they live in `tests/security/corpus/` where they are replayed on every run.
+
+**Hardening changed what a bug is worth, not whether one exists.** 154–160 KB of
+constants — the private scalar included — moved out of writable memory, and four
+tables converted from pointers to link-time offsets. That last part was not
+cosmetic: an address in static data is a *relocation*, the Linux build has no
+dynamic linker to apply one, and so position independence and absolute addresses
+in static data were mutually exclusive. Removing all 177 of them is what turned
+a fixed-address `ET_EXEC` with an implicitly executable stack into a randomised
+`ET_DYN` with `PT_GNU_STACK RW`.
+
 ---
 
 ## Changes deliberately *not* made
@@ -366,7 +435,7 @@ regression had non-overlapping ranges and was still wrong. Full write-up in
 These are as valuable as the wins — each one is an afternoon nobody needs to
 spend again.
 
-- **Register-pressure optimisation** (`prompts/05`, `prompts/07`). Peak live GPRs:
+- **Register-pressure optimisation** (`45373b3`, `d8dcd89`). Peak live GPRs:
   median 6, max 25, of 31. Nothing spills. Of 589 save/restore instructions ~160
   looked recoverable, but every candidate the fresh profile surfaced either has no
   frame to remove, runs too few times per connection to matter, or has its one
@@ -374,13 +443,13 @@ spend again.
   removing it saves zero static instructions without restructuring the function.
   Analytical ceiling for the strongest candidate: **~0.36% of a connection**, an
   order of magnitude below the noise floor.
-- **Response-path precomputation** (`prompts/08`). Lookup, header construction,
+- **Response-path precomputation** (`d8dcd89`). Lookup, header construction,
   HPACK and frame construction are one function (`h2_write_headers.S`) and
   together measure **≤0.15 µs, ≤0.02% of a connection**. The one real signal, the
   body `memcpy`, is ~1.70 µs for a 76,739 B transfer — 0.26% of a page-load
   connection *at 100% elimination*, below the stated noise floors. No `.S` file
   changed.
-- **A hash table for the embedded lookup** (`prompts/10`). Three half-built pieces
+- **A hash table for the embedded lookup** (`eb70d7a`). Three half-built pieces
   of an FNV-1a lookup existed and none was wired up. The cleaned-up linear scan
   measures **~7 ns/call** against the real 6-entry table (worst case ~9 ns), which
   is ~0.001% of a connection and matches the profiler's independent finding of
@@ -475,7 +544,12 @@ were measured; do not read the HTTP/1.1 row as current. See
 - Constant-time claims throughout are **structural arguments about emitted
   instructions** — no dudect-style timing test exists in this repo and there is no
   PMU access on this machine.
-- `PLAN.MD` phases 23–26 (TLS negative tests, HTTP/2-over-TLS negative tests,
-  security hardening, remaining optimisation) are not complete.
 - `tests/h2_browser_sim.py` is not wired into `make test`; it needs start/stop
   logic for a server on its own port.
+- **Nothing measures coverage** of the hand-written assembly, which is what
+  bounds every claim the security suite makes and what blocks mutating the
+  regression corpus. `docs/SECURITY.md` §14 D1.
+- The remaining security work — handshake message framing, the duplicated GCM
+  length block, four length-audit items, an untested fail-closed entropy path,
+  and state fuzzing of the h2 flow-control re-entrancy — is `docs/SECURITY.md`
+  §14, in priority order.

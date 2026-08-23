@@ -1,10 +1,10 @@
-// Unit tests for tls_transcript_add (PLAN.MD Phase 9 — wire header
-// synthesis and message ordering)
+// Unit tests for tls_transcript_add (wire header synthesis and
+// message ordering)
 #include "common.h"
 
 // ── tests ────────────────────────────────────────────────────────────
 
-// PLAN.MD §9 acceptance: known TLS transcript sequences produce the
+// Acceptance: known TLS transcript sequences produce the
 // expected SHA-256 values. All vectors computed independently (python3
 // hashlib) over the wire bytes (header || body).
 static void test_transcript_known_vectors(void) {

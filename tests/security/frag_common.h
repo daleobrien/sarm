@@ -196,8 +196,8 @@ static void frag_plan_gen(struct fuzz_rng *r, size_t n,
 // so it needs both threads runnable at the same instant on a machine
 // with something else to do: rare on an idle box, routine under
 // `make test` beside a soak, where it hung the campaign until the
-// 300-second no-progress deadline (docs/security/fuzzing.md §24, and
-// docs/security/continuous-fuzzing.md §6 for how it was first seen).
+// 300-second no-progress deadline (tests/security/README.md, and
+// tests/security/README.md for how it was first seen).
 //
 // Measured on a 90-line model of this feeder: 61 lost wakeups in
 // 320,000 deliveries across 16 concurrent processes, and in every one

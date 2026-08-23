@@ -32,7 +32,7 @@ rodata
 // the dispatcher's caller with the same x0/x1/x2 arguments.
 //
 // Entries are offsets from the table's own address, not addresses
-// (docs/SECURITY.md Step 13, docs/security/hardening.md §3). An
+// (docs/SECURITY.md §13.1). An
 // absolute address in static data is a relocation, and a relocation in
 // a position-independent executable has to be applied by something at
 // load time; the Linux build has no dynamic linker to apply it. A

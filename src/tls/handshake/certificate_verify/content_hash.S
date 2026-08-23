@@ -1,7 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────
 // File: src/tls/handshake/certificate_verify/content_hash.S — the
-//   CertificateVerify signature input (RFC 8446 §4.4.3, PLAN.MD
-//   Phase 17)
+//   CertificateVerify signature input (RFC 8446 §4.4.3)
 // ─────────────────────────────────────────────────────────────────────
 
 #include "../../../defs.S"

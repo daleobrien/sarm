@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: aes_gcm_decrypt
 //
-// Description: AES-128-GCM open (PLAN.MD 7.4/7.5). The authentication
+// Description: AES-128-GCM open. The authentication
 //   tag is recomputed over the received AAD and ciphertext and compared
 //   with the supplied tag in constant time; only on a match is the
 //   plaintext decrypted into the output buffer. On failure the plaintext

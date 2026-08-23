@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Data: SHA-256 streaming context
 //
-// Description: A ready-made streaming SHA-256 context (PLAN.MD §3.2).
+// Description: A ready-made streaming SHA-256 context.
 //   Like tls_state, it is a fixed-layout global: sha256_init seeds the
 //   state with the FIPS 180-4 IV and zeroes the counters, sha256_update
 //   absorbs bytes (compressing whole blocks through `sha256`), and

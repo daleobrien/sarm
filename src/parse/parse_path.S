@@ -15,7 +15,7 @@
 //   x1 -> length of header. Every read this routine makes is inside
 //         [x0, x0 + x1); a header shorter than 17 bytes is answered 400
 //         without being read past, since the " /" search window is 17
-//         bytes wide (docs/security/fuzzing.md §16).
+//         bytes wide (docs/SECURITY.md §11).
 //   x2 -> boolean: 1 = default to "index.html", 0 = no default filename
 //
 // Output/Returns:

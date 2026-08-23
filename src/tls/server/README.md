@@ -1,4 +1,4 @@
-# TLS Server Handshake Driver (PLAN.MD Phase 20)
+# TLS Server Handshake Driver
 
 ## Overview
 
@@ -38,7 +38,7 @@ only exists at the *sequencing* level:
 3. **The reset in (2) only covers the handshake→application
    transition within one connection — it says nothing about the
    *next* connection.** This server handles one connection at a time
-   (PLAN.MD's connection-per-loop model, no fork), and
+   (one connection per process), and
    `tls_client_seq`/`tls_server_seq` are single global counters. A
    second connection's handshake-epoch messages (its own
    EncryptedExtensions..Finished) must start those counters at 0 too,
@@ -48,7 +48,7 @@ only exists at the *sequencing* level:
    on every connection after that.
 
 A fourth arrived later, from a different direction. Step 7 of
-`docs/SECURITY.md` fuzzed this function's state transitions and found
+`docs/SECURITY.md` §10 fuzzed this function's state transitions and found
 that **a handshake record whose fragment is shorter than the 4-byte
 handshake header crashed the server before authentication**: step 2
 below hands `tls_transcript_add` and `tls_parse_client_hello` a length
@@ -57,7 +57,7 @@ five-byte record `16 03 01 00 00` made SHA-256 hash 2^64-4 bytes and
 walk off the end of memory. `tls_record_parse` is right to accept the
 record — a zero-length fragment is legal at the record layer — so the
 check belongs here, and is now the `cmp x2, #TLS_HS_HEADER_LEN` right
-after the content-type test. See `docs/security/fuzzing.md` §9.
+after the content-type test. See `docs/SECURITY.md` §11.
 
 The first three were found and fixed by driving the real handshake against
 independent TLS implementations (Python's `ssl` module and `curl`
@@ -99,9 +99,8 @@ handshake:
 
 No error alert is ever sent back to the client on failure — this
 function reports carry-set to its caller, which closes the connection.
-Structured alerts are PLAN.MD Phase 23's job (TLS negative tests);
-Phase 20's job is the happy path that gets the existing HTTP/2 stack
-running over real TLS bytes.
+Structured alerts are not implemented; this driver serves the happy
+path that gets the existing HTTP/2 stack running over real TLS bytes.
 
 ### Scratch buffers
 
@@ -118,8 +117,8 @@ of it doesn't need to link `src/data.S` too.
 connection's first byte: `0x16` (a TLS handshake record, RFC 8446
 §5.1) runs `tls_server_handshake` and, on success, hands the connection
 straight to `h2_connection_loop` — the existing HTTP/2 implementation,
-completely unaware that TLS is involved, exactly matching PLAN.MD's
-Phase 20 diagram (`TCP socket → TLS transport → existing H2`). Any
+completely unaware that TLS is involved, matching the
+intended shape (`TCP socket → TLS transport → existing H2`). Any
 other first byte falls through to the existing plaintext `child` path,
 unchanged. There is no HTTP/1-over-TLS support (see
 `src/transport/transport_read.S`'s and `transport_write.S`'s doc
@@ -128,8 +127,8 @@ only H2 behind the TLS transport.
 
 `src/transport/transport_read.S` and `transport_write.S`'s
 `TRANSPORT_TLS` branches (previously `ENOTSUP` stubs) now call
-`tls_app_data_read`/`tls_app_data_write` (`src/tls/record/`,
-PLAN.MD Phase 19), chunking/staging so every `transport_read`/
+`tls_app_data_read`/`tls_app_data_write` (`src/tls/record/`),
+chunking/staging so every `transport_read`/
 `transport_write` call still gets exactly the byte count it asked for
 regardless of TLS record boundaries. Both branches are built on
 `raw_read_exact`/`raw_write_all` (`src/transport/raw_read.S`,
@@ -166,4 +165,3 @@ sequences are each independently unit-tested already (Phases 10,
   Finished, §5.2: outer record type is always `application_data` for
   ciphertext, §5.3: sequence number resets, Appendix D.4: middlebox
   compatibility mode)
-- PLAN.MD — Phase 20: Connect TLS to existing HTTP/2

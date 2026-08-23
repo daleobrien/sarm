@@ -16,7 +16,7 @@
 //
 //     client_hello   the parser. tls_parse_client_hello is the largest
 //                    piece of pre-authentication attack surface in the
-//                    tree (threat-model.md §3.1) — nested length
+//                    tree (docs/SECURITY.md §3.1) — nested length
 //                    prefixes five deep, walked before a single byte
 //                    has been authenticated. Structured generation
 //                    plus mutation, ending flush against a guard page.

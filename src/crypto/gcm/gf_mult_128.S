@@ -6,7 +6,7 @@
 // Function Name: gf_mult_128
 //
 // Description: Z = X·Y in GF(2^128) (NIST SP 800-38D §6.3) — the basis
-//   for GHASH (PLAN.MD 7.1). X, Y and Z are 16-byte blocks in GCM wire
+//   for GHASH. X, Y and Z are 16-byte blocks in GCM wire
 //   order. Internally the operands are mapped into the natural polynomial
 //   domain (per-byte bit reversal), multiplied with PMULL, reduced with
 //   the 0x87 constant, and mapped back.

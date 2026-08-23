@@ -165,7 +165,7 @@ static int buf_eq(const uint8_t *a, const uint8_t *b, size_t n) {
 
 // ── tests ────────────────────────────────────────────────────────────
 
-// PLAN.MD §5.2: OKM lengths across the T-block boundary (32/33, 64/65,
+// OKM lengths across the T-block boundary (32/33, 64/65,
 // 96/97), the RFC 5869 L = 255*32 counter maximum, and info lengths
 // from empty to large, all vs the C reference.
 static void test_hkdf_expand_sweep(void) {

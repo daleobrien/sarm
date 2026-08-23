@@ -273,7 +273,7 @@ static int case_25519_mul(struct diff_rng *rng, char *detail, size_t len)
     if (!fe25519_is(&want, out, "x25519_fe_sqr", detail, len)) return 0;
 
     // sqr_times starts at 1: count == 0 does not terminate, see
-    // docs/security/threat-model.md §9.
+    // docs/SECURITY.md §9.
     const uint64_t count = 1 + diff_rng_below(rng, 16);
     x25519_fe_sqr_times(out, a, count);
     bn_copy(&want, &ba);

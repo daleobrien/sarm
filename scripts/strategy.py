@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workload-driven optimization strategies (prompts/06-optimizer-strategy-
+"""Workload-driven optimization strategies (docs/SCRIPTS.md-optimizer-strategy-
 framework.md).
 
 ``optimizer.py`` already runs the whole pipeline OPTIMISATION.MD describes --
@@ -8,7 +8,7 @@ thing hardwired into it was the *accept* decision: a bare comparison of the
 candidate's own runtime against the running best. That means the loop could
 only ever answer "is this function faster in isolation", never "does this
 change the thing that actually costs the server time" -- the exact trap
-prompts/03 and 04 avoided by hand (GHASH is judged by AES-GCM throughput,
+docs/SCRIPTS.md and 04 avoided by hand (GHASH is judged by AES-GCM throughput,
 P-256 reduction by handshake cost, not by a microbenchmark in a vacuum).
 
 A ``Strategy`` is what makes that judgement call structural instead of
@@ -78,7 +78,7 @@ class Metrics:
 @dataclass
 class AcceptDecision:
     """One accept/reject verdict: which rule fired, which metric decided it
-    (prompts/06's acceptance criterion, "every accept/reject decision logs
+    (docs/SCRIPTS.md's acceptance criterion, "every accept/reject decision logs
     which rule fired and which metric decided it")."""
 
     keep: bool
@@ -114,7 +114,7 @@ def instruction_counts(
     """(instruction_count, load_count, store_count) from objdump text.
 
     Generalizes optimizer.py's own ``_instruction_count`` (an exact,
-    zero-noise static count -- prompts/02-benchmark-substrate.md) with a
+    zero-noise static count -- docs/SCRIPTS.md) with a
     load/store breakdown, on the same normalized text.
     """
     if not disassembly:
@@ -252,7 +252,7 @@ def workload_share(
     breakdown this check cares about).
 
     This is what "connected to measured workload" means structurally
-    (prompts/06, "Important rule"): a strategy target must point at an
+    (docs/SCRIPTS.md, "Important rule"): a strategy target must point at an
     actual row a profiling run produced, not just a static ranking.
     """
     for doc in docs:
@@ -446,7 +446,7 @@ class Strategy:
 class SpeedStrategy(Strategy):
     """Today's behaviour, unchanged: judge a candidate purely on its own
     runtime. The regression test for the whole refactor
-    (prompts/06-optimizer-strategy-framework.md's acceptance criteria)."""
+    (docs/SCRIPTS.md's acceptance criteria)."""
 
     name = "speed"
 
@@ -454,7 +454,7 @@ class SpeedStrategy(Strategy):
 class RegisterPressureStrategy(Strategy):
     """Register-focused optimization -- but still judged by runtime.
 
-    prompts/06's "Important rule" is explicit: a register optimization must
+    docs/SCRIPTS.md's "Important rule" is explicit: a register optimization must
     never be justified, or scored, by register count/save-restore count/
     instruction count in isolation. Those numbers are collected (via
     ``required_metrics``) purely as evidence for the LLM/reviewer; the
@@ -523,7 +523,7 @@ class CryptoStrategy(Strategy):
 
 class GHASHStrategy(CryptoStrategy):
     """.Lgcm_ghash_run (src/crypto/gcm/data.S), judged by AES-GCM
-    throughput -- prompts/03-aes-gcm-throughput.md did this by hand; this
+    throughput -- docs/SCRIPTS.md did this by hand; this
     is the harness doing it structurally. There is no bytes/sec metric
     anywhere in this repo's benchmark protocol (every bench_*.c reports
     runtime_ns), so "AES-GCM throughput" is operationalized as
@@ -589,10 +589,10 @@ class GenericMetricStrategy(Strategy):
     already justified against a profiling run.
 
     Backs the ``instruction``, ``load-store`` and ``combined`` CLI
-    categories from prompts/06 -- these have no per-function keyword table
+    categories from docs/SCRIPTS.md -- these have no per-function keyword table
     the way GHASH/P-256 do, so the workload connection is supplied
     explicitly (``--workload-keyword``/``--min-workload-share``) rather
-    than guessed; omitting it is refused outright (prompts/06's "failing
+    than guessed; omitting it is refused outright (docs/SCRIPTS.md's "failing
     closed: no benchmark and no explicit, strategy-declared justification
     means no acceptance").
     """
@@ -702,7 +702,7 @@ def build_strategy(
                 "--strategy register-pressure requires --workload-keyword "
                 "and --min-workload-share -- a register optimization must "
                 "be connected to a docs/PROFILE*.MD row, never justified by "
-                "register count alone (prompts/06's \"Important rule\")"
+                "register count alone (docs/SCRIPTS.md's \"Important rule\")"
             )
         return RegisterPressureStrategy(
             function=function, workdir=workdir,
@@ -716,7 +716,7 @@ def build_strategy(
                 f"--strategy {name} requires --workload-keyword and "
                 "--min-workload-share -- a static-metric target must be "
                 "connected to a docs/PROFILE*.MD row, never justified by "
-                "its static shape alone (prompts/06's \"Important rule\")"
+                "its static shape alone (docs/SCRIPTS.md's \"Important rule\")"
             )
         return GenericMetricStrategy(
             mode=name, function=function, workdir=workdir,

@@ -106,7 +106,7 @@ no_core_rlimit:
 // once per forked connection child at Lmain_child. it_interval is zero,
 // so this is a one-shot: SIGALRM once, CONN_DEADLINE seconds after
 // accept(), and its default disposition terminates the child. See
-// config.S and docs/security/resource-limits.md (Step 12).
+// config.S and docs/SECURITY.md §8 (Step 12).
 //
 // struct itimerval is two struct timevals. tv_usec is 32-bit on macOS
 // and 64-bit on Linux, but a timeval is 16 bytes on both, so .quad pairs
@@ -493,7 +493,7 @@ Largv_next:
     b Largv_loop
 
 skip_argv:
-    // ── no core dumps, ever (docs/SECURITY.md §10, Step 13) ───────────
+    // ── no core dumps, ever (docs/SECURITY.md §13.2) ───────────
     // A core of this process is a complete memory disclosure: the
     // private scalar, the handshake secrets and every traffic key are
     // all in it. tests/test_leak.sh checked that no core appeared, but
@@ -859,7 +859,7 @@ Lmain_serve:
     SCWISVC
     SCERR
 
-    // ── protocol detection (PLAN.MD Phase 20; real read, not a peek,
+    // ── protocol detection (real read, not a peek,
     //    since Plan.md Phase 2 Step 9) ────────────────────────────────
     // A TLS 1.3 ClientHello always starts with a handshake record (type
     // 0x16, RFC 8446 §5.1), which no plaintext HTTP/1 or HTTP/2 request
@@ -910,7 +910,7 @@ Lmain_tls_detected:
 
 Lmain_tls_close:
     // transport_mode is a single global (one connection in flight at a
-    // time, PLAN.MD's connection-per-loop model) — reset it before the
+    // time per process) — reset it before the
     // next accept, which may well be a plaintext connection.
     adr_l x9, transport_mode
     str xzr, [x9]               // TRANSPORT_PLAIN == 0

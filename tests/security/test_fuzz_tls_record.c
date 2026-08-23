@@ -7,7 +7,7 @@
 // Suite: tests/security/test_fuzz_tls_record.c
 //
 // Description: The TLS record layer is the first code in the tree that
-//   an unauthenticated peer reaches (threat-model.md §3.1). Five bytes
+//   an unauthenticated peer reaches (docs/SECURITY.md §3.1). Five bytes
 //   the attacker chose select a content type, a version and a length,
 //   and that length decides how far every routine downstream walks.
 //   Steps 3-5 asked whether the record layer is right at the edges of
@@ -868,7 +868,7 @@ static void read_pre_case(struct fuzz_rng *r, struct fuzz_ctx *c)
 // Case counts are per-campaign and scale with SARM_FUZZ_MULT. The
 // defaults are chosen so that `make test-security` stays a few seconds
 // and still runs over a million record parses; the campaigns recorded
-// in docs/security/fuzzing.md were run with SARM_FUZZ_MULT set high
+// in docs/SECURITY.md §10 were run with SARM_FUZZ_MULT set high
 // enough to reach tens of millions.
 #define PARSE_BUCKETS \
     { "!accepted", "!short", "!bad type", "!bad version", "!bad length", \

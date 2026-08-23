@@ -100,7 +100,7 @@ static const uint8_t KAT_RK[176] = {
 // Validate both the test's own key expansion and the asm expansion
 // against the round keys FIPS-197 publishes for the C.1 key — otherwise
 // the cross-checks below would be comparing two equally-broken key
-// schedules (PLAN.MD 6.1 acceptance: NIST vectors).
+// schedules (acceptance: NIST vectors).
 static void test_aes128_key_schedule(void) {
     TEST_SUITE("aes128 key expansion (FIPS-197 A.1 / C.1)");
     uint8_t rk[176];

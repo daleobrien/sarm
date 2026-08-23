@@ -156,7 +156,7 @@ static const uint8_t TC4_TAG[] = {
 // ── tests ───────────────────────────────────────────────────────────────
 
 // Run the NIST vectors through the full asm seal pipeline
-// (PLAN.MD 7.3 acceptance).
+// (acceptance).
 static void test_gcm_encrypt_kat(void) {
     TEST_SUITE("aes_gcm_encrypt NIST SP 800-38D vectors");
     uint8_t ct[128], tag[16];

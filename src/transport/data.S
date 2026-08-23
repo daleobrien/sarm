@@ -4,7 +4,7 @@
 // Data: transport module state
 //
 // Description: Shared state for the transport seam (transport_read /
-//   transport_write, PLAN.MD §1.2-§1.3).
+//   transport_write).
 //
 // Exported Symbols:
 //   transport_mode — the active transport (TRANSPORT_PLAIN /
@@ -13,8 +13,8 @@
 //     with; a future runtime switch can write this before any connection
 //     I/O. transport_read/transport_write dispatch on it.
 //   tls_read_raw_buf/tls_read_stage_buf/tls_read_stage_len/
-//     tls_read_stage_pos — TRANSPORT_TLS read-side staging (PLAN.MD
-//     Phase 20): transport_read must hand back exactly the number of
+//     tls_read_stage_pos — TRANSPORT_TLS read-side staging:
+//     transport_read must hand back exactly the number of
 //     plaintext bytes its caller asked for, but a decrypted
 //     application_data record rarely lines up with that exactly, so
 //     one record's worth of plaintext is decrypted into

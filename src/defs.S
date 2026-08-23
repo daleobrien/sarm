@@ -52,7 +52,7 @@
 // `rodata` opens the platform's read-only section. `.data` still means
 // what it always did, and the files that use it are the ones that
 // really do hold mutable state — connection state, staging buffers,
-// scratch. docs/security/hardening.md has the split, and
+// scratch. docs/SECURITY.md §13 has the split, and
 // tests/test_hardening.sh checks the resulting binary rather than the
 // sources.
 //
@@ -89,7 +89,7 @@
     b.\cond \l
 .endm
 
-// ── Checked length arithmetic (docs/SECURITY.md §3, Step 5) ──────────
+// ── Checked length arithmetic (docs/SECURITY.md §3.5) ───────────────
 // Bounds in this tree are enforced by comparing against a pre-computed
 // end pointer, which is sound only while the sum that produced the
 // compared value cannot wrap. These three macros make that reasoning
@@ -97,11 +97,11 @@
 // the arithmetic, so a reviewer does not have to re-derive the width of
 // every input to know the result is trustworthy.
 //
-// docs/security/length-audit.md classifies every wire-derived length
+// docs/SECURITY.md §3.5 classifies every wire-derived length
 // site in the tree and says which of them use these.
 
 // ckadd — d = a + b, branching away on unsigned wraparound.
-//   The `adds`/`b.cs` idiom from docs/SECURITY.md §3 "Integer overflow
+//   The `adds`/`b.cs` idiom from docs/SECURITY.md §3.5 "Integer overflow
 //   in length arithmetic". Use for any sum of two attacker-influenced
 //   lengths, whatever their nominal widths.
 .macro ckadd d, a, b, l
@@ -378,7 +378,7 @@
 .equ ITIMER_REAL,    0
 
 // RLIMIT_CORE — the core-dump size limit main.S sets to zero at startup
-// (docs/SECURITY.md §10 and Step 13). A core of this process is a
+// (docs/SECURITY.md §13.2). A core of this process is a
 // complete memory disclosure, private scalar and traffic keys included.
 // The number is 4 on both platforms; only the syscall differs, because
 // arm64 Linux has no setrlimit — the generic syscall table carries
@@ -883,9 +883,9 @@
 .equ H2_HPACK_MAX_FIELDS, 32
 
 // ── TLS 1.3 (RFC 8446) ─────────────────────────────────────────────
-// Wire-format constants for the planned TLS 1.3 server (PLAN.MD
-// Phase 2+). All values are platform-independent; the TLS connection
-// state struct (tls_state) is defined further down.
+// Wire-format constants for the TLS 1.3 server. All values are
+// platform-independent; the TLS connection state struct (tls_state) is
+// defined further down.
 
 // protocol versions (§4.1.2, §5.1). The ClientHello legacy_version and
 // the record-layer legacy_record_version are both 0x0303 even for TLS
@@ -1037,7 +1037,7 @@
 .equ TLS_HS_FAILED,      8  // handshake aborted — connection must close
 
 // ── TLS connection state (tls_state) ───────────────────────────────
-// Per-connection TLS 1.3 state (PLAN.MD §2.2). Fixed layout; storage
+// Per-connection TLS 1.3 state. Fixed layout; storage
 // lives in src/tls/data.S as `tls_state`, with one tls_* label per
 // field so the unit test (test_tls.c) can verify each offset against
 // real storage. Offsets are platform-independent. Only the state the
@@ -1100,7 +1100,7 @@
 .equ TLS_STATE_SIZE,        544
 
 // ── SHA-256 streaming context (sha256_ctx) ──────────────────────────
-// Streaming SHA-256 (PLAN.MD §3.2): sha256_init / sha256_update /
+// Streaming SHA-256: sha256_init / sha256_update /
 // sha256_final operate on this fixed layout. Storage lives in
 // src/crypto/data.S as `sha256_ctx`, with one sha256_ctx_* label per
 // field so the unit test (test_sha256.c) can verify each offset against

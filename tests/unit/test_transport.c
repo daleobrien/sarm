@@ -1,4 +1,4 @@
-// Unit tests for src/transport/ — the transport mode seam (PLAN.MD §1.3)
+// Unit tests for src/transport/ — the transport mode seam
 //
 // transport_read(fd=x0, buf=x1, len=x2) and transport_write(fd=x0,
 // buf=x1, len=x2) dispatch on the runtime `transport_mode` global
@@ -8,7 +8,7 @@
 //   TRANSPORT_PLAIN (0) — the raw socket path (existing behaviour)
 //   TRANSPORT_TLS   (1) — seals/opens application_data records via
 //                         tls_app_data_write/tls_app_data_read
-//                         (PLAN.MD Phase 20), chunking/staging so
+//, chunking/staging so
 //                         every call still gets exactly the bytes it
 //                         asked for regardless of record boundaries
 //
@@ -61,8 +61,8 @@ extern int close(int fd);
 // Call the asm transport function and capture the carry flag (1 = error,
 // 0 = ok), mirroring how the h2 frame loop uses it: `bl transport_read;
 // b.cs fail`. Clobbers cover the union of both dispatch paths' own
-// documented clobber lists (transport_read.S/transport_write.S,
-// PLAN.MD Phase 20): the PLAIN path only touches a handful of
+// documented clobber lists (transport_read.S/transport_write.S): the
+// PLAIN path only touches a handful of
 // caller-saved registers, but the TLS path calls into the record layer
 // and AEAD, which reach much further (x0-x12, x19-x24, the vector
 // registers used by AES-GCM/SHA-256).
@@ -113,7 +113,7 @@ static inline long transport_write_c(long fd, const void *buf,
 
 // ── tests: default mode ─────────────────────────────────────────────
 // transport_mode starts as config.S's TRANSPORT_MODE, which is
-// TRANSPORT_PLAIN — plain TCP → HTTP/2 stays the default (PLAN.MD §1.3).
+// TRANSPORT_PLAIN — plain TCP → HTTP/2 stays the default.
 
 static void test_default_mode(void) {
 	TEST_SUITE("transport default mode");
@@ -163,8 +163,8 @@ static void test_plain_roundtrip(void) {
 // ── tests: TLS mode round-trips through real application-data records ──
 // transport_write's TLS branch always seals under the *server*
 // application key (tls_server_app_key/iv), and transport_read's always
-// opens under the *client* one (tls_app_data_write/read, PLAN.MD Phase
-// 19, have fixed directions) — so this same-process test points both
+// opens under the *client* one (tls_app_data_write/read have fixed
+// directions) — so this same-process test points both
 // at the same key/IV, which makes what transport_write seals exactly
 // what transport_read can open. That's a legitimate shortcut here: the
 // AEAD itself is already proven correct per-direction by

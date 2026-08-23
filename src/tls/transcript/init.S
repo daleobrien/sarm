@@ -8,7 +8,7 @@
 // Function Name: tls_transcript_init
 //
 // Description: Start a fresh handshake transcript: seed tls_transcript_ctx
-//   with the FIPS 180-4 IV and zero the counters (PLAN.MD §9.1). Call
+//   with the FIPS 180-4 IV and zero the counters. Call
 //   before the first handshake message of a connection; any previous
 //   transcript is discarded.
 //

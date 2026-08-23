@@ -210,7 +210,7 @@ static void test_aes128_kat(void) {
 }
 
 // The SP 800-38A vector through the full asm pipeline: asm key
-// expansion feeding asm encryption (PLAN.MD 6.2 acceptance: NIST AES
+// expansion feeding asm encryption (acceptance: NIST AES
 // vectors).
 static void test_aes128_sp800_38a(void) {
     TEST_SUITE("aes128 NIST SP 800-38A F.1.1 (ECB-AES128)");

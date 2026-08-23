@@ -2,7 +2,7 @@
 """Count how often each function runs, per connection and per request.
 
 Frequency, not size, is what makes a function hot
-(prompts/00-workload-profile.md, step 3) — and nothing in the repo
+(docs/SCRIPTS.md, step 3) — and nothing in the repo
 records it, because the shipped binary deliberately logs nothing.
 
 Rather than add counters to the assembly, this drives sarm under `lldb`

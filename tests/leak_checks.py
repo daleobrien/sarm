@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Secret-leak regression checks against a running sarm
-(docs/SECURITY.md §11, Step 10).
+(docs/SECURITY.md §4.5, Step 10).
 
 Step 10 asks for one thing: fire a large amount of malformed and fuzzed
 traffic at the server, capture every byte it sends back, and assert that

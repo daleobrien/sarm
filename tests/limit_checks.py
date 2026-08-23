@@ -78,7 +78,7 @@ HOST = "127.0.0.1"
 # ── the ceilings ────────────────────────────────────────────────────
 # Every one of these is a claim about the server, not a tuning knob.
 # Raising one to make a test pass is a change to the threat model, and
-# docs/security/resource-limits.md is where it has to be argued.
+# docs/SECURITY.md §8 is where it has to be argued.
 
 # A child's resident image. Measured at ~176 KB on macOS/arm64 for every
 # protocol and every input; the ceiling is generous because RSS includes

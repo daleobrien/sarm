@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end workload profiler for sarm (prompts/00-workload-profile.md).
+"""End-to-end workload profiler for sarm (docs/SCRIPTS.md).
 
 Drives the server the way a browser does — TLS 1.3 handshake, HTTP/2
 preface and SETTINGS, GETs for the embedded assets, close — and reports

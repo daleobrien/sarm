@@ -1,5 +1,5 @@
 // Benchmark trampoline exposing the real GHASH implementation,
-// .Lgcm_ghash_run, to a C driver (prompts/02-benchmark-substrate.md).
+// .Lgcm_ghash_run, to a C driver (docs/SCRIPTS.md).
 //
 // .Lgcm_ghash_run (src/crypto/gcm/data.S:131) is a file-local ".L" label:
 // invisible to the linker outside the translation unit that assembles it.
@@ -33,7 +33,7 @@
 // per-call data pointer/length) -- not an independent correctness oracle
 // for .Lgcm_ghash_run itself, which tests/unit/test_gcm/ already covers.
 // A mismatch here means this file's calling convention is wrong, which
-// prompts/02-benchmark-substrate.md calls out explicitly: "faking a
+// docs/SCRIPTS.md calls out explicitly: "faking a
 // different calling convention would measure a different, unrepresentative
 // code path."
 //

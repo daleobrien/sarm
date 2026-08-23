@@ -23,7 +23,7 @@ from `src/crypto/sha256.S`; no libc or external crypto required.
 ## Module Structure
 
 - **`init.S`** — `tls_transcript_init`
-  - Start a fresh transcript (PLAN.MD §9.1): seed `tls_transcript_ctx`
+  - Start a fresh transcript: seed `tls_transcript_ctx`
     with the FIPS 180-4 IV and zero the counters
   - A tail call into `sha256_init` — no stack frame
   - Call once per handshake before the ClientHello arrives
@@ -36,8 +36,7 @@ from `src/crypto/sha256.S`; no libc or external crypto required.
     order — the transcript is order-sensitive by construction
 
 - **`hash.S`** — `tls_transcript_hash`
-  - Snapshot the current transcript hash into a 32-byte buffer (PLAN.MD
-    §9.2) *without* disturbing the running transcript
+  - Snapshot the current transcript hash into a 32-byte buffer *without* disturbing the running transcript
   - Finalises a scratch copy of `tls_transcript_ctx`, so the TLS 1.3 key
     schedule can take the hash at several points — e.g.
     `hash(ClientHello)` for the handshake secret, then
