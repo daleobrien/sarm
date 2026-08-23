@@ -10,6 +10,16 @@
 //   big-endian) — exactly the construction the GCM tag is built on
 //. H = E_K(0^128) must be supplied by the caller.
 //
+//   **Test-only.** Nothing in the server calls this: aes_gcm_encrypt and
+//   aes_gcm_decrypt reach the same core (.Lgcm_ghash_run and
+//   .Lgcm_ghash_lengths) directly, so the tag never goes through this
+//   entry point on a live connection. It exists because it is the one
+//   place the GHASH construction is exposed on its own, which is what
+//   lets tests/security/test_diff_gcm.c sweep it against an independent
+//   reference without an AES layer in the way. That is worth an export
+//   and ~100 bytes of unreachable text in the shipped binary
+//   (docs/SECURITY.md §9, observation 10).
+//
 // Input/Arguments:
 //   x0 — pointer to the 16-byte hash subkey H
 //   x1 — pointer to the additional authenticated data (ignored when
@@ -28,7 +38,8 @@
 //   v16-v21, NZCV
 //
 // Stack Usage:
-//   112 bytes - 88 for x19-x28 + x30, 16 for the bit-length block
+//   96 bytes - 88 for x19-x28 + x30, 8 slack (the bit-length block
+//   has its own frame, in .Lgcm_ghash_lengths)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -36,7 +47,7 @@
 .global ghash
 
 ghash:
-    sub     sp, sp, #112
+    sub     sp, sp, #96
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -70,15 +81,9 @@ ghash:
     bl      .Lgcm_ghash_run
 
     // [len(A)]_64 || [len(C)]_64, bit lengths, big-endian
-    lsl     x9, x21, #3
-    rev     x9, x9
-    str     x9, [sp, #88]
-    lsl     x9, x23, #3
-    rev     x9, x9
-    str     x9, [sp, #96]
-    add     x27, sp, #88
-    mov     x28, #16
-    bl      .Lgcm_ghash_run
+    mov     x9, x21
+    mov     x10, x23
+    bl      .Lgcm_ghash_lengths
 
     gcm_rbit v20.16b, v0.16b           // back to GCM wire order
     st1     {v0.16b}, [x24]
@@ -89,5 +94,5 @@ ghash:
     ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp]
-    add     sp, sp, #112
+    add     sp, sp, #96
     ret

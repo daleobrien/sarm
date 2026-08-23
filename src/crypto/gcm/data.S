@@ -340,6 +340,60 @@
     add     sp, sp, #32
     ret
 
+// ─────────────────────────────────────────────────────────────────────
+// Function Name: .Lgcm_ghash_lengths (private)
+//
+// Description: Folds GCM's final length block — [len(A)]_64 ||
+//   [len(C)]_64, the two lengths as big-endian *bit* counts (NIST SP
+//   800-38D §6.4) — into the GHASH accumulator v20, closing the hash
+//   over A || 0^pad || C || 0^pad || lengths.
+//
+//   This is the last thing every GCM tag computation does, and it used
+//   to be written out three times: in aes_gcm_encrypt, in
+//   aes_gcm_decrypt, and in ghash. All three are swept against an
+//   independent reference, so any one of them drifting alone would be
+//   caught — what the duplication cost was not detection but leverage:
+//   a fix, or a mistake, in one copy reached only that copy, and the
+//   three had already diverged in scratch offsets and register choice.
+//   There is now one length block, and one edit to it is felt by all
+//   three sweeps at once (docs/SECURITY.md §14 A2).
+//
+//   The 16-byte block lives in this function's own frame rather than
+//   the caller's. Nothing outside needs it — it is written, hashed and
+//   dead within these few instructions — so it should not be occupying
+//   a named slot in three separate stack layouts.
+//
+// Input/Arguments:
+//   x9  — AAD length in bytes
+//   x10 — ciphertext length in bytes
+//   plus the state .Lgcm_ghash_run reads: v16 nibble table, v17 the
+//   0x87 constant, v18 zero, v19 H', v20 the running accumulator
+//
+// Output/Returns:
+//   v20 - the accumulator, with the length block folded in
+//
+// Clobbered Registers:
+//   x9-x12, x27, x28, v0-v7, v22-v30 (x19-x26 are preserved)
+//
+// Stack Usage:
+//   32 bytes - 16 for the length block, 8 for x30, 8 slack
+// ─────────────────────────────────────────────────────────────────────
+.Lgcm_ghash_lengths:
+    sub     sp, sp, #32
+    str     x30, [sp, #16]
+    lsl     x9, x9, #3                 // bytes -> bits
+    rev     x9, x9                     // ... big-endian
+    str     x9, [sp]
+    lsl     x10, x10, #3
+    rev     x10, x10
+    str     x10, [sp, #8]
+    mov     x27, sp                    // the block is one full,
+    mov     x28, #16                   //   16-byte GHASH block
+    bl      .Lgcm_ghash_run
+    ldr     x30, [sp, #16]
+    add     sp, sp, #32
+    ret
+
 // ---- Nibble-reversal table: T[i] = bit-reversed 4-bit value i ----
 .align 4
 .Lgcm_rbit_table:

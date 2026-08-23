@@ -31,8 +31,9 @@
 //   keys there — this function's own live state stays in v16-v21)
 //
 // Stack Usage:
-//   352 bytes - 88 for x19-x28 + x30 (+1 slot), 176 round keys, and the
-//   16-byte H / counter / tag mask / keystream / length-block scratch
+//   336 bytes - 88 for x19-x28 + x30 (+1 slot), 176 round keys, and the
+//   16-byte H / counter / tag mask / keystream scratch (the length
+//   block has its own frame, in .Lgcm_ghash_lengths)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -40,7 +41,7 @@
 .global aes_gcm_encrypt
 
 aes_gcm_encrypt:
-    sub     sp, sp, #352
+    sub     sp, sp, #336
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -137,15 +138,9 @@ aes_gcm_encrypt:
     ldr     x27, [sp, #88]             // ciphertext (now fully written)
     mov     x28, x22
     bl      .Lgcm_ghash_run
-    lsl     x9, x20, #3                // [len(A)]_64 || [len(C)]_64
-    rev     x9, x9
-    str     x9, [sp, #336]
-    lsl     x9, x22, #3
-    rev     x9, x9
-    str     x9, [sp, #344]
-    add     x27, sp, #336
-    mov     x28, #16
-    bl      .Lgcm_ghash_run
+    mov     x9, x20                    // [len(A)]_64 || [len(C)]_64
+    mov     x10, x22
+    bl      .Lgcm_ghash_lengths
 
     gcm_rbit v20.16b, v0.16b           // Y' back to GCM wire order
     add     x9, sp, #304
@@ -159,5 +154,5 @@ aes_gcm_encrypt:
     ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp]
-    add     sp, sp, #352
+    add     sp, sp, #336
     ret

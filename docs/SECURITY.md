@@ -451,7 +451,7 @@ source comments; gaps are deliberate.
 | 7 | No concurrent-connection cap, no handshake-duration cap | **half closed** (Step 12); the connection cap is a recorded decision, §14 C1 |
 | 8 | The h2 flow-control re-entrancy path deserves targeted *state* fuzzing | **open** — §14 A5 |
 | 9 | `hkdf_expand`, `hkdf_expand_label` and `x25519_fe_sqr_times` had preconditions enforced by documentation only | **fixed** (Step 5, §11) |
-| 10 | The GCM length block is assembled in three places; the exported `ghash` has no caller in the server | **open** — §14 A2 |
+| 10 | The GCM length block is assembled in three places; the exported `ghash` has no caller in the server | **fixed** (§14 A2) — one `.Lgcm_ghash_lengths` in `gcm/data.S`, called by all three. Sabotage: corrupting it now turns the `ghash`, `aes_gcm_encrypt` *and* `aes_gcm_decrypt` sweeps red; on the three-copy version the same edit to `ghash.S` left the other two green. `ghash` stays exported and stays caller-less **by decision** — it is the differential oracle for the shared core, and a routine no test can call on its own is a routine no sweep can isolate |
 | 11 | `tls_read_record` cannot return `TLS_RECORD_ERR_BOUNDS` | recorded — it reads exactly `total` bytes and hands parse a buffer of exactly `total`, so one of parse's five branches is dead from the socket's perspective. The real check is the `_LENGTH` size test. Stated so an empty bucket is not mistaken for coverage |
 | 12 | `tls_server_handshake` ignores the handshake message's own 3-octet length | **open** — §14 A1 |
 | 13 | A handshake record with a fragment shorter than 4 bytes crashed the server pre-auth | **fixed** (Step 7, §11) |
@@ -772,12 +772,17 @@ recorded refusal is an acceptable outcome; silence is not. *Test:* new
 `test_fuzz_tls_handshake.c` cases for a declared length longer and shorter than
 the fragment, and a Finished with a wrong declared length — currently accepted.
 
-**A2 — The GCM length block, written three times.** Observation 10. Factor
-`[len(A)]_64 || [len(C)]_64` into the shared code in `src/crypto/gcm/data.S`,
-under the `verified-asm-crypto` workflow, then decide whether the exported
-`ghash` gets a caller in the server or becomes test-only. *Proof:* corrupt the
-now-shared block and confirm **all three** differential sweeps go red; today
-only `ghash` does, which is how the duplication was found.
+**A2 — The GCM length block, written three times.** **Done** — see §9,
+observation 10. `.Lgcm_ghash_lengths` in `src/crypto/gcm/data.S` now owns the
+block and the 16 bytes it is assembled in, which came out of three separate
+stack layouts on the way (352 → 336 in both AES-GCM routines, 112 → 96 in
+`ghash`). The proof this item asked for holds: one corruption, three red
+sweeps. Two things worth keeping in mind for the next change here. `data.S` is
+`#include`d rather than linked, so each of its five users carries its own copy
+of the shared core — sharing here is of *source*, which is what the sabotage
+tests, not of a single linked instance. And nothing in either Makefile treats
+`data.S` as a dependency, so an edit to it rebuilds nothing: the first run of
+this sabotage passed against stale objects and looked like a disproof.
 
 **A3 — The four length-audit items.** §3.5's carried-forward list. Items 1, 2
 and 4 are small defensive checks giving each routine the bound it currently

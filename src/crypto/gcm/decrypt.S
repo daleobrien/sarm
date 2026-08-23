@@ -33,7 +33,7 @@
 //   keys there — this function's own live state stays in v16-v21)
 //
 // Stack Usage:
-//   352 bytes — same layout as aes_gcm_encrypt
+//   336 bytes — same layout as aes_gcm_encrypt
 // ─────────────────────────────────────────────────────────────────────
 
 .text
@@ -41,7 +41,7 @@
 .global aes_gcm_decrypt
 
 aes_gcm_decrypt:
-    sub     sp, sp, #352
+    sub     sp, sp, #336
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -101,15 +101,9 @@ aes_gcm_decrypt:
     mov     x27, x21                   // received ciphertext
     mov     x28, x22
     bl      .Lgcm_ghash_run
-    lsl     x9, x20, #3                // [len(A)]_64 || [len(C)]_64
-    rev     x9, x9
-    str     x9, [sp, #336]
-    lsl     x9, x22, #3
-    rev     x9, x9
-    str     x9, [sp, #344]
-    add     x27, sp, #336
-    mov     x28, #16
-    bl      .Lgcm_ghash_run
+    mov     x9, x20                    // [len(A)]_64 || [len(C)]_64
+    mov     x10, x22
+    bl      .Lgcm_ghash_lengths
 
     // ── constant-time tag comparison ──
     // computed = E_K(J0) ⊕ rbit(Y'); the sum over the 16 difference
@@ -171,5 +165,5 @@ aes_gcm_decrypt:
     ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp]
-    add     sp, sp, #352
+    add     sp, sp, #336
     ret

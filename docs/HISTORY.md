@@ -549,7 +549,7 @@ were measured; do not read the HTTP/1.1 row as current. See
 - **Nothing measures coverage** of the hand-written assembly, which is what
   bounds every claim the security suite makes and what blocks mutating the
   regression corpus. `docs/SECURITY.md` §14 D1.
-- The remaining security work — handshake message framing, the duplicated GCM
-  length block, four length-audit items, an untested fail-closed entropy path,
-  and state fuzzing of the h2 flow-control re-entrancy — is `docs/SECURITY.md`
-  §14, in priority order.
+- The remaining security work — handshake message framing, four length-audit
+  items, an untested fail-closed entropy path, and state fuzzing of the h2
+  flow-control re-entrancy — is `docs/SECURITY.md` §14, in priority order. The
+  duplicated GCM length block is closed (§14 A2).
