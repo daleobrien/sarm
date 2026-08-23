@@ -54,7 +54,9 @@ as_label_iv:
 //
 // Clobbered Registers:
 //   x0-x11, x13 (x19, x20, x30 saved/restored), v0-v7, v16, v18, v19,
-//   NZCV — everything hkdf_expand_label clobbers
+//   v21-v25, NZCV — everything hkdf_expand_label clobbers, plus
+//   v21-v25 from aes_gcm_ctx_init's key expansion and zero-block
+//   encrypt
 //
 // Stack Usage:
 //   96 bytes: x19, x20, x30 (32, padded), then two 32-byte scratch
@@ -126,6 +128,17 @@ tls_derive_application_secrets:
     add     x5, x19, #TLS_SERVER_APP_IV
     mov     x6, #12
     bl      hkdf_expand_label
+
+    // ── the application epoch's GCM key contexts ────────────────────
+    // Same reason as the handshake epoch, and the same place in the
+    // sequence: the moment both directions' keys are final, and before
+    // any record is sealed or opened under them.
+    add     x0, x19, #TLS_CLIENT_APP_KEY
+    adr_l   x1, tls_client_gcm_ctx
+    bl      aes_gcm_ctx_init
+    add     x0, x19, #TLS_SERVER_APP_KEY
+    adr_l   x1, tls_server_gcm_ctx
+    bl      aes_gcm_ctx_init
 
     // ── key change: reset both record sequence numbers (§5.3) ───────
     str     xzr, [x19, #TLS_CLIENT_SEQ]

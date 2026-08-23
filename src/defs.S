@@ -938,6 +938,22 @@
 // (16-byte tag) and a single TLSInnerPlaintext.type byte the largest
 // record this server can produce or open is 2^14 + 1 + 16.
 .equ TLS_TAG_LEN,          16     // AES-128-GCM authentication tag (§5.3)
+
+// ── AES-128-GCM key context (gcm_ctx) ──────────────────────────────
+// Everything an AES-128-GCM seal/open needs that depends only on the
+// key, precomputed once when the key is installed instead of at the top
+// of every record. Both pieces are strictly key-derived: the FIPS-197
+// round-key schedule, and H = E_K(0^128) — GHASH's hash subkey — held
+// in the bit-reversed "natural" polynomial domain the GF(2^128) helpers
+// in src/crypto/gcm/data.S multiply in, so the per-record path loads it
+// straight into v19 with no gcm_rbit.
+//
+// A TLS connection keeps one context per direction and rebuilds them at
+// each epoch change (handshake keys, then application keys) — see
+// tls_client_gcm_ctx / tls_server_gcm_ctx in src/tls/data.S.
+.equ GCM_CTX_RK,   0    // 176 B — AES-128 round keys RK0..RK10
+.equ GCM_CTX_H,    176  // 16 B  — H' = rbit(E_K(0^128)), natural domain
+.equ GCM_CTX_SIZE, 192  // total; 16-aligned, so a stack copy needs no pad
 .equ TLS_INNER_TYPE_LEN,   1      // TLSInnerPlaintext.type (§5.2)
 .equ TLS_MAX_CIPHERTEXT,   16640  // 2^14 + 256 — the wire limit (§5.2)
 .equ TLS_MAX_AEAD,         16401  // 2^14 + 1 + 16 — AES-128-GCM record max

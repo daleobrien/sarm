@@ -17,6 +17,20 @@
 #include "test_harness.h"
 
 extern uint8_t tls_client_app_key[16] __asm__("tls_client_app_key");
+extern uint8_t tls_client_gcm_ctx[192] __asm__("tls_client_gcm_ctx");
+extern void aes_gcm_ctx_init(const void *key, void *ctx)
+    __asm__("aes_gcm_ctx_init");
+
+// tls_app_data_read opens records with tls_client_gcm_ctx — the round
+// keys and GHASH subkey for whatever is in tls_client_app_key — so a
+// test that installs a key by hand has to rebuild the context too,
+// exactly as tls_derive_application_secrets does at the real epoch
+// change. Setting the key alone would leave the previous key's
+// schedule in place and every record would fail its tag check.
+static void install_client_app_key(const uint8_t key[16]) {
+    memcpy(tls_client_app_key, key, 16);
+    aes_gcm_ctx_init(tls_client_app_key, tls_client_gcm_ctx);
+}
 extern uint8_t tls_client_app_iv[12] __asm__("tls_client_app_iv");
 extern uint64_t tls_client_seq __asm__("tls_client_seq");
 
@@ -67,7 +81,7 @@ static const uint8_t RFC_CLIENT_APP[72] = {
 
 static void test_read_rfc8448(void) {
     TEST_SUITE("tls_app_data_read — RFC 8448 §3 client application_data");
-    memcpy(tls_client_app_key, RFC_CAP_KEY, 16);
+    install_client_app_key(RFC_CAP_KEY);
     memcpy(tls_client_app_iv, RFC_CAP_IV, 12);
     tls_client_seq = 0;
 
@@ -104,7 +118,7 @@ static const struct rdvec RDS[6] = {
 static void test_read(void) {
     TEST_SUITE("tls_app_data_read — matches Python/cryptography reference");
     for (size_t i = 0; i < NRD; i++) {
-        memcpy(tls_client_app_key, RDS[i].key, 16);
+        install_client_app_key(RDS[i].key);
         memcpy(tls_client_app_iv, RDS[i].iv, 12);
         tls_client_seq = RDS[i].seq;
 
@@ -124,7 +138,7 @@ static void test_read(void) {
 
 static void test_mac_failure(void) {
     TEST_SUITE("tls_app_data_read — tampered tag rejected");
-    memcpy(tls_client_app_key, RDS[0].key, 16);
+    install_client_app_key(RDS[0].key);
     memcpy(tls_client_app_iv, RDS[0].iv, 12);
     tls_client_seq = RDS[0].seq;
 

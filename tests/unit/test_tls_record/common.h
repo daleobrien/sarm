@@ -42,11 +42,11 @@ extern uint64_t tls_record_write(uint64_t type, const void *frag,
 extern void tls_record_nonce(const void *iv, uint64_t seq, void *out)
     __asm__("tls_record_nonce");
 extern uint64_t tls_record_encrypt(uint64_t type, const void *pt,
-                                   uint64_t pt_len, const void *key,
+                                   uint64_t pt_len, const void *ctx,
                                    const void *iv, uint64_t seq, void *out)
     __asm__("tls_record_encrypt");
 extern uint64_t tls_record_decrypt(const void *rec, uint64_t rec_len,
-                                   const void *key, const void *iv,
+                                   const void *ctx, const void *iv,
                                    uint64_t seq, void *out)
     __asm__("tls_record_decrypt");
 extern uint64_t tls_record_next_client_seq(void)
@@ -67,6 +67,17 @@ extern void aes_gcm_encrypt(const void *key, const void *iv,
                             const void *pt, uint64_t pt_len,
                             void *ct, void *tag)
     __asm__("aes_gcm_encrypt");
+
+// tls_record_encrypt/decrypt take an AES-128-GCM key *context* — the
+// round-key schedule and GHASH subkey a connection builds once when the
+// key is installed (GCM_CTX_SIZE bytes; see GCM_CTX_* in src/defs.S).
+// The wrappers below keep taking a bare key and build the context on
+// the spot, so every vector here stays written in terms of the RFC's
+// published keys.
+#define GCM_CTX_SIZE 192
+
+extern void aes_gcm_ctx_init(const void *key, void *ctx)
+    __asm__("aes_gcm_ctx_init");
 
 // ── inline asm wrappers (carry flag capture, like test_atoi_n.c) ────
 
@@ -136,6 +147,8 @@ static inline uint64_t rec_encrypt(uint64_t type, const uint8_t *pt,
                                    const uint8_t *iv, uint64_t seq,
                                    uint8_t *out, uint64_t *carry) {
     uint64_t result, c;
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
     asm volatile(
         "cmp xzr, xzr\n"
         "mov x0, %2\n"
@@ -149,7 +162,7 @@ static inline uint64_t rec_encrypt(uint64_t type, const uint8_t *pt,
         "cset %1, cs\n"
         "mov %0, x0\n"
         : "=r"(result), "=r"(c)
-        : "r"(type), "r"(pt), "r"(pt_len), "r"(key), "r"(iv), "r"(seq),
+        : "r"(type), "r"(pt), "r"(pt_len), "r"(ctx), "r"(iv), "r"(seq),
           "r"(out)
         : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
           "x10", "x11", "x12", "x19", "x20", "x21", "x22", "x23", "x24",
@@ -167,6 +180,8 @@ static inline uint64_t rec_decrypt(const uint8_t *rec, uint64_t rec_len,
                                    uint64_t seq, uint8_t *out,
                                    uint64_t *inner_type, uint64_t *carry) {
     uint64_t result, c, t;
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
     asm volatile(
         "cmp xzr, xzr\n"
         "mov x0, %3\n"
@@ -180,7 +195,7 @@ static inline uint64_t rec_decrypt(const uint8_t *rec, uint64_t rec_len,
         "mov %0, x0\n"
         "mov %2, x1\n"
         : "=r"(result), "=r"(c), "=r"(t)
-        : "r"(rec), "r"(rec_len), "r"(key), "r"(iv), "r"(seq), "r"(out)
+        : "r"(rec), "r"(rec_len), "r"(ctx), "r"(iv), "r"(seq), "r"(out)
         : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
           "x10", "x11", "x12", "x19", "x20", "x21", "x22", "x23", "x24",
           "x30", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7",

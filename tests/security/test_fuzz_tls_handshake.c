@@ -186,13 +186,24 @@ static void sarm_verify_data(const uint8_t *fk, const uint8_t *hash,
                  "bl tls_finished_verify_data\n");
 }
 
+// tls_record_encrypt/decrypt take an AES-128-GCM key *context* (round
+// keys + GHASH subkey, built once per epoch by aes_gcm_ctx_init), not a
+// bare key. This harness drives the record layer as a client would, off
+// the server's own key fields, so it expands them here.
+#define GCM_CTX_SIZE 192
+
+extern void aes_gcm_ctx_init(const void *key, void *ctx)
+    __asm__("aes_gcm_ctx_init");
+
 struct dec_out { uint64_t len, inner, carry; };
 
 static struct dec_out sarm_decrypt(const uint8_t *rec, uint64_t rlen,
                                    const uint8_t *key, const uint8_t *iv,
                                    uint64_t seq, uint8_t *out)
 {
-    uint64_t a[10] = { (uint64_t)rec, rlen, (uint64_t)key, (uint64_t)iv,
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
+    uint64_t a[10] = { (uint64_t)rec, rlen, (uint64_t)ctx, (uint64_t)iv,
                        seq, (uint64_t)out, 0, 0, 0, 0 };
     SARM_CALL(a,
         "ldp x0, x1, [%0]\n ldp x2, x3, [%0, #16]\n ldp x4, x5, [%0, #32]\n"
@@ -209,7 +220,9 @@ static struct enc_out sarm_encrypt(uint64_t type, const uint8_t *pt,
                                    const uint8_t *iv, uint64_t seq,
                                    uint8_t *out)
 {
-    uint64_t a[10] = { type, (uint64_t)pt, ptlen, (uint64_t)key,
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
+    uint64_t a[10] = { type, (uint64_t)pt, ptlen, (uint64_t)ctx,
                        (uint64_t)iv, seq, (uint64_t)out, 0, 0, 0 };
     SARM_CALL(a,
         "ldp x0, x1, [%0]\n ldp x2, x3, [%0, #16]\n"

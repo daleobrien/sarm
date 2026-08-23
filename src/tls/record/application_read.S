@@ -61,7 +61,7 @@ tls_app_data_read:
 
     mov     x0, x20
     mov     x1, x21
-    add     x2, x19, #TLS_CLIENT_APP_KEY
+    adr_l   x2, tls_client_gcm_ctx      // the app epoch's read context
     add     x3, x19, #TLS_CLIENT_APP_IV
     mov     x4, x9
     mov     x5, x22

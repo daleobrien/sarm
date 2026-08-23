@@ -72,6 +72,9 @@ _bench_obj/gcm_encrypt.o: ../../src/crypto/gcm/encrypt.S | _bench_obj
 _bench_obj/gcm_decrypt.o: ../../src/crypto/gcm/decrypt.S | _bench_obj
 	$(AS) $(ASFLAGS) -c $< -o $@
 
+_bench_obj/gcm_ctx_init.o: ../../src/crypto/gcm/ctx_init.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
 _bench_obj/gcm_ghash.o: ../../src/crypto/gcm/ghash.S | _bench_obj
 	$(AS) $(ASFLAGS) -c $< -o $@
 
@@ -84,9 +87,10 @@ _bench_bin/bench_aes128_encrypt: bench_aes128_encrypt.c _bench_obj/aes128_key_ex
 	    _bench_obj/aes128_encrypt.o $(LDFLAGS) -o $@
 
 bench_aes_gcm_encrypt: _bench_bin/bench_aes_gcm_encrypt
-_bench_bin/bench_aes_gcm_encrypt: bench_aes_gcm_encrypt.c _bench_obj/gcm_encrypt.o _bench_obj/gcm_decrypt.o _bench_obj/aes128_key_expand.o _bench_obj/aes128_encrypt.o | _bench_bin
+_bench_bin/bench_aes_gcm_encrypt: bench_aes_gcm_encrypt.c _bench_obj/gcm_encrypt.o _bench_obj/gcm_decrypt.o _bench_obj/gcm_ctx_init.o _bench_obj/aes128_key_expand.o _bench_obj/aes128_encrypt.o | _bench_bin
 	$(CC) $(CFLAGS) bench_aes_gcm_encrypt.c _bench_obj/gcm_encrypt.o \
-	    _bench_obj/gcm_decrypt.o _bench_obj/aes128_key_expand.o \
+	    _bench_obj/gcm_decrypt.o _bench_obj/gcm_ctx_init.o \
+	    _bench_obj/aes128_key_expand.o \
 	    _bench_obj/aes128_encrypt.o $(LDFLAGS) -o $@
 
 bench_gcm_ghash_run: _bench_bin/bench_gcm_ghash_run

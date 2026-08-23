@@ -358,7 +358,7 @@ tls_server_handshake:
 
     adr_l   x0, tls_hs_record_buf
     mov     x1, x23
-    adr_l   x2, tls_client_hs_key
+    adr_l   x2, tls_client_gcm_ctx      // the handshake epoch's read context
     adr_l   x3, tls_client_hs_iv
     mov     x4, x9
     adr_l   x5, tls_hs_msg_buf
@@ -476,7 +476,7 @@ tls_server_handshake:
     mov     x0, #TLS_RECORD_HANDSHAKE
     adr_l   x1, tls_hs_msg_buf
     mov     x2, x20
-    adr_l   x3, tls_server_hs_key
+    adr_l   x3, tls_server_gcm_ctx      // the handshake epoch's write context
     adr_l   x4, tls_server_hs_iv
     mov     x5, x9
     adr_l   x6, tls_hs_record_buf

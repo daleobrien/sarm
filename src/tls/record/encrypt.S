@@ -26,7 +26,11 @@
 //   x0 — inner content type (20..23)
 //   x1 — pointer to the plaintext fragment (ignored when pt_len == 0)
 //   x2 — fragment length in bytes (0..TLS_MAX_PLAINTEXT)
-//   x3 — pointer to the 16-byte AES-128 write key
+//   x3 — pointer to the write direction's AES-128-GCM key context
+//        (GCM_CTX_SIZE bytes, built by aes_gcm_ctx_init when the write
+//        key was installed — tls_server_gcm_ctx for a real connection).
+//        Passed straight through to aes_gcm_encrypt_ctx; this layer
+//        never inspects it.
 //   x4 — pointer to the 12-byte write IV
 //   x5 — the 64-bit record sequence number
 //   x6 — pointer to the output buffer (>= 5 + pt_len + 17 bytes)
@@ -54,7 +58,7 @@ tls_record_encrypt:
     str     x30, [sp, #48]
     mov     x19, x0                 // inner content type
     mov     x20, x2                 // plaintext length
-    mov     x21, x3                 // key
+    mov     x21, x3                 // GCM key context
     mov     x22, x4                 // write IV
     mov     x23, x5                 // sequence number
     mov     x24, x6                 // output buffer
@@ -101,7 +105,7 @@ tls_record_encrypt:
     bl      tls_record_nonce
 
     // ── seal in place; aad = the 5-byte header just written ──
-    mov     x0, x21                 // key
+    mov     x0, x21                 // GCM key context
     add     x1, sp, #56             // nonce
     mov     x2, x24                 // aad = record header
     mov     x3, #TLS_RECORD_HEADER_LEN
@@ -109,7 +113,7 @@ tls_record_encrypt:
     add     x5, x20, #TLS_INNER_TYPE_LEN      // pt_len + 1
     mov     x6, x4                  // ct == pt (in place is safe)
     add     x7, x4, x5              // tag at out + 5 + pt_len + 1
-    bl      aes_gcm_encrypt
+    bl      aes_gcm_encrypt_ctx
 
     add     x0, x20, #(TLS_RECORD_HEADER_LEN + TLS_INNER_TYPE_LEN + TLS_TAG_LEN)
     cmn     xzr, xzr                // success — carry clear

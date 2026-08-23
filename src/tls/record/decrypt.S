@@ -30,7 +30,11 @@
 // Input/Arguments:
 //   x0 — pointer to the record buffer (header + ciphertext + tag)
 //   x1 — number of bytes available in the buffer
-//   x2 — pointer to the 16-byte AES-128 read key
+//   x2 — pointer to the read direction's AES-128-GCM key context
+//        (GCM_CTX_SIZE bytes, built by aes_gcm_ctx_init when the read
+//        key was installed — tls_client_gcm_ctx for a real connection).
+//        Passed straight through to aes_gcm_decrypt_ctx; this layer
+//        never inspects it.
 //   x3 — pointer to the 12-byte read IV
 //   x4 — the 64-bit record sequence number
 //   x5 — pointer to the plaintext output buffer (>= len - 16 bytes)
@@ -61,7 +65,7 @@ tls_record_decrypt:
     str     x30, [sp, #48]
     mov     x19, x0                 // record buffer (header + ct + tag)
     mov     x20, x5                 // plaintext output
-    mov     x21, x2                 // key
+    mov     x21, x2                 // GCM key context
     mov     x22, x3                 // read IV
     mov     x23, x4                 // sequence number
 
@@ -89,7 +93,7 @@ tls_record_decrypt:
     bl      tls_record_nonce
 
     // ── open; aad = the 5-byte header, tag is the last 16 bytes ──
-    mov     x0, x21                 // key
+    mov     x0, x21                 // GCM key context
     add     x1, sp, #56             // nonce
     mov     x2, x19                 // aad = record header
     mov     x3, #TLS_RECORD_HEADER_LEN
@@ -97,7 +101,7 @@ tls_record_decrypt:
     mov     x5, x24                 // ct_len
     add     x6, x4, x5              // tag
     mov     x7, x20                 // plaintext output
-    bl      aes_gcm_decrypt         // x0 = 1 verified, 0 bad tag
+    bl      aes_gcm_decrypt_ctx     // x0 = 1 verified, 0 bad tag
 
     cbz     x0, .Lrec_dec_mac
 

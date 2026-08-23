@@ -18,6 +18,9 @@
 //                        tls_transcript_hash_field because
 //                        tls_transcript_hash is the snapshot function
 //
+//   tls_client_gcm_ctx — the AES-128-GCM key context for each direction
+//   tls_server_gcm_ctx   (round keys + H), rebuilt at each key change
+//
 //   tls_alpn_h2        — the "h2" ALPN identifier (RFC 7301), 16-aligned
 //   tls_transcript_ctx — the running handshake-transcript SHA-256
 //                        context, SHA256_CTX layout
@@ -55,6 +58,8 @@
 .global tls_client_hs_traffic_secret
 .global tls_hs_msg_buf
 .global tls_hs_record_buf
+.global tls_client_gcm_ctx
+.global tls_server_gcm_ctx
 
 // tls_state — one block per connection (a connection handler is one
 // process, so the global is per-connection, like request/response).
@@ -89,6 +94,29 @@ tls_session_id_len:    .quad 0             // TLS_SESSION_ID_LEN — the
 tls_session_id:        .skip 32            // TLS_SESSION_ID
 tls_server_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_SERVER_HS_TRAFFIC_SECRET
 tls_client_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_CLIENT_HS_TRAFFIC_SECRET
+
+// tls_client_gcm_ctx / tls_server_gcm_ctx — the AES-128-GCM key
+// contexts the record layer seals and opens with, one per direction.
+// Each holds the round-key schedule and GHASH's H for the key currently
+// installed in that direction (see GCM_CTX_* in defs.S).
+//
+// These are derived state, not protocol state: everything in them is a
+// pure function of tls_*_hs_key / tls_*_app_key, rebuilt by
+// aes_gcm_ctx_init whenever those change — at the handshake epoch
+// (tls_derive_handshake_secrets) and again at the application epoch
+// (tls_derive_application_secrets). Keeping them here rather than
+// recomputing them inside every aes_gcm_encrypt/decrypt call is the
+// whole point: the schedule and H cost one key expansion and one AES
+// block each, and they were being paid per record, in both directions,
+// for a key fixed for the epoch.
+//
+// Deliberately outside the fixed tls_state layout, like tls_hs_msg_buf
+// below: nothing addresses them by a persistent field contract, and
+// test_tls.c's offset sweep covers tls_state's protocol fields, not
+// caches derived from them.
+.align 4
+tls_client_gcm_ctx: .skip GCM_CTX_SIZE
+tls_server_gcm_ctx: .skip GCM_CTX_SIZE
 
 // tls_hs_msg_buf — scratch buffer for constructing one plaintext
 // handshake message body at a time during tls_server_handshake (Phase

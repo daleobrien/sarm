@@ -61,7 +61,7 @@ tls_app_data_write:
     mov     x0, #TLS_RECORD_APPLICATION_DATA
     mov     x1, x20
     mov     x2, x21
-    add     x3, x19, #TLS_SERVER_APP_KEY
+    adr_l   x3, tls_server_gcm_ctx      // the app epoch's write context
     add     x4, x19, #TLS_SERVER_APP_IV
     mov     x5, x9
     mov     x6, x22

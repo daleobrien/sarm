@@ -107,14 +107,31 @@ static struct parse_out rec_parse(const uint8_t *buf, uint64_t len)
     "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", \
     "v11", "v16", "v17", "v18", "v19", "v20", "v21", "cc", "memory"
 
+// tls_record_encrypt/decrypt take an AES-128-GCM key *context* (round
+// keys + GHASH subkey, built once per epoch by aes_gcm_ctx_init) rather
+// than a bare key. These wrappers keep taking a key and expand it here,
+// so the campaigns below stay written in terms of g_key.
+//
+// Passing the key pointer straight through would not fault — the callee
+// would just read 192 bytes from it and use whatever is there — and
+// campaigns that seal and open through the same wrapper would still
+// agree with each other. Only a campaign that mixes gcm_seal with
+// rec_decrypt would notice. Expand it properly.
+#define GCM_CTX_SIZE 192
+
+extern void aes_gcm_ctx_init(const void *key, void *ctx)
+    __asm__("aes_gcm_ctx_init");
+
 struct dec_out { uint64_t content_len, inner_type, carry; };
 
 static struct dec_out rec_decrypt(const uint8_t *rec, uint64_t len,
                                   const uint8_t *key, const uint8_t *iv,
                                   uint64_t seq, uint8_t *out)
 {
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
     uint64_t a[6];
-    a[0] = (uint64_t)rec; a[1] = len; a[2] = (uint64_t)key;
+    a[0] = (uint64_t)rec; a[1] = len; a[2] = (uint64_t)ctx;
     a[3] = (uint64_t)iv;  a[4] = seq; a[5] = (uint64_t)out;
     struct dec_out o;
     uint64_t r0, r1, c;
@@ -140,9 +157,11 @@ static struct enc_out rec_encrypt(uint64_t inner_type, const uint8_t *pt,
                                   const uint8_t *iv, uint64_t seq,
                                   uint8_t *out)
 {
+    uint8_t ctx[GCM_CTX_SIZE] __attribute__((aligned(16)));
+    aes_gcm_ctx_init(key, ctx);
     uint64_t a[7];
     a[0] = inner_type;    a[1] = (uint64_t)pt; a[2] = pt_len;
-    a[3] = (uint64_t)key; a[4] = (uint64_t)iv; a[5] = seq;
+    a[3] = (uint64_t)ctx; a[4] = (uint64_t)iv; a[5] = seq;
     a[6] = (uint64_t)out;
     struct enc_out o;
     uint64_t r0, c;

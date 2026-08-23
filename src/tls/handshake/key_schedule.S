@@ -74,8 +74,10 @@ khs_empty_hash:
 //   filled in (src/tls/data.S).
 //
 // Clobbered Registers:
-//   x0-x11, x13, v0-v7, v16, v18, v19, NZCV (x19, x20, x30
-//   saved/restored) — everything hkdf_extract / hkdf_expand_label clobber
+//   x0-x11, x13, v0-v7, v16, v18, v19, v21-v25, NZCV (x19, x20, x30
+//   saved/restored) — everything hkdf_extract / hkdf_expand_label
+//   clobber, plus v21-v25 from aes_gcm_ctx_init's key expansion and
+//   zero-block encrypt
 //
 // Stack Usage:
 //   192 bytes: x19, x20, x30 (32, padded), then five 32-byte scratch
@@ -190,6 +192,17 @@ tls_derive_handshake_secrets:
     add     x5, x19, #TLS_SERVER_HS_IV
     mov     x6, #12
     bl      hkdf_expand_label
+
+    // ── the handshake epoch's GCM key contexts ──────────────────────
+    // Both directions' keys are final now, so expand each one's round
+    // schedule and hash subkey here, once, instead of at the top of
+    // every record aes_gcm_encrypt/decrypt handles this epoch.
+    add     x0, x19, #TLS_CLIENT_HS_KEY
+    adr_l   x1, tls_client_gcm_ctx
+    bl      aes_gcm_ctx_init
+    add     x0, x19, #TLS_SERVER_HS_KEY
+    adr_l   x1, tls_server_gcm_ctx
+    bl      aes_gcm_ctx_init
 
     // ── dHS = Derive-Secret(Handshake Secret, "derived", "") ─────────
     add     x0, x19, #TLS_HANDSHAKE_SECRET

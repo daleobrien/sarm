@@ -18,6 +18,16 @@
 #include "test_harness.h"
 
 extern uint8_t tls_server_app_key[16] __asm__("tls_server_app_key");
+extern uint8_t tls_server_gcm_ctx[192] __asm__("tls_server_gcm_ctx");
+extern void aes_gcm_ctx_init(const void *key, void *ctx)
+    __asm__("aes_gcm_ctx_init");
+
+// See read.c: tls_app_data_write seals with tls_server_gcm_ctx, so a
+// hand-installed key needs its context rebuilt alongside it.
+static void install_server_app_key(const uint8_t key[16]) {
+    memcpy(tls_server_app_key, key, 16);
+    aes_gcm_ctx_init(tls_server_app_key, tls_server_gcm_ctx);
+}
 extern uint8_t tls_server_app_iv[12] __asm__("tls_server_app_iv");
 extern uint64_t tls_server_seq __asm__("tls_server_seq");
 
@@ -69,7 +79,7 @@ static void test_write_rfc8448(void) {
     uint8_t payload[50];
     for (int i = 0; i < 50; i++)
         payload[i] = (uint8_t)i;
-    memcpy(tls_server_app_key, RFC_SAP_KEY, 16);
+    install_server_app_key(RFC_SAP_KEY);
     memcpy(tls_server_app_iv, RFC_SAP_IV, 12);
     tls_server_seq = 1;
 
@@ -103,7 +113,7 @@ static const struct wrvec WRS[6] = {
 static void test_write(void) {
     TEST_SUITE("tls_app_data_write — matches Python/cryptography reference");
     for (size_t i = 0; i < NWR; i++) {
-        memcpy(tls_server_app_key, WRS[i].key, 16);
+        install_server_app_key(WRS[i].key);
         memcpy(tls_server_app_iv, WRS[i].iv, 12);
         tls_server_seq = WRS[i].seq;
 
@@ -121,7 +131,7 @@ static void test_write(void) {
 
 static void test_length_error(void) {
     TEST_SUITE("tls_app_data_write — oversized plaintext rejected");
-    memcpy(tls_server_app_key, WRS[0].key, 16);
+    install_server_app_key(WRS[0].key);
     memcpy(tls_server_app_iv, WRS[0].iv, 12);
     tls_server_seq = 0;
 

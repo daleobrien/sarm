@@ -12,8 +12,20 @@
 //   buffer is left untouched and 0 is returned. The IV is 12 bytes and
 //   the tag 16 bytes.
 //
+//   Two entry points, mirroring aes_gcm_encrypt. aes_gcm_decrypt_ctx
+//   takes a prebuilt key context (aes_gcm_ctx_init) holding the
+//   round-key schedule and H, both key-derived; aes_gcm_decrypt keeps
+//   the original key-pointer signature by building a context on its own
+//   stack and falling through. Neither entry changes the tag check: the
+//   comparison below is the same constant-time one, over the same
+//   bytes, and the "no plaintext on failure" guarantee is unaffected —
+//   the context holds only values an attacker-supplied record cannot
+//   influence.
+//
 // Input/Arguments:
-//   x0 — pointer to the 16-byte AES-128 key
+//   x0 — aes_gcm_decrypt_ctx: pointer to a GCM_CTX_SIZE-byte context
+//        (aes_gcm_ctx_init); aes_gcm_decrypt: pointer to the 16-byte
+//        AES-128 key
 //   x1 — pointer to the 12-byte IV/nonce
 //   x2 — pointer to the AAD (ignored when aad_len == 0)
 //   x3 — AAD length in bytes
@@ -33,15 +45,36 @@
 //   keys there — this function's own live state stays in v16-v21)
 //
 // Stack Usage:
-//   336 bytes — same layout as aes_gcm_encrypt
+//   144 / 256 bytes — same layout as aes_gcm_encrypt
 // ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 2
 .global aes_gcm_decrypt
+.global aes_gcm_decrypt_ctx
 
+// ── key-pointer entry: build a one-shot context, then open with it ──
 aes_gcm_decrypt:
-    sub     sp, sp, #336
+    sub     sp, sp, #256
+    str     x30, [sp, #192]
+    stp     x1, x2, [sp, #200]         // aes_gcm_ctx_init clobbers
+    stp     x3, x4, [sp, #216]         //   x0-x8, x10, x11 — every
+    stp     x5, x6, [sp, #232]         //   argument but the key it is
+    str     x7, [sp, #248]             //   about to consume
+    mov     x1, sp                     // ctx at [sp, #0 .. #191]
+    bl      aes_gcm_ctx_init           // x0 = key
+    mov     x0, sp
+    ldp     x1, x2, [sp, #200]
+    ldp     x3, x4, [sp, #216]
+    ldp     x5, x6, [sp, #232]
+    ldr     x7, [sp, #248]
+    bl      aes_gcm_decrypt_ctx        // x0 = 1 verified, 0 bad tag
+    ldr     x30, [sp, #192]
+    add     sp, sp, #256
+    ret
+
+aes_gcm_decrypt_ctx:
+    sub     sp, sp, #144
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -56,8 +89,8 @@ aes_gcm_decrypt:
     mov     x23, x6                    // supplied tag
     mov     x24, x7                    // pt out
     mov     x27, x1                    // iv (12 bytes)
-    add     x25, sp, #288              // jbuf
-    add     x26, sp, #96               // rk
+    add     x25, sp, #96               // jbuf
+    add     x26, x0, #GCM_CTX_RK       // rk
 
     // ── GHASH constants ──
     adr_l   x9, .Lgcm_rbit_table
@@ -67,18 +100,11 @@ aes_gcm_decrypt:
     movi    v18.16b, #0
     movi    v21.16b, #0x0f
 
-    // ── H = E_K(0^128), mapped into the natural domain (v19) ──
-    add     x9, sp, #320               // pad = the zero block
-    stp     xzr, xzr, [x9]
-    mov     x1, x26
-    bl      aes128_key_expand          // x0 = key, x1 = rk
-    mov     x0, x9
-    mov     x1, x26
-    add     x2, sp, #272               // h
-    bl      aes128_encrypt
-    add     x9, sp, #272
+    // ── H', already in the natural domain, out of the context ──
+    // See aes_gcm_encrypt_ctx: expanding the key and encrypting a zero
+    // block to recover H is per-key work, not per-record work.
+    add     x9, x0, #GCM_CTX_H
     ld1     {v19.16b}, [x9]
-    gcm_rbit v19.16b, v19.16b          // H' (natural domain)
 
     // ── J0 = IV || 0x00000001; tag mask = E_K(J0) ──
     ldr     x9, [x27]                  // IV[0..8)
@@ -90,7 +116,7 @@ aes_gcm_decrypt:
     strb    w9, [x25, #15]
     mov     x0, x25
     mov     x1, x26
-    add     x2, sp, #304               // tagmask
+    add     x2, sp, #112               // tagmask
     bl      aes128_encrypt
 
     // ── recompute the tag BEFORE any decryption ──
@@ -110,7 +136,7 @@ aes_gcm_decrypt:
     // bytes is zero iff the tags match, and no branch depends on the
     // data until every byte has been compared.
     gcm_rbit v20.16b, v0.16b           // Y' back to GCM wire order
-    add     x9, sp, #304
+    add     x9, sp, #112
     ld1     {v1.16b}, [x9]             // tag mask
     eor     v0.16b, v0.16b, v1.16b     // computed tag
     ld1     {v1.16b}, [x23]            // supplied tag
@@ -127,10 +153,10 @@ aes_gcm_decrypt:
 .Lgcm_dec_blockloop:
     mov     x0, x25
     mov     x1, x26
-    add     x2, sp, #320               // keystream block
+    add     x2, sp, #128               // keystream block
     bl      aes128_encrypt
     ld1     {v0.16b}, [x21], #16       // ciphertext block
-    add     x9, sp, #320
+    add     x9, sp, #128
     ld1     {v1.16b}, [x9]
     eor     v0.16b, v0.16b, v1.16b
     st1     {v0.16b}, [x24], #16       // plaintext block
@@ -141,12 +167,12 @@ aes_gcm_decrypt:
     cbz     x27, .Lgcm_dec_ok
     mov     x0, x25
     mov     x1, x26
-    add     x2, sp, #320
+    add     x2, sp, #128
     bl      aes128_encrypt
     mov     x28, #0
 .Lgcm_dec_tailloop:
     ldrb    w9, [x21, x28]
-    add     x10, sp, #320
+    add     x10, sp, #128
     ldrb    w10, [x10, x28]
     eor     w9, w9, w10
     strb    w9, [x24, x28]
@@ -165,5 +191,5 @@ aes_gcm_decrypt:
     ldp     x23, x24, [sp, #32]
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp]
-    add     sp, sp, #336
+    add     sp, sp, #144
     ret
