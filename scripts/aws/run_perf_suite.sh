@@ -210,16 +210,36 @@ fi
 
 # ══ 3. worker scaling ═════════════════════════════════════════════════
 # A 64-core box is the only place this question can actually be answered.
+#
+# Two things this phase has to get right, and both differ from the pinned
+# phases below:
+#
+#   * rps_bench.sh starts its own server and does NOT pin it, so the
+#     ceiling here is the whole machine, not the 16 cores the profiling
+#     phases reserve. Capping the sweep at the pinned core count would
+#     stop it right where the interesting part begins.
+#   * The connection count is held FIXED across the sweep, and set high
+#     enough to keep the largest worker count busy. rps_bench.sh's own
+#     header says connection count is part of the result; varying it
+#     alongside workers would make the table unreadable. More workers
+#     than concurrent connections is also just idle workers, so the sweep
+#     stops at the connection count.
 if ! skipped scaling; then
-    say "3. Worker scaling (h2c, ${DURATION}s each)"
+    # Half the machine, leaving the other half for wrk/h2load. sarm serves
+    # one connection per process, so this is also the number of concurrent
+    # server processes.
+    SCALING_CONNS=$(( CPUS / 2 ))
+    [ "$SCALING_CONNS" -lt 4 ] && SCALING_CONNS=4
+    say "3. Worker scaling (${DURATION}s each, ${SCALING_CONNS} connections held fixed, unpinned)"
     printf 'workers\thttp1_rps\th2c_rps\th2tls_rps\n' > "$OUTDIR/worker_scaling.tsv"
-    for w in 1 2 4 8 16; do
-        [ "$w" -gt "$SERVER_CORE_COUNT" ] && break
+    for w in 1 2 4 8 16 32 64; do
+        [ "$w" -gt "$SCALING_CONNS" ] && break
+        [ "$w" -gt "$CPUS" ] && break
         stop_server
         out="$OUTDIR/scaling_w${w}.json"
         if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
                 --duration "$DURATION" --repeat 1 --workers "$w" \
-                --connections "$CONNECTIONS" --threads "$THREADS" \
+                --connections "$SCALING_CONNS" --threads "$THREADS" \
                 --path "$REQ_PATH" --json > "$out" 2>>"$OUTDIR/worker_scaling.log"; then
             if command -v jq >/dev/null 2>&1; then
                 printf '%s\t%s\t%s\t%s\n' "$w" \
