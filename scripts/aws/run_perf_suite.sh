@@ -269,7 +269,10 @@ fi
 if [ -n "$PERF" ] && ! skipped counters; then
     say "4. Hardware counters"
 
-    GROUPS=(
+    # NOT named GROUPS: that is a bash special variable holding the current
+    # user's group IDs, and assigning to it silently does nothing — the loop
+    # then iterates over numeric gids and asks perf for events called "1000".
+    EVENT_GROUPS=(
         "cycles,instructions,branches,branch-misses,stalled-cycles-frontend,stalled-cycles-backend"
         "cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses"
         "cycles,instructions,L1-icache-load-misses,dTLB-load-misses"
@@ -278,9 +281,14 @@ if [ -n "$PERF" ] && ! skipped counters; then
     # Drop any event this core or kernel does not implement, so one
     # unsupported name does not void the whole group.
     supported_only() {
-        local out="" ev
+        local out="" ev probe
         for ev in ${1//,/ }; do
-            if ! $PERF stat -e "$ev" -x, true 2>&1 | grep -q "not supported\|<not counted>"; then
+            # Accept only if perf exits clean AND the value it printed is a
+            # number. A bad event name makes perf say "invalid or unsupported
+            # event", which does not contain the string "not supported" — so
+            # matching on that phrase alone waves nonsense through.
+            if probe=$($PERF stat -e "$ev" -x, true 2>&1) \
+               && printf '%s' "$probe" | head -1 | grep -qE '^[0-9,]+,'; then
                 out="${out:+$out,}$ev"
             fi
         done
@@ -291,7 +299,7 @@ if [ -n "$PERF" ] && ! skipped counters; then
     for kind in h1 h2c h2tls; do
         : > "$OUTDIR/counters_${kind}.txt"
         g=0
-        for group in "${GROUPS[@]}"; do
+        for group in "${EVENT_GROUPS[@]}"; do
             g=$((g + 1))
             evs=$(supported_only "$group")
             [ -z "$evs" ] && continue
@@ -300,7 +308,8 @@ if [ -n "$PERF" ] && ! skipped counters; then
             # work here: sarm forks a child per connection, and those
             # children are not followed by 'perf stat -p'.
             $PERF stat -a -C "$SERVER_CPUS" -e "$evs" \
-                -o "$OUTDIR/counters_${kind}_g${g}.txt" -- sleep "$((DURATION - 2))" 2>/dev/null || true
+                -o "$OUTDIR/counters_${kind}_g${g}.txt" -- sleep "$((DURATION - 2))" \
+                2>>"$OUTDIR/counters.log" || warn "perf stat failed for ${kind} group ${g} — see counters.log"
             wait_load
             if [ -f "$OUTDIR/counters_${kind}_g${g}.txt" ]; then
                 cat "$OUTDIR/counters_${kind}_g${g}.txt" >> "$OUTDIR/counters_${kind}.txt"
@@ -436,6 +445,13 @@ if ! skipped micro; then
             else
                 info "$(printf '%-26s %s' "$bench" "${out:-no output}")"
             fi
+        elif grep -q "@PAGE" "$OUTDIR/micro.log" 2>/dev/null && \
+             [ "$bench" = "primitives" -o "$bench" = "aes_gcm_encrypt" ]; then
+            # bench_primitives.c and bench_aes_gcm_encrypt.c carry inline asm
+            # written in Mach-O syntax (adrp x8, _sym@PAGE / add x8, x8,
+            # _sym@PAGEOFF). GNU as needs adrp x8, sym / add x8, x8, :lo12:sym.
+            # No compiler flag fixes this — the drivers need porting.
+            warn "bench_${bench}: macOS-only inline asm (@PAGE/@PAGEOFF) — needs :lo12: for ELF"
         else
             warn "bench_${bench} did not build — see micro.log"
         fi
@@ -445,23 +461,63 @@ fi
 
 # ══ 8. call counts ════════════════════════════════════════════════════
 # The Linux replacement for count_calls.py, which drives lldb on macOS.
-# uprobes on the hot symbols identified above: frequency, not size, is what
-# makes a function worth optimising.
+# Frequency, not size, is what makes a function worth optimising.
+#
+# Attached by ADDRESS, not by name. bpftrace resolves a named uprobe against
+# STT_FUNC symbols, and sarm's sources emit no `.type name, %function`
+# directives, so every one of its 170 globals is STT_NOTYPE and matching by
+# name reports "No matches for uprobe". The file offset works regardless of
+# symbol type: take the symbol's virtual address from nm and translate it
+# through the PT_LOAD segment that contains it.
 if ! skipped calls && command -v bpftrace >/dev/null 2>&1 && [ -n "$TOP_SYMS" ]; then
     say "8. Call counts under load (bpftrace uprobes)"
+
+    # Pure bash arithmetic rather than awk: strtonum() is a gawk extension
+    # and Ubuntu's default awk is mawk, which does not have it.
+    file_offset_of() {  # file_offset_of <symbol> -> hex file offset, or empty
+        local sym="$1" vaddr target o v z seg_off seg_va seg_sz
+        vaddr=$(nm ./sarm 2>/dev/null | awk -v s="$sym" '$3 == s {print $1; exit}')
+        [ -z "$vaddr" ] && return 1
+        target=$(( 16#$vaddr ))
+        # readelf -lW LOAD line: LOAD Offset VirtAddr PhysAddr FileSiz MemSiz Flg Align
+        while read -r _ seg_off seg_va _ _ seg_sz _; do
+            case "$seg_off$seg_va$seg_sz" in *0x*) ;; *) continue ;; esac
+            o=$(( seg_off )); v=$(( seg_va )); z=$(( seg_sz ))
+            if [ "$target" -ge "$v" ] && [ "$target" -lt $(( v + z )) ]; then
+                printf '0x%x\n' $(( target - v + o ))
+                return 0
+            fi
+        done < <(readelf -lW ./sarm 2>/dev/null | awk '$1 == "LOAD"')
+        return 1
+    }
+
     PROG=""
+    ATTACHED=""
     for sym in $(printf '%s\n' "$TOP_SYMS" | head -12); do
-        PROG="${PROG}uprobe:${REPO}/sarm:${sym} { @${sym} = count(); } "
+        off=$(file_offset_of "$sym" || true)
+        if [ -n "$off" ]; then
+            PROG="${PROG}uprobe:${REPO}/sarm:${off} { @${sym} = count(); } "
+            ATTACHED="${ATTACHED} ${sym}"
+        else
+            warn "no file offset for ${sym} — skipping"
+        fi
     done
-    start_server auto
-    start_load h2tls 12
-    if sudo timeout 10 bpftrace -e "$PROG" > "$OUTDIR/call_counts.txt" 2>"$OUTDIR/call_counts.log"; then
-        grep '^@' "$OUTDIR/call_counts.txt" | sed 's/^/   /' | tee -a "$OUTDIR/summary.txt" || true
+
+    if [ -z "$PROG" ]; then
+        warn "could not resolve any symbol to a file offset — skipping call counts"
     else
-        warn "bpftrace failed — see call_counts.log (uprobes on a PIE binary need a recent bpftrace)"
+        info "attaching to:${ATTACHED}"
+        start_server auto
+        start_load h2tls 12
+        if sudo timeout 10 bpftrace -e "$PROG" > "$OUTDIR/call_counts.txt" 2>"$OUTDIR/call_counts.log"; then
+            grep '^@' "$OUTDIR/call_counts.txt" | sed 's/^/   /' | tee -a "$OUTDIR/summary.txt" || true
+        else
+            warn "bpftrace failed — see call_counts.log"
+            head -3 "$OUTDIR/call_counts.log" 2>/dev/null | sed 's/^/   /' || true
+        fi
+        wait_load
+        stop_server
     fi
-    wait_load
-    stop_server
 elif ! skipped calls; then
     info "8. Call counts — skipped (bpftrace missing, or no profile to pick symbols from)"
 fi
