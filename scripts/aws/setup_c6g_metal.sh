@@ -218,24 +218,40 @@ if [ -f "$DEST/err/template.html" ]; then
 fi
 
 say "Building"
-# Deliberately `make`, not `make production`. The production target runs
-# `strip -x`, and the ~170 global function symbols it leaves behind are
-# exactly what perf needs to attribute samples. Build unstripped here;
-# build production separately when measuring the shipped artifact.
+# `make production`, which is `make` followed by `strip -x`. That is both
+# the shipped artifact and, on Linux, the better thing to profile:
+#
+#   * `strip -x` is --discard-all, which removes non-global symbols and
+#     KEEPS the ~170 global function symbols perf attributes samples to.
+#   * The sources write ~180 internal branch targets as `Lfoo:` rather
+#     than `.Lfoo:`. GNU as drops the dotted form but emits the undotted
+#     one as a real local symbol, and since no function carries a `.size`
+#     directive, each of those labels swallows the address range after it
+#     — fragmenting a function's self time across `Lloop`, `Lbyte_loop`
+#     and friends. Stripping discards exactly those, folding the samples
+#     back into the enclosing function.
+#
+# Stripping changes no instruction and no load-segment layout, so it costs
+# nothing in throughput. If a future strip ever takes the globals too, the
+# check below catches it and the fallback rebuilds unstripped.
 make -C "$DEST" clean >/dev/null 2>&1 || true
-make -C "$DEST" 2>&1 | tail -20
+make -C "$DEST" production 2>&1 | tail -20
 [ -x "$DEST/sarm" ] || die "build produced no ./sarm binary"
 
 SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || echo 0)
-info "binary: $DEST/sarm ($(stat -c %s "$DEST/sarm") bytes, ${SYMS} global text symbols)"
 if [ "$SYMS" -lt 50 ]; then
-    warn "only ${SYMS} function symbols — perf will not attribute samples usefully."
-    warn "Check that the build was not stripped."
+    warn "the production build left only ${SYMS} global symbols — perf could not"
+    warn "attribute samples. Rebuilding unstripped instead."
+    make -C "$DEST" clean >/dev/null 2>&1 || true
+    make -C "$DEST" 2>&1 | tail -5
+    SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || echo 0)
 fi
-# GNU as drops the .L-prefixed local labels the sources use for internal
-# branch targets, so the Linux symbol table is precisely the real function
-# list. That is better for profiling than the macOS build, where those 500
-# labels have to be filtered out.
+LOCALS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' t ' || echo 0)
+info "binary: $DEST/sarm ($(stat -c %s "$DEST/sarm") bytes)"
+info "symbols: ${SYMS} global text, ${LOCALS} local"
+if [ "$LOCALS" -gt 0 ]; then
+    warn "${LOCALS} local labels survive and will fragment per-function attribution"
+fi
 
 say "Smoke test"
 PORT=8099

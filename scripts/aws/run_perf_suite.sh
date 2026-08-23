@@ -88,7 +88,7 @@ die()  { printf '\033[1;31m   FATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 for cmd in curl taskset make nm; do
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found — run scripts/aws/setup_c6g_metal.sh first"
 done
-[ -x ./sarm ] || die "./sarm not built — run 'make' (not 'make production'; perf needs the symbols)"
+[ -x ./sarm ] || die "./sarm not built — run 'make production' first"
 
 # perf needs system-wide access for -a/-C. With kernel.perf_event_paranoid
 # at -1 that works unprivileged; otherwise fall back to sudo and fix up the
@@ -258,46 +258,73 @@ fi
 # IPC and the stall breakdown decide what kind of rewrite is worth
 # attempting at all: a frontend-bound loop and a backend-bound one want
 # opposite changes. This is the phase that needs bare metal.
+#
+# The events are measured in SMALL GROUPS rather than all at once.
+# Neoverse N1 has six programmable counters plus a dedicated cycle
+# counter; asking for twelve events forces the kernel to time-multiplex
+# them, and every figure comes back extrapolated from the fraction of the
+# run it was actually scheduled. Each group below fits the hardware, so
+# the numbers are counted rather than estimated. cycles and instructions
+# repeat in every group as the common denominator.
 if [ -n "$PERF" ] && ! skipped counters; then
     say "4. Hardware counters"
 
-    # Event names vary by core and kernel; keep only what this box answers.
-    EVENTS=""
-    for ev in cycles instructions branches branch-misses \
-              cache-references cache-misses \
-              stalled-cycles-frontend stalled-cycles-backend \
-              L1-dcache-loads L1-dcache-load-misses L1-icache-load-misses \
-              dTLB-load-misses; do
-        if ! $PERF stat -e "$ev" -x, true 2>&1 | grep -q "not supported\|<not counted>"; then
-            EVENTS="${EVENTS:+$EVENTS,}$ev"
-        fi
-    done
-    if [ -z "$EVENTS" ]; then
-        warn "no hardware events are readable on this instance — is it really bare metal?"
-    else
-        info "events: $EVENTS"
-        start_server auto
-        for kind in h1 h2c h2tls; do
+    GROUPS=(
+        "cycles,instructions,branches,branch-misses,stalled-cycles-frontend,stalled-cycles-backend"
+        "cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses"
+        "cycles,instructions,L1-icache-load-misses,dTLB-load-misses"
+    )
+
+    # Drop any event this core or kernel does not implement, so one
+    # unsupported name does not void the whole group.
+    supported_only() {
+        local out="" ev
+        for ev in ${1//,/ }; do
+            if ! $PERF stat -e "$ev" -x, true 2>&1 | grep -q "not supported\|<not counted>"; then
+                out="${out:+$out,}$ev"
+            fi
+        done
+        printf '%s' "$out"
+    }
+
+    start_server auto
+    for kind in h1 h2c h2tls; do
+        : > "$OUTDIR/counters_${kind}.txt"
+        g=0
+        for group in "${GROUPS[@]}"; do
+            g=$((g + 1))
+            evs=$(supported_only "$group")
+            [ -z "$evs" ] && continue
             start_load "$kind" "$DURATION"
             # System-wide over the server's cores only. Per-pid does not
             # work here: sarm forks a child per connection, and those
             # children are not followed by 'perf stat -p'.
-            $PERF stat -a -C "$SERVER_CPUS" -e "$EVENTS" \
-                -o "$OUTDIR/counters_${kind}.txt" -- sleep "$((DURATION - 2))" 2>/dev/null || true
+            $PERF stat -a -C "$SERVER_CPUS" -e "$evs" \
+                -o "$OUTDIR/counters_${kind}_g${g}.txt" -- sleep "$((DURATION - 2))" 2>/dev/null || true
             wait_load
-            if [ -f "$OUTDIR/counters_${kind}.txt" ]; then
-                cyc=$(awk '/ cycles/ {gsub(/,/,"",$1); print $1; exit}' "$OUTDIR/counters_${kind}.txt")
-                ins=$(awk '/ instructions/ {gsub(/,/,"",$1); print $1; exit}' "$OUTDIR/counters_${kind}.txt")
-                if [ -n "${cyc:-}" ] && [ -n "${ins:-}" ] && [ "$cyc" -gt 0 ] 2>/dev/null; then
-                    info "$(printf '%-6s IPC %.2f  (%s instructions / %s cycles)' \
-                        "$kind" "$(echo "$ins $cyc" | awk '{print $1/$2}')" "$ins" "$cyc")"
-                fi
-                grep -E "frontend|backend|branch-misses|cache-misses" "$OUTDIR/counters_${kind}.txt" \
-                    | sed "s/^/   ${kind}  /" | tee -a "$OUTDIR/summary.txt" || true
+            if [ -f "$OUTDIR/counters_${kind}_g${g}.txt" ]; then
+                cat "$OUTDIR/counters_${kind}_g${g}.txt" >> "$OUTDIR/counters_${kind}.txt"
+                rm -f "$OUTDIR/counters_${kind}_g${g}.txt"
             fi
         done
-        stop_server
-    fi
+
+        if [ -s "$OUTDIR/counters_${kind}.txt" ]; then
+            # A trailing percentage on a counter line means it was still
+            # multiplexed; say so rather than quoting an estimate as fact.
+            if grep -qE '\([0-9]{2}\.[0-9]{2}%\)' "$OUTDIR/counters_${kind}.txt"; then
+                warn "${kind}: some events were still multiplexed — values are extrapolated"
+            fi
+            cyc=$(awk '/ cycles/ {gsub(/,/,"",$1); print $1; exit}' "$OUTDIR/counters_${kind}.txt")
+            ins=$(awk '/ instructions/ {gsub(/,/,"",$1); print $1; exit}' "$OUTDIR/counters_${kind}.txt")
+            if [ -n "${cyc:-}" ] && [ -n "${ins:-}" ] && [ "$cyc" -gt 0 ] 2>/dev/null; then
+                info "$(printf '%-6s IPC %.2f  (%s instructions / %s cycles)' \
+                    "$kind" "$(echo "$ins $cyc" | awk '{print $1/$2}')" "$ins" "$cyc")"
+            fi
+            grep -E "frontend|backend|branch-misses|cache-misses|icache|dTLB" "$OUTDIR/counters_${kind}.txt" \
+                | sed "s/^/   ${kind}  /" | tee -a "$OUTDIR/summary.txt" || true
+        fi
+    done
+    stop_server
 fi
 
 # ══ 5. sampled profile ════════════════════════════════════════════════
@@ -322,20 +349,43 @@ if [ -n "$PERF" ] && ! skipped profile; then
         info "── $kind: top functions in sarm ──"
         # Keep only samples that landed in the sarm binary; everything else
         # is kernel and load-generator noise from the shared cores.
-        grep -E '^\s+[0-9]' "$OUTDIR/profile_${kind}.txt" 2>/dev/null \
-            | grep -i 'sarm' | head -12 \
-            | awk '{printf "   %8s  %s\n", $1, $NF}' | tee -a "$OUTDIR/summary.txt" || true
+        # Columns are: Overhead, "Shared Object", "[.]", Symbol, then IPC
+        # and [IPC Coverage] when the recorded event is cycles. The symbol
+        # is $4; $NF is the trailing IPC placeholder.
+        awk '$2 == "sarm" {printf "   %8s  %s\n", $1, $4}' \
+            "$OUTDIR/profile_${kind}.txt" 2>/dev/null | head -12 \
+            | tee -a "$OUTDIR/summary.txt" || true
+
+        # Where the cycles went overall, which decides whether optimising
+        # sarm at all is the right move for this protocol.
+        awk '/^ +[0-9]/ {
+                pct = $1; gsub(/%/, "", pct)
+                if ($2 == "sarm") sarm += pct
+                else if ($4 ~ /idle/) idle += pct
+                else kern += pct
+             } END {
+                printf "   ── %s totals: sarm %.1f%%  kernel %.1f%%  idle %.1f%%\n", K, sarm, kern, idle
+             }' K="$kind" "$OUTDIR/profile_${kind}.txt" | tee -a "$OUTDIR/summary.txt" || true
 
         if [ "$kind" = "h2tls" ] && [ -z "$TOP_SYMS" ]; then
-            TOP_SYMS=$(grep -E '^\s+[0-9]' "$OUTDIR/profile_${kind}.txt" 2>/dev/null \
-                | grep -i 'sarm' | head -12 | awk '{print $NF}' | grep -E '^[a-z_][a-z0-9_]*$' || true)
+            TOP_SYMS=$(awk '$2 == "sarm" {print $4}' "$OUTDIR/profile_${kind}.txt" 2>/dev/null \
+                | head -12 | grep -E '^[a-zA-Z_][a-zA-Z0-9_]*$' || true)
         fi
 
+        # Flame graph only if perf script yielded real stacks. Recorded
+        # without -g (the sources carry no CFI and no frame pointers), so
+        # this is usually empty — an empty SVG looks like a failure, so it
+        # is deleted rather than kept.
         if [ -x /opt/FlameGraph/flamegraph.pl ]; then
             perf script -i "$OUTDIR/perf_${kind}.data" 2>/dev/null \
                 | /opt/FlameGraph/stackcollapse-perf.pl 2>/dev/null \
-                | /opt/FlameGraph/flamegraph.pl --title "sarm $kind" > "$OUTDIR/flame_${kind}.svg" 2>/dev/null \
-                && info "flame_${kind}.svg"
+                > "$OUTDIR/stacks_${kind}.txt" || true
+            if [ -s "$OUTDIR/stacks_${kind}.txt" ]; then
+                /opt/FlameGraph/flamegraph.pl --title "sarm $kind" \
+                    < "$OUTDIR/stacks_${kind}.txt" > "$OUTDIR/flame_${kind}.svg" 2>/dev/null \
+                    && info "flame_${kind}.svg"
+            fi
+            rm -f "$OUTDIR/stacks_${kind}.txt"
         fi
     done
     stop_server
@@ -368,7 +418,10 @@ fi
 # patched, so the file stays as the macOS side expects it.
 if ! skipped micro; then
     say "7. Per-function micro-benchmarks"
-    LINUX_FLAGS=(ASFLAGS="-g -O2" CFLAGS="-g -O2 -march=armv8-a+crypto" LDFLAGS="")
+    # +crypto on ASFLAGS as well as CFLAGS: the AES and GHASH sources use
+    # aese/aesmc/pmull, which GNU as rejects under a plain -march=armv8-a.
+    # Without it every bench that links an AES object fails to assemble.
+    LINUX_FLAGS=(ASFLAGS="-g -O2 -march=armv8-a+crypto" CFLAGS="-g -O2 -march=armv8-a+crypto" LDFLAGS="")
     : > "$OUTDIR/micro.jsonl"
     for bench in memcpy aes128_encrypt aes_gcm_encrypt gcm_ghash_run \
                  p256_fe_mul p256_bn_mul p256_reduce p256_point_mul \
