@@ -104,8 +104,10 @@ table compresses.
    to attribute a whole workload to a single `getrusage`. `--workers N` /
    `--workers auto` takes the next token as the worker count, clamped to
    `[1, MAX_WORKERS]`; `auto` is `sysctlbyname("hw.logicalcpu")` on macOS and
-   1 on Linux, which has no equivalent single call. Anything unparseable
-   exits 1.
+   the popcount of `sched_getaffinity(0, ...)` on Linux, which has no core-count
+   call but does answer which CPUs this process may run on — the number `auto`
+   actually wants, since it follows a `taskset` or cpuset. Anything unparseable
+   exits 1. `-help` (also `--help`, `-h`) prints the usage and exits 0.
 2. `socket` → `setsockopt(SO_REUSEADDR)` → `bind` → `listen(128)`.
 3. `SIGCHLD` → `SIG_IGN` with `SA_NOCLDWAIT` so the kernel reaps children and
    nothing ever has to `wait()`; `SIGPIPE` → `SIG_IGN` so `write()` returns

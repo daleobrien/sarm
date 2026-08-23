@@ -31,6 +31,11 @@ sigaction           # main.S (macOS) — SIGCHLD, SIGINT, SIGTERM, SIGPIPE
 rt_sigaction        # main.S (Linux) — the same
 sigreturn           # sig_tramp (macOS) — returning from a signal handler
 sysctlbyname        # main.S — hw.logicalcpu, only on `--workers auto`
+sched_getaffinity   # main.S (Linux) — the same question, only on
+                    #   `--workers auto`: the mask of CPUs this process may
+                    #   run on, whose popcount is the worker count. Reads no
+                    #   file, unlike /proc/cpuinfo or sysconf(3), which is
+                    #   why it is the only form of this call permitted here.
 setrlimit           # main.S (macOS) — RLIMIT_CORE to zero before the listening
                     #   socket exists, so no process in the tree can ever dump
                     #   core (docs/SECURITY.md §10, Step 13). A core is a

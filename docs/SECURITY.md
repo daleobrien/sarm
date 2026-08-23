@@ -326,7 +326,7 @@ The complete set, whole tree, excluding `.equ` definitions:
 |---|---|
 | `socket`, `bind`, `listen`, `setsockopt` | startup |
 | `sigaction`/`rt_sigaction`, `sigreturn` | startup |
-| `sysctlbyname` | startup only, `--workers auto` |
+| `sysctlbyname` (macOS) / `sched_getaffinity` (Linux) | startup only, `--workers auto` |
 | `setrlimit` / `prlimit64` | startup — `RLIMIT_CORE` to zero (§13.2) |
 | `fork`/`clone`, `accept`/`accept4` | worker spawn, per connection |
 | `kill` | `worker_shutdown` only |

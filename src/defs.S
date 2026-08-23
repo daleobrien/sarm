@@ -189,6 +189,14 @@
 // the property /dev/urandom does not give you early in boot.
 .equ SYS_getrandom,    278
 
+// sched_getaffinity(pid, cpusetsize, &mask) — the CPU mask this process
+// is allowed to run on. Linux has no "how many cores" syscall; this is
+// the closest one, and `--workers auto` wants its answer rather than the
+// machine's core count anyway (see detect_cpus in main.S). pid 0 means
+// this process. Returns the number of BYTES of `mask` it filled, so the
+// popcount is bounded by the return value, not by the buffer size.
+.equ SYS_sched_getaffinity, 123
+
 // socket stuff
 .equ AF_INET,          2
 .equ SOCK_STREAM,      1

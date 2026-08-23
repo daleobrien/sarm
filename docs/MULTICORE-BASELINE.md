@@ -154,8 +154,9 @@ bookkeeping:
 | 4 workers, shared socket | 128 / 124 / 124 / 124 | **15,449 conn/s (3.1×)** |
 
 `--workers N|auto` defaults to 1, so an unflagged `./sarm` is bit-identical to
-the pre-Phase-3 server; `auto` is `sysctlbyname("hw.logicalcpu")` and reports 1
-on Linux rather than guessing. `worker_shutdown` handles `SIGTERM`/`SIGINT` in
+the pre-Phase-3 server; `auto` is `sysctlbyname("hw.logicalcpu")` on macOS and
+the popcount of the `sched_getaffinity` mask on Linux, so a cpuset-confined
+container gets its own CPU count rather than the host's. `worker_shutdown` handles `SIGTERM`/`SIGINT` in
 the forking process only — three raw syscalls, async-signal-safe by
 construction — and deliberately does not signal per-connection children, so an
 in-flight response finishes. macOS needed its own signal trampoline

@@ -155,6 +155,26 @@ else
     ok "--workers with no value rejected"
 fi
 
+# ── -help prints the usage to stdout and exits 0, without listening ──
+for flag in "-help" "--help" "-h"; do
+    out=$(./sarm "$flag" 2>/dev/null)
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        nope "$flag exited $rc, expected 0"
+    elif ! printf '%s' "$out" | grep -q "^Usage: sarm "; then
+        nope "$flag printed no usage line"
+    else
+        ok "$flag prints usage and exits 0"
+    fi
+done
+
+# a longer argument sharing the prefix is not the flag
+if ./sarm "$HOST_PORT" -helpful >/dev/null 2>&1; then
+    nope "-helpful should be rejected, not treated as -help"
+else
+    ok "-helpful rejected (no prefix match)"
+fi
+
 # an unflagged server is unchanged: exactly one process
 if start_server; then
     n=$(worker_count)
@@ -189,6 +209,28 @@ if start_server --workers auto; then
         nope "--workers auto → $n processes, outside [1, $MAX_WORKERS]"
     fi
     if serves_200; then ok "auto workers serve a 200"; else nope "auto workers did not serve a 200"; fi
+
+    # `auto` should agree with an independent count of the CPUs this
+    # process may run on: sysctl hw.logicalcpu on macOS, nproc on Linux
+    # (which reads the same sched_getaffinity mask detect_cpus does, so
+    # under taskset or a cpuset both follow the restriction together).
+    cpus=""
+    if command -v nproc >/dev/null 2>&1; then
+        cpus=$(nproc 2>/dev/null)
+    elif command -v sysctl >/dev/null 2>&1; then
+        cpus=$(sysctl -n hw.logicalcpu 2>/dev/null)
+    fi
+    if [ -n "$cpus" ] && [ "$cpus" -ge 1 ] 2>/dev/null; then
+        want=$cpus
+        [ "$want" -gt "$MAX_WORKERS" ] && want=$MAX_WORKERS
+        if [ "$n" -eq "$want" ]; then
+            ok "--workers auto → $n, matches the $cpus CPU(s) available"
+        else
+            nope "--workers auto → $n, expected $want for $cpus CPU(s)"
+        fi
+    else
+        ok "--workers auto CPU-count cross-check skipped (no counter)"
+    fi
 else
     nope "--workers auto did not start"
 fi

@@ -5,7 +5,8 @@
 //
 // Description: Server entry point and lifecycle. This file also holds
 //   the other lifecycle labels: skip_argv (optional argv[1] handling —
-//   numeric = port override, letter = debug flag), loop (the accept()
+//   numeric = port override, letter = debug flag), help_exit (`-help`:
+//   print the usage blob and exit 0), loop (the accept()
 //   loop, which forks a child per connection and hands it to child or
 //   — for TLS — straight to h2_connection_loop), exit (shutdown banner +
 //   close, falls through into fatal_exit), and fatal_exit (exit(1)).
@@ -51,6 +52,58 @@ opt_workers: .asciz "--workers"
 .align 4
 opt_auto: .asciz "auto"
 .equ opt_auto_len, . - opt_auto
+
+// The three spellings of the help flag. Matched the same way as
+// `--workers` — over a length that includes the NUL — so "-helpful" is
+// a mismatch rather than a prefix hit.
+.align 4
+opt_help: .asciz "-help"
+.equ opt_help_len, . - opt_help
+
+.align 4
+opt_help_long: .asciz "--help"
+.equ opt_help_long_len, . - opt_help_long
+
+.align 4
+opt_h: .asciz "-h"
+.equ opt_h_len, . - opt_h
+
+// usage_text — what `-help` prints, written once to stdout by
+// help_exit. Kept as one blob rather than a table of lines so it is a
+// single write() with no formatting code behind it: nothing here is
+// computed at runtime, so nothing needs to be.
+.align 4
+usage_text:
+    .ascii "sarm \xe2\x80\x94 an HTTP/1.1 and HTTP/2 server in ARM64 assembly\n"
+    .ascii "\n"
+    .ascii "Usage: sarm [port] [d] [--workers N|auto] [-help]\n"
+    .ascii "\n"
+    .ascii "Arguments may appear in any order.\n"
+    .ascii "\n"
+    .ascii "  port            TCP port to listen on, 1-65535. Default 8080.\n"
+    .ascii "  d               Debug mode: serve each connection inline in this\n"
+    .ascii "                  process instead of forking a child for it, and run\n"
+    .ascii "                  a single worker. Any bare token starting with a\n"
+    .ascii "                  letter selects it.\n"
+    .ascii "  --workers N     Run N pre-forked accept workers, clamped to 64.\n"
+    .ascii "                  Default 1, which forks no workers at all.\n"
+    .ascii "  --workers auto  One worker per CPU this process may run on, so a\n"
+    .ascii "                  taskset or cpuset is respected rather than the\n"
+    .ascii "                  machine's full core count.\n"
+    .ascii "  -help           Print this message and exit. Also --help, -h.\n"
+    .ascii "\n"
+#ifdef __linux__
+    .ascii "Listens on 0.0.0.0. Set at build time, not by any argument.\n"
+#else
+    .ascii "Listens on 127.0.0.1. Set at build time, not by any argument.\n"
+#endif
+    .ascii "\n"
+    .ascii "Examples:\n"
+    .ascii "  sarm\n"
+    .ascii "  sarm 8081\n"
+    .ascii "  sarm 8081 --workers auto\n"
+    .ascii "  sarm 8081 d\n"
+.equ usage_len, . - usage_text
 
 // hw_logicalcpu — the sysctl name `--workers auto` resolves. Passed to
 // the raw sysctlbyname syscall, which (unlike libc's wrapper) wants the
@@ -221,11 +274,21 @@ install_sigchld:
 //   sysctlbyname("hw.logicalcpu"); the raw syscall takes the name
 //   length as its second argument, where libc's wrapper computes it.
 //
-//   Linux has no equivalent one-call answer (it would mean
-//   sched_getaffinity plus a popcount over the returned mask, or
-//   parsing /proc/cpuinfo — a filesystem read this server does not do
-//   while serving), so `auto` there conservatively reports 1 rather
-//   than guessing. An explicit `--workers N` works identically on both.
+//   Linux has no "how many cores" syscall, so it answers a slightly
+//   different question: sched_getaffinity(0, ...) returns the mask of
+//   CPUs this process is ALLOWED to run on, and the popcount of that
+//   mask is the answer `--workers auto` actually wants. Under taskset,
+//   a cgroup cpuset or a container pinned to two CPUs it reports two,
+//   where a raw core count would report the host's and over-fork. No
+//   filesystem is involved — /proc/cpuinfo and sysconf(3) are exactly
+//   what this server must not do — and an explicit `--workers N` still
+//   works identically on both platforms.
+//
+//   The mask buffer is 128 bytes (1024 CPUs). A machine wider than that
+//   makes the kernel answer EINVAL rather than truncate, which lands in
+//   the same fallback as any other failure: report 1. Overshooting the
+//   clamp is not a concern either way — the caller clamps to
+//   MAX_WORKERS.
 //
 // Input/Arguments:
 //   (none)
@@ -234,15 +297,68 @@ install_sigchld:
 //   x0 — logical CPU count, or 1 if it could not be determined
 //
 // Clobbered Registers:
-//   x0-x5, x9, x16
+//   x0-x5, x9-x11, x16 (x8 on Linux); v0 on Linux (the popcount)
 //
 // Stack Usage:
-//   32 bytes: the u32 result plus its size_t length, both by-reference
+//   macOS: 32 bytes — the u32 result plus its size_t length, both
+//   by-reference. Linux: 128 bytes — the CPU mask.
 // ─────────────────────────────────────────────────────────────────────
 .align 2
 detect_cpus:
 #ifdef __linux__
-    mov x0, #1                  // see the header note above
+    sub sp, sp, #128
+    // Zero the mask first. The kernel reports how many bytes it filled
+    // and leaves the rest untouched, so the popcount below is bounded by
+    // that count; zeroing means a miscount could only ever be low, never
+    // an inherited stack bit read as a CPU.
+    mov x9, #0
+Ldc_zero:
+    add x10, sp, x9
+    str xzr, [x10]
+    add x9, x9, #8
+    cmp x9, #128
+    b.lt Ldc_zero
+
+    // sched_getaffinity(0, sizeof mask, &mask)
+    SCWINUM SYS_sched_getaffinity
+    mov x0, #0                  // pid 0 — this process
+    mov x1, #128                // cpusetsize, in bytes
+    mov x2, sp
+    SCWISVC
+    SCERR
+    b.cs Ldc_no_mask
+
+    // x0 = bytes of the mask the kernel filled (a multiple of 8). Count
+    // the set bits in exactly those bytes: arm64's base ISA has no
+    // scalar popcount, so each word goes through NEON's cnt.
+    mov x1, x0                  // filled length
+    mov x9, #0                  // byte offset
+    mov x2, #0                  // CPUs counted so far
+Ldc_popcount:
+    cmp x9, x1
+    b.ge Ldc_popcount_done
+    add x10, sp, x9
+    ldr x11, [x10]
+    fmov d0, x11
+    cnt v0.8b, v0.8b            // per-byte popcount
+    uaddlv h0, v0.8b            // sum the eight of them
+    fmov w11, s0
+    add x2, x2, x11
+    add x9, x9, #8
+    b Ldc_popcount
+Ldc_popcount_done:
+    mov x0, x2
+    cbz x0, Ldc_no_mask         // an empty mask is not an answer
+    add sp, sp, #128
+    ret
+    // Named apart from the macOS arm's Ldc_fallback on purpose: the two
+    // arms are never assembled together, but scripts/abi.py does not
+    // run the preprocessor, and a label defined twice in the file makes
+    // it trace this branch into the other platform's epilogue and report
+    // a stack imbalance that does not exist.
+Ldc_no_mask:
+    mov x0, #1
+    add sp, sp, #128
     ret
 #else
     sub sp, sp, #32
@@ -433,6 +549,27 @@ Largv_loop:
     mov x2, #opt_workers_len
     bl streqn
     cbnz x0, Largv_workers
+
+    // -help / --help / -h — print the usage and exit(0). Checked before
+    // the positional rule below, which would otherwise read a token
+    // starting with '-' as a port and fail on it.
+    mov x0, x22
+    adr_l x1, opt_help
+    mov x2, #opt_help_len
+    bl streqn
+    cbnz x0, help_exit
+
+    mov x0, x22
+    adr_l x1, opt_help_long
+    mov x2, #opt_help_long_len
+    bl streqn
+    cbnz x0, help_exit
+
+    mov x0, x22
+    adr_l x1, opt_h
+    mov x2, #opt_h_len
+    bl streqn
+    cbnz x0, help_exit
 
     ldrb w0, [x22]
     cmp w0, #'A'
@@ -933,3 +1070,20 @@ fatal_exit:
     mov x0, #1
     SCWISVC
     SCERR
+
+// help_exit — `-help`: one write of the usage blob to stdout, then
+// exit(0). Reached only from the argument scan, before any socket
+// exists, so there is nothing to shut down on the way out. A failed
+// write is not worth reporting to a stdout that could not take it, so
+// the result is ignored.
+help_exit:
+    SCWINUM SYS_write
+    mov x0, #1                  // stdout
+    adr_l x1, usage_text
+    mov x2, #usage_len
+    SCWISVC
+
+    SCWINUM SYS_exit
+    mov x0, #0
+    SCWISVC
+

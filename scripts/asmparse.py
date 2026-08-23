@@ -123,15 +123,29 @@ REG_RE = re.compile(
 )
 
 
-def parse_instructions(source: str) -> tuple[list[Instruction], dict[str, int]]:
-    """Parse an assembly body into instructions and a ``label -> index`` map.
+def parse_instructions(
+    source: str,
+) -> tuple[list[Instruction], dict[str, list[int]]]:
+    """Parse an assembly body into instructions and a ``label -> indices`` map.
 
     The index a label maps to is the index of the *next* instruction, which is
     what branch resolution wants. Labels are matched before directives are
     discarded -- that is the whole point of this function.
+
+    A label may be defined more than once in one body, and the map keeps every
+    definition. Numeric local labels (``9900:``) are *meant* to repeat -- the
+    ``SCERR`` macro expands to a pair of them at every syscall site, so a
+    function with two syscalls defines each of them twice, and ``2b``/``3f``
+    resolution only means anything if all the definitions are visible. Named
+    labels repeat too, in a file where the two arms of an ``#ifdef`` both
+    define one: nothing here runs the preprocessor, so both arms are parsed
+    and both definitions are real as far as this parser is concerned.
+    Collapsing either kind to one entry silently wired branches to the wrong
+    target -- in ``detect_cpus`` it routed the Linux arm's error path into the
+    macOS arm's epilogue and reported a stack imbalance that does not exist.
     """
     instructions: list[Instruction] = []
-    labels: dict[str, int] = {}
+    labels: dict[str, list[int]] = {}
 
     for lineno, raw in enumerate(source.splitlines(), start=1):
         line = strip_comment(raw)
@@ -144,7 +158,7 @@ def parse_instructions(source: str) -> tuple[list[Instruction], dict[str, int]]:
             if not found:
                 break
             name, rest = found
-            labels[name] = len(instructions)
+            labels.setdefault(name, []).append(len(instructions))
             line = rest
             if not line:
                 break
@@ -182,26 +196,36 @@ def split_operands(text: str) -> list[str]:
     return [o.strip() for o in out if o.strip()]
 
 
-def resolve_target(target: str, labels: dict[str, int],
+def resolve_target(target: str, labels: dict[str, list[int]],
                    current: int) -> int | None:
     """Resolve a branch target, including numeric local labels (``2b``/``3f``).
 
     ``current`` is the index of the branching instruction; ``2b`` means the
     nearest preceding definition of label ``2``, ``3f`` the nearest following.
+
+    A name defined more than once resolves the same way a local label does:
+    the nearest definition at or after the branch, else the nearest one before
+    it. For the single definition that names almost always have, that is the
+    definition itself; for the two arms of an ``#ifdef``, it is the arm the
+    branch is written in.
     """
     target = target.strip()
     if len(target) > 1 and target[-1] in "bf" and target[:-1].isdigit():
         name, direction = target[:-1], target[-1]
-        best: int | None = None
-        for key, value in labels.items():
-            if key != name:
-                continue
-            if direction == "b" and value <= current:
-                best = value if best is None else max(best, value)
-            elif direction == "f" and value > current:
-                best = value if best is None else min(best, value)
-        return best
-    return labels.get(target)
+        values = labels.get(name, [])
+        if direction == "b":
+            before = [v for v in values if v <= current]
+            return max(before) if before else None
+        after = [v for v in values if v > current]
+        return min(after) if after else None
+
+    values = labels.get(target, [])
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    after = [v for v in values if v >= current]
+    return min(after) if after else max(values)
 
 
 # ----------------------------------------------------------------------

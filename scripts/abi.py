@@ -328,7 +328,7 @@ def tracked(reg: str) -> bool:
 # ----------------------------------------------------------------------
 
 def build_cfg(instructions: list[Instruction],
-              labels: dict[str, int]) -> list[list[int]]:
+              labels: dict[str, list[int]]) -> list[list[int]]:
     """Instruction-level successor lists.
 
     ``bl``/``blr`` fall through (the callee returns). ``b`` to an unresolved
