@@ -463,14 +463,20 @@ fi
 # The Linux replacement for count_calls.py, which drives lldb on macOS.
 # Frequency, not size, is what makes a function worth optimising.
 #
-# Attached by ADDRESS, not by name. bpftrace resolves a named uprobe against
-# STT_FUNC symbols, and sarm's sources emit no `.type name, %function`
-# directives, so every one of its 170 globals is STT_NOTYPE and matching by
-# name reports "No matches for uprobe". The file offset works regardless of
-# symbol type: take the symbol's virtual address from nm and translate it
-# through the PT_LOAD segment that contains it.
-if ! skipped calls && command -v bpftrace >/dev/null 2>&1 && [ -n "$TOP_SYMS" ]; then
-    say "8. Call counts under load (bpftrace uprobes)"
+# Attached by FILE OFFSET through the kernel's own uprobe_events interface,
+# not by name and not through bpftrace. sarm's sources emit no
+# `.type name, %function` directives, so all 170 of its globals are
+# STT_NOTYPE — bpftrace rejects those both by name ("No matches for uprobe")
+# and by address ("Could not resolve address"), because it validates the
+# address against a containing STT_FUNC symbol before attaching. The tracefs
+# interface performs no such validation: it takes a raw file offset. So take
+# the symbol's virtual address from nm, translate it through the PT_LOAD
+# segment that contains it, and count the resulting tracepoint with perf.
+if ! skipped calls && [ -n "$TOP_SYMS" ] && [ -n "$PERF" ]; then
+    say "8. Call counts under load (uprobe_events + perf stat)"
+
+    TRACEFS=/sys/kernel/tracing
+    [ -d "$TRACEFS/events" ] || TRACEFS=/sys/kernel/debug/tracing
 
     # Pure bash arithmetic rather than awk: strtonum() is a gawk extension
     # and Ubuntu's default awk is mawk, which does not have it.
@@ -491,35 +497,50 @@ if ! skipped calls && command -v bpftrace >/dev/null 2>&1 && [ -n "$TOP_SYMS" ];
         return 1
     }
 
-    PROG=""
-    ATTACHED=""
-    for sym in $(printf '%s\n' "$TOP_SYMS" | head -12); do
-        off=$(file_offset_of "$sym" || true)
-        if [ -n "$off" ]; then
-            PROG="${PROG}uprobe:${REPO}/sarm:${off} { @${sym} = count(); } "
-            ATTACHED="${ATTACHED} ${sym}"
-        else
-            warn "no file offset for ${sym} — skipping"
-        fi
-    done
+    probe_del() {  # remove one probe, ignoring "was never there"
+        printf -- '-:sarmbench/%s\n' "$1" | sudo tee -a "$TRACEFS/uprobe_events" >/dev/null 2>&1 || true
+    }
 
-    if [ -z "$PROG" ]; then
-        warn "could not resolve any symbol to a file offset — skipping call counts"
+    if [ ! -w "$TRACEFS/uprobe_events" ] && ! sudo test -w "$TRACEFS/uprobe_events"; then
+        warn "no writable $TRACEFS/uprobe_events — skipping call counts"
     else
-        info "attaching to:${ATTACHED}"
-        start_server auto
-        start_load h2tls 12
-        if sudo timeout 10 bpftrace -e "$PROG" > "$OUTDIR/call_counts.txt" 2>"$OUTDIR/call_counts.log"; then
-            grep '^@' "$OUTDIR/call_counts.txt" | sed 's/^/   /' | tee -a "$OUTDIR/summary.txt" || true
+        EVENTS=""
+        ATTACHED=""
+        for sym in $(printf '%s\n' "$TOP_SYMS" | head -12); do
+            off=$(file_offset_of "$sym" || true)
+            if [ -z "$off" ]; then
+                warn "no file offset for ${sym} — skipping"
+                continue
+            fi
+            probe_del "$sym"
+            if printf 'p:sarmbench/%s %s/sarm:%s\n' "$sym" "$REPO" "$off" \
+               | sudo tee -a "$TRACEFS/uprobe_events" >>"$OUTDIR/call_counts.log" 2>&1; then
+                EVENTS="${EVENTS:+$EVENTS,}sarmbench:${sym}"
+                ATTACHED="${ATTACHED} ${sym}"
+            else
+                warn "could not create uprobe for ${sym} at ${off}"
+            fi
+        done
+
+        if [ -z "$EVENTS" ]; then
+            warn "no uprobes created — see call_counts.log"
         else
-            warn "bpftrace failed — see call_counts.log"
-            head -3 "$OUTDIR/call_counts.log" 2>/dev/null | sed 's/^/   /' || true
+            info "counting:${ATTACHED}"
+            start_server auto
+            start_load h2tls "$DURATION"
+            $PERF stat -a -C "$SERVER_CPUS" -e "$EVENTS" \
+                -o "$OUTDIR/call_counts.txt" -- sleep "$((DURATION - 2))" \
+                2>>"$OUTDIR/call_counts.log" || warn "perf stat failed — see call_counts.log"
+            wait_load
+            stop_server
+            awk '$2 ~ /^sarmbench:/ {sub(/^sarmbench:/, "", $2); printf "   %16s  %s\n", $1, $2}' \
+                "$OUTDIR/call_counts.txt" 2>/dev/null | tee -a "$OUTDIR/summary.txt"
         fi
-        wait_load
-        stop_server
+
+        for sym in $ATTACHED; do probe_del "$sym"; done
     fi
 elif ! skipped calls; then
-    info "8. Call counts — skipped (bpftrace missing, or no profile to pick symbols from)"
+    info "8. Call counts — skipped (no perf, or no profile to pick symbols from)"
 fi
 
 # ══ done ══════════════════════════════════════════════════════════════
