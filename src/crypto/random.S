@@ -61,7 +61,79 @@
 //   32 bytes: x19-x21. Leaf function — nothing is called, so x30 is not
 //   saved (the previous /dev/urandom implementation saved it only
 //   because it, too, was a leaf and did so unnecessarily).
+//
+// Failure injection:
+//   -DSARM_RNG_FAIL / -DSARM_RNG_FAIL_NTH=n build a version of this
+//   function that fails on demand, so that the fail-closed handling in
+//   every caller can be seen to fire. See the block below; nothing of
+//   it survives into a default build.
 // ─────────────────────────────────────────────────────────────────────
+
+// ── Failure injection (docs/SECURITY.md §4.4, §14 A4) ────────────────
+// Every caller of this function treats a carry-set return as fatal:
+// tls_build_server_hello and tls_certificate_verify_write both wipe
+// their scratch and hand TLS_ALERT_INTERNAL_ERROR back to the
+// handshake, which aborts the connection. That is the single most
+// consequential error path in the tree — the P0 row in §2 is "ECDSA
+// nonce/randomness failure → private-key compromise" — and until this
+// block existed it had never once been taken. §12 is explicit that a
+// path only ever seen not to run is not evidence of anything.
+//
+// The kernel CSPRNG cannot be made to fail from outside the process,
+// so the failure has to come from inside. It is compile-time, exactly
+// like -DSARM_NO_RODATA in src/defs.S (which exists so that "the
+// constants are read-only" is a check that has been seen to fail):
+// the default build contains no counter, no branch and no extra
+// instruction. tests/test_rng_fail.sh checks that on the linked
+// ./sarm rather than by re-reading this #ifdef — neither of the two
+// symbols below may appear in it — and pairs the check with an
+// injected variant that must carry them, so it is a check that can
+// fail in both directions.
+//
+//   -DSARM_RNG_FAIL              every call fails
+//   -DSARM_RNG_FAIL_NTH=n        the n-th call of the process fails,
+//                                1-based; every other call is real
+//   -DSARM_RNG_FAIL_ERRNO=e      the errno handed back (default EIO)
+//
+// The ordinal matters because the three draws in a connection fail
+// differently: #1 (server_random) and #2 (the ephemeral X25519 scalar)
+// abort before a single ServerHello byte is written, while #3 (the
+// ECDSA nonce k) aborts after three messages are already on the wire
+// and is the one that must not sign with a zero or stale k.
+//
+// Two globals, both of which exist only in an injected build:
+//
+//   crypto_random_fail_calls   calls seen, whether injected or not, so
+//                              a test can assert the injection fired.
+//                              A fail-closed test that passed because
+//                              the RNG quietly succeeded proves
+//                              nothing, and this is what rules that
+//                              out.
+//   crypto_random_fail_at      the ordinal, writable at run time. The
+//                              -D sets its initial value; the server
+//                              never touches it, but a unit test can,
+//                              which is what lets one binary sweep all
+//                              three draws and take an uninjected
+//                              control run in between. Negative means
+//                              "no failure", 0 means "every call".
+#if defined(SARM_RNG_FAIL) || defined(SARM_RNG_FAIL_NTH)
+#define SARM_RNG_INJECT 1
+#ifndef SARM_RNG_FAIL_NTH
+#define SARM_RNG_FAIL_NTH 0             // 0 — fail every call
+#endif
+#ifndef SARM_RNG_FAIL_ERRNO
+#define SARM_RNG_FAIL_ERRNO 5           // EIO
+#endif
+
+.data
+.align 3
+.global crypto_random_fail_calls
+crypto_random_fail_calls:
+    .quad   0
+.global crypto_random_fail_at
+crypto_random_fail_at:
+    .quad   SARM_RNG_FAIL_NTH
+#endif
 
 .text
 .align 2
@@ -71,6 +143,25 @@ crypto_random_bytes:
     str     x21, [sp, #16]
     mov     x19, x0                 // buf
     mov     x20, x1                 // bytes remaining
+
+#ifdef SARM_RNG_INJECT
+    // Counted before the decision, so the ordinal is the call number
+    // whether or not this particular call is the one that fails.
+    adr_l   x21, crypto_random_fail_calls
+    ldr     x2, [x21]
+    add     x2, x2, #1
+    str     x2, [x21]
+    adr_l   x21, crypto_random_fail_at
+    ldr     x21, [x21]
+    tbnz    x21, #63, .Lcrb_real    // negative — injection off
+    cbz     x21, .Lcrb_inject       // zero — every call
+    cmp     x2, x21
+    b.ne    .Lcrb_real
+.Lcrb_inject:
+    mov     x0, #SARM_RNG_FAIL_ERRNO
+    b       .Lcrb_fail              // nothing written to the buffer
+.Lcrb_real:
+#endif
 
 #ifdef __linux__
     // getrandom(buf, len, 0). Returns the count written, which may be

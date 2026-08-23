@@ -234,9 +234,34 @@ is redrawn on the ~2^-256 `r==0`/`s==0` retry, capped at 4 attempts.
 Linux. No file descriptor, no `/dev/urandom`, so no fallback path to audit.
 Three calls per TLS connection: server random, ephemeral X25519 scalar, ECDSA
 nonce. Failure handling is **fail-closed**: `crypto_random_bytes` returns carry
-set with an errno and `tls_certificate_verify_write` maps that straight to
-`TLS_ALERT_INTERNAL_ERROR` rather than substituting anything. This is asserted
-by construction and still not by a test — §14 A4.
+set with an errno, and both callers map that straight to
+`TLS_ALERT_INTERNAL_ERROR` rather than substituting anything.
+
+That used to be asserted by construction and by nothing else, because the
+kernel CSPRNG cannot be made to fail from outside the process. It can now be
+made to fail from inside it: `src/crypto/random.S` carries a
+`-DSARM_RNG_FAIL_NTH=n` block, on the `-DSARM_NO_RODATA` precedent, that fails
+the *n*-th draw of a process and writes nothing to the buffer. Nothing of it
+survives a default build, and `tests/test_rng_fail.sh` checks that on the
+linked binary rather than on the `#ifdef`. What the three draws do when they
+fail is now a measurement rather than a claim:
+
+| draw | fails inside | observed on the wire |
+|---|---|---|
+| 1 — server random | `tls_build_server_hello` | nothing at all: 0 bytes, no ServerHello |
+| 2 — ephemeral X25519 scalar | `tls_build_server_hello` | nothing at all; `x25519` never runs on the unfilled scalar |
+| 3 — ECDSA nonce `k` | `tls_certificate_verify_write` | exactly three records — ServerHello, EncryptedExtensions, Certificate — and then a close. The CertificateVerify that would carry the signature never exists |
+
+Draw 3 is the P0 one, and the sabotage says why. Delete its `b.cs` and the
+server signs the transcript with whatever was on the stack where `k` should
+have been, completes the handshake, and serves application data over it —
+which is the private-key-compromise row of §2, reached in one instruction.
+`tests/unit/test_rng_fail.c` is the half that can look at the buffers: it
+asserts the output is byte-for-byte untouched, that no key share or shared
+secret is derived from a buffer the RNG declined to fill, and that a failing
+call does not leave the previous connection's signature sitting in the buffer
+for someone to send again. Every case reads the injection's own call counter
+back, so a case cannot pass by the RNG having quietly succeeded.
 
 ### 4.5 Secrets in output
 
@@ -466,7 +491,7 @@ source comments; gaps are deliberate.
 | 2 | No section is read-only | **fixed** (Step 13, §13.1) |
 | 3 | Key material is adjacent to attacker-filled record buffers | recorded — raises the value of over-read testing at the `tls_hs_record_buf`/`tls_hs_msg_buf` boundaries, which Steps 2, 3 and 10 do |
 | 4 | Bounds are enforced by end-pointer comparison, never a checked-add idiom | **fixed** (Step 5, §3.5; the four carried-forward items by §14 A3). The width argument is still a human reading two functions — what changed is that its premises are now machine-checked by `scripts/width_guard.py`, so a field cannot widen without failing `make test` |
-| 5 | Fail-closed entropy is asserted by construction, never tested | **open** — §14 A4 |
+| 5 | Fail-closed entropy is asserted by construction, never tested | **fixed** (§14 A4) — the failure is injectable (`-DSARM_RNG_FAIL_NTH=n`, never in a shipped build) and all three draws of a connection are now driven through it, at the wire level in `tests/test_rng_fail.sh` and at the buffer level in `tests/unit/test_rng_fail.c`. Sabotage: removing the nonce draw's `b.cs` makes the server sign with stack garbage and complete the handshake — 8 checks red, across both harnesses |
 | 6 | `defs.S` defines ~20 filesystem/process syscalls nothing calls | **fixed** by the allowlist (§6) |
 | 7 | No concurrent-connection cap, no handshake-duration cap | **half closed** (Step 12); the connection cap is a recorded decision, §14 C1 |
 | 8 | The h2 flow-control re-entrancy path deserves targeted *state* fuzzing | **open** — §14 A5 |
@@ -817,13 +842,35 @@ plain unit test cannot tell "refused the length" from "read 2.5 KB of adjacent
 memory and then hit its output cap", because both come back carry-set. It only
 became evidence once it ran against a guard page.
 
-**A4 — Fail-closed entropy is never tested.** Observation 5, sitting under a P0
-row ("ECDSA nonce/randomness failure → private-key compromise"). Make the
-failure injectable without shipping the injection — `make variant` is the
-precedent — and assert that the handshake aborts, that nothing wire-bound
-depends on the missing bytes, and that nothing signs with a zero or stale
-nonce. Then walk every caller of `crypto_random_bytes` and confirm each checks
-the return.
+**A4 — Fail-closed entropy is never tested.** **Done** — see §4.4, which now
+carries the per-draw table, and §9 observation 5. Four notes for whoever reads
+this next.
+
+The injection ordinal is *writable at run time* as well as settable by `-D`.
+That was not the first design and it is the one that matters: a compile-time-
+only knob needs one binary per draw, and the unit suite needs to fail draw 1,
+then draw 2, then take an uninjected control run, inside a single process. The
+`-D` still sets the initial value, which is what the server variants use.
+
+The walk this item asks for — "every caller of `crypto_random_bytes` checks the
+return" — is in `tests/test_rng_fail.sh` as a source sweep rather than in this
+paragraph as a finding. There are three call sites today and all three check;
+the reason to spend fifteen lines of `awk` on a fact that takes a minute to
+verify by hand is that the fourth call site is the one nobody will check.
+
+The end-to-end assertion for draw 3 is a **record count**, not an inspection of
+the CertificateVerify. It cannot be an inspection: by the time `k` is drawn the
+handshake keys exist, so everything after ServerHello is encrypted, and a
+client that cannot finish the handshake cannot decrypt it. Three records
+arriving and a fourth never arriving is the strongest statement available from
+the wire. The claim that nothing was *signed* — as opposed to signed and not
+sent — is the unit suite's, and only the unit suite's.
+
+Finally: the harness found nothing wrong with the server. Every one of the
+three paths already did the right thing, which was the expected outcome, and
+is why the sabotage runs are the only part of this work that is evidence of
+anything. The `make test` cost is ~18 seconds, three `make variant` builds and
+four TLS handshakes.
 
 **A5 — State fuzzing of the h2 flow-control re-entrancy.** Observation 8. Drive
 the state machine by *transitions* rather than bytes — frame dispatch
@@ -932,9 +979,11 @@ to do next.
 | **P2** | Binary hardening | Defence in depth |
 | **P2** | Long-running chaos testing | Reliability/security regression |
 
-Of these, the P0 rows are all covered by a committed suite except **ECDSA
-nonce/randomness failure** (§14 A4) and the **distributed-binary key** (§14 C3).
-P1's constant-time row has nothing at all (§14 B1).
+Of these, the P0 rows are all covered by a committed suite except the
+**distributed-binary key** (§14 C3), which is a deployment problem and not a
+testing one. **ECDSA nonce/randomness failure** was the last of them to close
+(§14 A4, §4.4): the failure is now injectable and every draw a connection makes
+is driven through it. P1's constant-time row has nothing at all (§14 B1).
 
 ---
 

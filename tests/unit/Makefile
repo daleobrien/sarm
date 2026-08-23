@@ -137,6 +137,12 @@ TEST_H2_FLOW      := $(OBJ_DIR)/test_h2_flow
 TEST_H2_MUX       := $(OBJ_DIR)/test_h2_mux
 TEST_H2_CONN_MGMT := $(OBJ_DIR)/test_h2_conn_mgmt
 TEST_H2_ALIGNMENT := $(OBJ_DIR)/test_h2_alignment
+# test_rng_fail: the only test binary that does not link the tree's own
+# crypto_random.o. It links a -DSARM_RNG_FAIL build of the same source
+# instead, so the fail-closed paths in tls_build_server_hello and
+# tls_certificate_verify_write can actually be entered
+# (docs/SECURITY.md §14 A4).
+TEST_RNG_FAIL := $(OBJ_DIR)/test_rng_fail
 
 TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) $(TEST_KEEP_ALIVE) $(TEST_RESET_REQUEST) \
 	$(TEST_STR_LEN) $(TEST_STREQN) $(TEST_STREQN_I) $(TEST_MEMCPY) $(TEST_ITOA) \
@@ -145,7 +151,7 @@ TESTS := $(TEST_PARSE) $(TEST_FILE) $(TEST_REQUEST) $(TEST_RESPONSE) $(TEST_KEEP
 	$(TEST_TLS_RECORD_PARSE) $(TEST_TLS_RECORD_WRITE) $(TEST_TLS_RECORD_NONCE) $(TEST_TLS_RECORD_ENCRYPT) $(TEST_TLS_RECORD_DECRYPT) $(TEST_TLS_RECORD_SEQ) $(TEST_TLS_RECORD_READ_RECORD) \
 	$(TEST_H2_FRAMES) $(TEST_H2_PREFACE) $(TEST_H2_STREAMS) $(TEST_H2_HPACK) \
 	$(TEST_H2_REQUEST) $(TEST_H2_RESPONSE) $(TEST_H2_STATIC) $(TEST_H2_FLOW) \
-	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT)
+	$(TEST_H2_MUX) $(TEST_H2_CONN_MGMT) $(TEST_H2_ALIGNMENT) $(TEST_RNG_FAIL)
 
 all: test
 
@@ -374,6 +380,23 @@ $(OBJ_DIR)/test_p256_ecdsa_%: test_p256_ecdsa/%.c $(HARNESS) $(crypto_objs) | $(
 # pure syscall wrapper, standard ABI).
 $(TEST_CRYPTO_RANDOM): test_crypto_random.c $(HARNESS) $(crypto_objs) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $< $(crypto_objs) $(LDFLAGS) -o $@
+
+# test_rng_fail: fail-closed entropy (docs/SECURITY.md §4.4, §14 A4).
+# Same object set as test_tls_server_hello — it drives
+# tls_build_server_hello and tls_certificate_verify_write — with one
+# substitution: crypto_random.o is swapped for a -DSARM_RNG_FAIL build
+# of the same file, which exports the ordinal this test writes to
+# choose which draw fails. The substitution is why the object is named
+# rather than wildcarded; a second copy of random.S in the link would
+# be a duplicate-symbol error, which is the failure mode you want if
+# the filter-out ever stops matching.
+RNGFAIL_OBJS := $(filter-out $(OBJ_DIR)/crypto_random.o,$(util_objs)) $(OBJ_DIR)/rngfail_random.o
+
+$(OBJ_DIR)/rngfail_random.o: ../../src/crypto/random.S ../../src/defs.S | $(OBJ_DIR)
+	$(AS) $(ASFLAGS) -DSARM_RNG_FAIL -c $< -o $@
+
+$(TEST_RNG_FAIL): test_rng_fail.c $(HARNESS) $(RNGFAIL_OBJS) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) $< $(RNGFAIL_OBJS) $(LDFLAGS) -o $@
 
 # test_transport: transport_read/transport_write dispatch on
 # `transport_mode` (src/transport/data.S). The TRANSPORT_TLS branch

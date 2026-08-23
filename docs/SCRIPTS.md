@@ -42,6 +42,7 @@ make -C tests/unit              # unit suite alone (~4,300 assertions)
 ./tests/test_leak.sh            # secret-leak probe: hostile traffic, scanned responses
 ./tests/test_syscalls.sh        # syscall allowlist + traced filesystem non-access
 ./tests/test_limits.sh          # resource limits: connections, deadline, buffers, CPU
+./tests/test_rng_fail.sh        # fail-closed entropy: each of the three draws, injected
 ./tests/test_multicore.sh       # concurrent multi-protocol load across workers
 ./tests/h2_browser_sim.py all   # frame-level browser simulator, not in `make test`
 ```
@@ -122,6 +123,27 @@ on Linux an empty `LDFLAGS` gives a fixed-address image with an executable
 stack. `--docker` additionally inspects the binary inside the container image;
 the ELF side is parsed in Python, so that works from macOS. Write-up:
 [docs/SECURITY.md §13](SECURITY.md).
+
+`tests/test_rng_fail.sh` (with `tests/rng_fail_checks.py`) is `docs/SECURITY.md`
+§14 A4 — the one that makes the CSPRNG fail. `src/crypto/random.S` carries a
+`-DSARM_RNG_FAIL_NTH=n` block on the `-DSARM_NO_RODATA` precedent, `make
+variant` builds one server per draw, and the script checks first that the
+shipped `./sarm` carries none of it. A TLS connection makes exactly three
+draws: the first two abort inside `tls_build_server_hello` before a byte is
+written, so the assertion is that the client saw *nothing*; the third aborts
+inside `tls_certificate_verify_write` with three records already sent, so the
+assertion is that exactly three arrived and the fourth — the signature — never
+did. `./sarm` itself is the control, and it must complete the same handshake
+and carry application data, or the four failing cases prove only that the
+client cannot talk to this server. A source sweep also requires every `bl
+crypto_random_bytes` in the tree to branch on carry immediately. The
+measurement is `rng_fail_checks.py`, which drives the handshake over an
+`ssl.MemoryBIO` pair so it can count wire bytes rather than only ask the
+library whether it worked. The buffer-level half — nothing signed, nothing
+derived from an unfilled scalar, no stale signature left behind — is
+`tests/unit/test_rng_fail.c`, the one test binary that links a `-DSARM_RNG_FAIL`
+build of `random.S` instead of the tree's own. Write-up:
+[docs/SECURITY.md §4.4](SECURITY.md).
 
 `tests/test_workers.sh` (with `tests/worker_checks.py`) covers the pre-forked
 accept workers — properties of *processes* rather than of functions, so they
