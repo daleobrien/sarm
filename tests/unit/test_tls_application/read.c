@@ -17,7 +17,7 @@
 #include "test_harness.h"
 
 extern uint8_t tls_client_app_key[16] __asm__("tls_client_app_key");
-extern uint8_t tls_client_gcm_ctx[192] __asm__("tls_client_gcm_ctx");
+extern uint8_t tls_client_gcm_ctx[304] __asm__("tls_client_gcm_ctx");
 extern void aes_gcm_ctx_init(const void *key, void *ctx)
     __asm__("aes_gcm_ctx_init");
 

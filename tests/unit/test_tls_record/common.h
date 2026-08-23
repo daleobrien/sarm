@@ -74,7 +74,7 @@ extern void aes_gcm_encrypt(const void *key, const void *iv,
 // The wrappers below keep taking a bare key and build the context on
 // the spot, so every vector here stays written in terms of the RFC's
 // published keys.
-#define GCM_CTX_SIZE 192
+#define GCM_CTX_SIZE 304
 
 extern void aes_gcm_ctx_init(const void *key, void *ctx)
     __asm__("aes_gcm_ctx_init");

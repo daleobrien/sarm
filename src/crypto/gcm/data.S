@@ -190,6 +190,62 @@
     ret
 
 // ─────────────────────────────────────────────────────────────────────
+// Function Name: .Lgcm_ghash_powers (private)
+//
+// Description: Derives the GHASH subkey powers .Lgcm_ghash_run's
+//   4-block aggregation needs — H^2, H^3, H^4, and the rolled cross
+//   term rol64(H^k) ⊕ H^k that .Lgcm_karatsuba_br takes in v3 — from
+//   H' in v19.
+//
+//   This used to live at the top of .Lgcm_ghash_run, computed lazily on
+//   any call that had four or more blocks to fold. That is once per
+//   record on the live path, three chained GF(2^128) multiplies deep,
+//   for values that are a pure function of H — and therefore of the
+//   key. It is a helper now so that both callers can decide when to pay
+//   for it: aes_gcm_ctx_init runs it once per epoch and stores the
+//   results in the key context, and ghash (test-only) runs it inline.
+//
+// Input/Arguments:
+//   v19 — H' (natural domain)
+//   v17 — the 0x87 reduction constant, v18 — zero (.Lgcm_gf_mul's)
+//
+// Output/Returns:
+//   v22 — H'^2, v23 — H'^3, v24 — H'^4
+//   v25..v28 — the rolled cross terms of H'^1..H'^4, in that order
+//
+// Clobbered Registers:
+//   v0-v7, v22-v28
+//
+// Stack Usage:
+//   16 bytes - 8 for x30, 8 slack
+// ─────────────────────────────────────────────────────────────────────
+.Lgcm_ghash_powers:
+    sub     sp, sp, #16
+    str     x30, [sp]
+    mov     v0.16b, v19.16b
+    mov     v1.16b, v19.16b
+    bl      .Lgcm_gf_mul                // v0 = H^2
+    mov     v22.16b, v0.16b
+    mov     v1.16b, v19.16b
+    bl      .Lgcm_gf_mul                // v0 = H^2·H = H^3
+    mov     v23.16b, v0.16b
+    mov     v1.16b, v19.16b
+    bl      .Lgcm_gf_mul                // v0 = H^3·H = H^4
+    mov     v24.16b, v0.16b
+
+    ext     v25.16b, v19.16b, v19.16b, #8
+    eor     v25.16b, v25.16b, v19.16b   // BR(H^1)
+    ext     v26.16b, v22.16b, v22.16b, #8
+    eor     v26.16b, v26.16b, v22.16b   // BR(H^2)
+    ext     v27.16b, v23.16b, v23.16b, #8
+    eor     v27.16b, v27.16b, v23.16b   // BR(H^3)
+    ext     v28.16b, v24.16b, v24.16b, #8
+    eor     v28.16b, v28.16b, v24.16b   // BR(H^4)
+    ldr     x30, [sp]
+    add     sp, sp, #16
+    ret
+
+// ─────────────────────────────────────────────────────────────────────
 // Function Name: .Lgcm_ghash_run (private)
 //
 // Description: Folds nbytes of GCM wire-order data at x27 into the GHASH
@@ -213,23 +269,29 @@
 //   products are XOR-accumulated and reduced exactly once per 4 blocks
 //   instead of once per block (reduction is linear — see
 //   .Lgcm_reduce87). H^2..H^4 and their rolled cross terms are
-//   precomputed once per call, only when the 4-block path will actually
-//   run, so calls with fewer than 4 blocks (the common case for AAD and
-//   the fixed 16-byte length block) pay no extra cost and take the
-//   original one-block-at-a-time path unchanged.
+//   supplied by the caller in v22-v28 (.Lgcm_ghash_powers), which is
+//   what lets a connection derive them once per epoch rather than once
+//   per record — they depend only on H. Calls with fewer than 4 blocks
+//   (the common case for AAD and the fixed 16-byte length block) never
+//   look at them and take the one-block-at-a-time path unchanged.
 //
 // Input/Arguments:
 //   x27 — pointer to the data
 //   x28 — byte count (any value; 0 is a no-op)
 //   v16 — nibble table, v17 — 0x87 constant, v18 — zero
 //   v19 — H' (natural domain), v20 — running Y' accumulator
+//   v22-v24 — H'^2, H'^3, H'^4; v25-v28 — their rolled cross terms and
+//   H's, as .Lgcm_ghash_powers leaves them. Only read when four or more
+//   blocks remain, but the caller cannot know that in advance, so they
+//   must be live across every call.
 //   (v1 is loaded with H' on entry: .Lgcm_gf_mul multiplies v0 by v1)
 //
 // Output/Returns:
 //   v20 - the updated accumulator
 //
 // Clobbered Registers:
-//   x9-x12, x27, v0-v7, v22-v30 (x19-x26, x28 and v16-v21 are preserved)
+//   x9-x12, x27, v0-v7, v29, v30 (x19-x26, x28, v16-v21 and the
+//   caller's v22-v28 powers are preserved)
 //
 // Stack Usage:
 //   32 bytes - 16 for the zero-padded partial block, 8 for x30, 8 slack
@@ -245,29 +307,8 @@
     cbz     x9, .Lgcm_ghash_run_tail
     cmp     x9, #4
     b.lt    .Lgcm_ghash_run_loop
-
-    // ── ≥4 blocks: precompute H^2, H^3, H^4 and their rolled cross
-    //    terms (rol64(H^k) ⊕ H^k) once for this call ──
-    mov     v0.16b, v19.16b
-    mov     v1.16b, v19.16b
-    bl      .Lgcm_gf_mul                // v0 = H^2
-    mov     v22.16b, v0.16b
-    mov     v1.16b, v19.16b
-    bl      .Lgcm_gf_mul                // v0 = H^2·H = H^3
-    mov     v23.16b, v0.16b
-    mov     v1.16b, v19.16b
-    bl      .Lgcm_gf_mul                // v0 = H^3·H = H^4
-    mov     v24.16b, v0.16b
-
-    ext     v25.16b, v19.16b, v19.16b, #8
-    eor     v25.16b, v25.16b, v19.16b   // BR(H^1)
-    ext     v26.16b, v22.16b, v22.16b, #8
-    eor     v26.16b, v26.16b, v22.16b   // BR(H^2)
-    ext     v27.16b, v23.16b, v23.16b, #8
-    eor     v27.16b, v27.16b, v23.16b   // BR(H^3)
-    ext     v28.16b, v24.16b, v24.16b, #8
-    eor     v28.16b, v28.16b, v24.16b   // BR(H^4)
-
+    // ≥4 blocks: H^2..H^4 and the rolled cross terms are already in
+    // v22-v28, courtesy of .Lgcm_ghash_powers.
 .Lgcm_ghash_run4_loop:
     ld1     {v0.16b}, [x27], #16
     gcm_rbit v0.16b, v0.16b            // X1 into the natural domain
@@ -367,13 +408,15 @@
 //   x9  — AAD length in bytes
 //   x10 — ciphertext length in bytes
 //   plus the state .Lgcm_ghash_run reads: v16 nibble table, v17 the
-//   0x87 constant, v18 zero, v19 H', v20 the running accumulator
+//   0x87 constant, v18 zero, v19 H', v20 the running accumulator, and
+//   the v22-v28 subkey powers
 //
 // Output/Returns:
 //   v20 - the accumulator, with the length block folded in
 //
 // Clobbered Registers:
-//   x9-x12, x27, x28, v0-v7, v22-v30 (x19-x26 are preserved)
+//   x9-x12, x27, x28, v0-v7, v29, v30 (x19-x26 and the caller's v22-v28
+//   powers are preserved)
 //
 // Stack Usage:
 //   32 bytes - 16 for the length block, 8 for x30, 8 slack

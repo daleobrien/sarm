@@ -47,7 +47,7 @@
 //   the 16-byte counter / tag mask / keystream scratch (the round keys
 //   now live in the caller's context, and the length block has its own
 //   frame, in .Lgcm_ghash_lengths).
-//   aes_gcm_encrypt: 256 bytes on top of that - GCM_CTX_SIZE for the
+//   aes_gcm_encrypt: 368 bytes on top of that - GCM_CTX_SIZE for the
 //   one-shot context, plus x30 and the seven arguments aes_gcm_ctx_init
 //   would otherwise destroy.
 // ─────────────────────────────────────────────────────────────────────
@@ -59,22 +59,22 @@
 
 // ── key-pointer entry: build a one-shot context, then seal with it ──
 aes_gcm_encrypt:
-    sub     sp, sp, #256
-    str     x30, [sp, #192]
-    stp     x1, x2, [sp, #200]         // aes_gcm_ctx_init clobbers
-    stp     x3, x4, [sp, #216]         //   x0-x8, x10, x11 — every
-    stp     x5, x6, [sp, #232]         //   argument but the key it is
-    str     x7, [sp, #248]             //   about to consume
-    mov     x1, sp                     // ctx at [sp, #0 .. #191]
+    sub     sp, sp, #368
+    str     x30, [sp, #304]
+    stp     x1, x2, [sp, #312]         // aes_gcm_ctx_init clobbers
+    stp     x3, x4, [sp, #328]         //   x0-x8, x10, x11 — every
+    stp     x5, x6, [sp, #344]         //   argument but the key it is
+    str     x7, [sp, #360]             //   about to consume
+    mov     x1, sp                     // ctx at [sp, #0 .. #303]
     bl      aes_gcm_ctx_init           // x0 = key
     mov     x0, sp
-    ldp     x1, x2, [sp, #200]
-    ldp     x3, x4, [sp, #216]
-    ldp     x5, x6, [sp, #232]
-    ldr     x7, [sp, #248]
+    ldp     x1, x2, [sp, #312]
+    ldp     x3, x4, [sp, #328]
+    ldp     x5, x6, [sp, #344]
+    ldr     x7, [sp, #360]
     bl      aes_gcm_encrypt_ctx
-    ldr     x30, [sp, #192]
-    add     sp, sp, #256
+    ldr     x30, [sp, #304]
+    add     sp, sp, #368
     ret
 
 aes_gcm_encrypt_ctx:
@@ -163,6 +163,16 @@ aes_gcm_encrypt_ctx:
 
     // ── tag = E_K(J0) ⊕ GHASH_H(A || C || lengths) ──
 .Lgcm_enc_ghash:
+    // ── the GHASH subkey powers, out of the context ──
+    // .Lgcm_ghash_run's 4-block path reads H^2..H^4 and their rolled
+    // cross terms from v22-v28 and used to derive them itself, once per
+    // record. Loaded here rather than with H above because
+    // aes128_encrypt holds four round keys in v22-v25 — so this has to
+    // come after the last block encryption, not before it.
+    add     x9, x26, #GCM_CTX_H2
+    ld1     {v22.16b, v23.16b, v24.16b, v25.16b}, [x9], #64
+    ld1     {v26.16b, v27.16b, v28.16b}, [x9]
+
     movi    v20.16b, #0                // Y' = 0
     mov     x27, x19                   // AAD
     mov     x28, x20

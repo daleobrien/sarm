@@ -53,10 +53,10 @@ as_label_iv:
 //   counters are reset to zero (src/tls/data.S).
 //
 // Clobbered Registers:
-//   x0-x11, x13 (x19, x20, x30 saved/restored), v0-v7, v16, v18, v19,
-//   v21-v25, NZCV — everything hkdf_expand_label clobbers, plus
-//   v21-v25 from aes_gcm_ctx_init's key expansion and zero-block
-//   encrypt
+//   x0-x11, x13 (x19, x20, x30 saved/restored), v0-v7, v16-v19,
+//   v21-v28, NZCV — everything hkdf_expand_label clobbers, plus
+//   v16-v19 and v21-v28 from aes_gcm_ctx_init's key expansion,
+//   zero-block encrypt and GHASH subkey powers
 //
 // Stack Usage:
 //   96 bytes: x19, x20, x30 (32, padded), then two 32-byte scratch

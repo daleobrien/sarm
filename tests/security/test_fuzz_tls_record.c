@@ -113,11 +113,11 @@ static struct parse_out rec_parse(const uint8_t *buf, uint64_t len)
 // so the campaigns below stay written in terms of g_key.
 //
 // Passing the key pointer straight through would not fault — the callee
-// would just read 192 bytes from it and use whatever is there — and
-// campaigns that seal and open through the same wrapper would still
+// would just read GCM_CTX_SIZE bytes from it and use whatever is there
+// — campaigns that seal and open through the same wrapper would still
 // agree with each other. Only a campaign that mixes gcm_seal with
 // rec_decrypt would notice. Expand it properly.
-#define GCM_CTX_SIZE 192
+#define GCM_CTX_SIZE 304
 
 extern void aes_gcm_ctx_init(const void *key, void *ctx)
     __asm__("aes_gcm_ctx_init");

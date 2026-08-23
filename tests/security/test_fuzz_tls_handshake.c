@@ -190,7 +190,7 @@ static void sarm_verify_data(const uint8_t *fk, const uint8_t *hash,
 // keys + GHASH subkey, built once per epoch by aes_gcm_ctx_init), not a
 // bare key. This harness drives the record layer as a client would, off
 // the server's own key fields, so it expands them here.
-#define GCM_CTX_SIZE 192
+#define GCM_CTX_SIZE 304
 
 extern void aes_gcm_ctx_init(const void *key, void *ctx)
     __asm__("aes_gcm_ctx_init");

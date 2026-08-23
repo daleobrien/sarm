@@ -951,9 +951,27 @@
 // A TLS connection keeps one context per direction and rebuilds them at
 // each epoch change (handshake keys, then application keys) — see
 // tls_client_gcm_ctx / tls_server_gcm_ctx in src/tls/data.S.
+//
+// The GHASH powers are here for the same reason H is. .Lgcm_ghash_run
+// evaluates four blocks at a time (Y⊕X1)·H^4 ⊕ X2·H^3 ⊕ X3·H^2 ⊕ X4·H,
+// and it used to derive H^2..H^4 and their rolled cross terms at the
+// top of every call that had four blocks to work with — three chained
+// GF(2^128) multiplies per record, for powers of a subkey that is
+// itself fixed for the epoch.
+//
+// H^2..H^4 and BR(H^1)..BR(H^4) are laid out consecutively, in the
+// order .Lgcm_ghash_run wants them in v22-v28, so the record path
+// reloads all seven with two ld1s.
 .equ GCM_CTX_RK,   0    // 176 B — AES-128 round keys RK0..RK10
 .equ GCM_CTX_H,    176  // 16 B  — H' = rbit(E_K(0^128)), natural domain
-.equ GCM_CTX_SIZE, 192  // total; 16-aligned, so a stack copy needs no pad
+.equ GCM_CTX_H2,   192  // 16 B  — H'^2   ─┐ v22-v28, in that order
+.equ GCM_CTX_H3,   208  // 16 B  — H'^3    │
+.equ GCM_CTX_H4,   224  // 16 B  — H'^4    │
+.equ GCM_CTX_BR1,  240  // 16 B  — rol64(H'  ) ⊕ H'      │
+.equ GCM_CTX_BR2,  256  // 16 B  — rol64(H'^2) ⊕ H'^2    │
+.equ GCM_CTX_BR3,  272  // 16 B  — rol64(H'^3) ⊕ H'^3    │
+.equ GCM_CTX_BR4,  288  // 16 B  — rol64(H'^4) ⊕ H'^4   ─┘
+.equ GCM_CTX_SIZE, 304  // total; 16-aligned, so a stack copy needs no pad
 .equ TLS_INNER_TYPE_LEN,   1      // TLSInnerPlaintext.type (§5.2)
 .equ TLS_MAX_CIPHERTEXT,   16640  // 2^14 + 256 — the wire limit (§5.2)
 .equ TLS_MAX_AEAD,         16401  // 2^14 + 1 + 16 — AES-128-GCM record max

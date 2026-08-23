@@ -35,7 +35,13 @@
 //
 // Clobbered Registers:
 //   x9-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
-//   v16-v21, NZCV
+//   v16-v21, v22-v30, NZCV
+//
+//   Unlike the live path, this entry point has no key context to read
+//   the GHASH subkey powers from, so it derives them itself — once,
+//   here, rather than inside .Lgcm_ghash_run as it used to. Callers
+//   with fewer than four blocks now pay for powers they will not use;
+//   that is a test-only path and not worth a branch.
 //
 // Stack Usage:
 //   96 bytes - 88 for x19-x28 + x30, 8 slack (the bit-length block
@@ -71,6 +77,7 @@ ghash:
 
     ld1     {v19.16b}, [x19]           // H
     gcm_rbit v19.16b, v19.16b          // H' in the natural domain
+    bl      .Lgcm_ghash_powers         // H^2..H^4 + cross terms, v22-v28
     movi    v20.16b, #0                // Y' = 0
 
     mov     x27, x20                   // feed AAD blocks
