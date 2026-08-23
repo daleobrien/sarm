@@ -14,7 +14,7 @@
 //   front of the first DATA frame, so the whole response leaves in one
 //   write syscall; HEAD sends headers only, written on their own
 //   (END_STREAM on the HEADERS frame); OPTIONS is 204 when
-//   the path resolves and 404 otherwise; BREW is 418; any unknown
+//   the path resolves and 404 otherwise; any unknown
 //   method is 501. A failed resource lookup is a 404. A path the server
 //   refuses (REQ_FORBIDDEN) is a 403; a satisfiable Range on a GET is a
 //   206 with content-range (HEAD ignores ranges, like HTTP/1's head);
@@ -82,17 +82,8 @@ h2_process_request:
     b.eq .Lh2pr_resolve
     cmp x21, #OPTIONS_ID
     b.eq .Lh2pr_options
-    cmp x21, #BREW_ID
-    b.eq .Lh2pr_brew
     // unknown method — 501 (headers only)
     mov x0, #501
-    mov x1, x20
-    mov x2, x19
-    bl h2_reply_status
-    b .Lh2pr_done
-
-.Lh2pr_brew:
-    mov x0, #418
     mov x1, x20
     mov x2, x19
     bl h2_reply_status

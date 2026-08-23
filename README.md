@@ -63,7 +63,7 @@ curl -k --http2 https://127.0.0.1:8080/
 
 ## What it does
 
-- GET, HEAD, OPTIONS (and `BREW` → 418). No PUT/DELETE/CGI/directory listing —
+- GET, HEAD, OPTIONS. No PUT/DELETE/CGI/directory listing —
   those existed once and were removed; see the git history.
 - HTTP/1.1 keep-alive and pipelining, bounded by a per-connection request
   budget (`HTTP1_KEEPALIVE_BUDGET`) and the receive timeout. The server closes

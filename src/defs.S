@@ -398,8 +398,7 @@
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
-.equ BREW_ID,    3
-.equ UNKNOWN_ID, 4
+.equ UNKNOWN_ID, 3
 
 // resource type constants
 .equ RES_NONE,     0
@@ -567,8 +566,7 @@
 .equ GET_ID,     0
 .equ HEAD_ID,    1
 .equ OPTIONS_ID, 2
-.equ BREW_ID,    3
-.equ UNKNOWN_ID, 4
+.equ UNKNOWN_ID, 3
 
 // resource type constants
 .equ RES_NONE,     0

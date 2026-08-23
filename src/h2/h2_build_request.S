@@ -21,7 +21,7 @@
 //   percent-decode and validate it, and the :authority value is copied
 //   into authority_buf — the same buffers and helpers HTTP/1 uses, so
 //   an HTTP/2 request and its HTTP/1 twin reach the handlers
-//   identically (8.4). BREW/unknown methods skip path handling entirely,
+//   identically (8.4). Unknown methods skip path handling entirely,
 //   matching parse_request; only REQ_METHOD and REQ_STREAM_ID are set
 //   for them. A regular `range` header value is copied into h2_range_buf
 //   and recorded in REQ_RANGE_PTR/REQ_RANGE_LEN for the Range machinery,
@@ -76,10 +76,6 @@ h2_method_head:
 h2_method_options:
     .asciz "OPTIONS"
 .equ h2_method_options_len, . - h2_method_options - 1
-.align 4
-h2_method_brew:
-    .asciz "BREW"
-.equ h2_method_brew_len, . - h2_method_brew - 1
 
 // the request header name h2_build_request matches to feed the Range
 // machinery (matched case-insensitively, like HTTP/1's
@@ -252,12 +248,6 @@ h2_build_request:
     mov x3, h2_method_options_len
     bl h2_name_eq
     cbnz x0, .Lh2_req_m_options
-    ldr x0, [sp, #64]
-    ldr x1, [sp, #72]
-    adr_l x2, h2_method_brew
-    mov x3, h2_method_brew_len
-    bl h2_name_eq
-    cbnz x0, .Lh2_req_m_brew
     b .Lh2_req_method_done  // unknown method — x24 stays UNKNOWN_ID
 .Lh2_req_m_get:
     mov x24, #GET_ID
@@ -267,11 +257,8 @@ h2_build_request:
     b .Lh2_req_method_done
 .Lh2_req_m_options:
     mov x24, #OPTIONS_ID
-    b .Lh2_req_method_done
-.Lh2_req_m_brew:
-    mov x24, #BREW_ID
 .Lh2_req_method_done:
-    // BREW/UNKNOWN get no path handling — mirroring parse_request, only
+    // UNKNOWN gets no path handling — mirroring parse_request, only
     // the method and stream id are recorded
     cmp x24, #OPTIONS_ID
     b.hi .Lh2_req_store_method_only

@@ -85,8 +85,7 @@
 #define GET_ID      0
 #define HEAD_ID     1
 #define OPTIONS_ID  2
-#define BREW_ID     3
-#define UNKNOWN_ID  4
+#define UNKNOWN_ID  3
 
 // src/defs.S REQ_* offsets into the `request` struct.
 #define REQ_METHOD        0
@@ -1204,9 +1203,9 @@ static void fd_check(uint8_t *p, size_t n, struct fuzz_ctx *ctx)
     FUZZ_CHECK(ctx, req_field(REQ_STREAM_ID) == 0,
                "parse_request: HTTP/1 request left a nonzero stream id");
 
-    if (method == BREW_ID || method == UNKNOWN_ID) {
-        // These two are answered 418/501 without any path handling, so
-        // the only claim is that nothing was parsed into the buffers.
+    if (method == UNKNOWN_ID) {
+        // Answered 501 without any path handling, so the only claim is
+        // that nothing was parsed into the buffers.
         fuzz_tally(ctx, FD_UNKNOWN);
         return;
     }
@@ -1852,7 +1851,7 @@ static const struct fuzz_target g_targets[] = {
     { "header_field", hf_case, he_setup, he_teardown, 400000, 0,
       { "!found", "!absent", "!400 escape", 0 }, hf_replay },
     { "front_door", fd_case, fd_setup, fd_teardown, 200000, 0,
-      { "!served", "!brew/unknown", "!parse rejected", "!400 escape",
+      { "!served", "!unknown method", "!parse rejected", "!400 escape",
         "!414 escape", "!505 escape", "!no terminator", 0 }, fd_replay },
     { "path", pp_case, pp_setup, pp_teardown, 200000, 0,
       { "!parsed", "!rejected", "!400 escape", "!414 escape", 0 },

@@ -74,10 +74,6 @@ options_req:
     .ascii "OPTIONS "
 .equ options_req_len, . - options_req
 
-.align 4
-brew_req:
-    .ascii "BREW "
-.equ brew_req_len, . - brew_req
 
 // other data definitions...
 

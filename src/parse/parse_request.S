@@ -7,8 +7,8 @@
 //   `request` struct (the seam HTTP/2 will later share). Detects the
 //   method, then for GET/HEAD/OPTIONS parses the path and query and
 //   fills REQ_PATH, REQ_QUERY and REQ_AUTHORITY (the Host header value).
-//   BREW/unknown methods do NOT get their path parsed — the dispatch
-//   replies 418/501, matching the old behavior of rejecting those
+//   Unknown methods do NOT get their path parsed — the dispatch
+//   replies 501, matching the old behavior of rejecting those
 //   methods before any path handling.
 //
 // Input/Arguments:
@@ -17,7 +17,7 @@
 //
 // Output/Returns:
 //   the global `request` struct is filled:
-//     REQ_METHOD      = GET_ID / HEAD_ID / OPTIONS_ID / BREW_ID / UNKNOWN_ID
+//     REQ_METHOD      = GET_ID / HEAD_ID / OPTIONS_ID / UNKNOWN_ID
 //     REQ_PATH        = docroot-prefixed, percent-decoded path string
 //     REQ_PATH_LENGTH
 //     REQ_QUERY       = query string, or 0
@@ -83,16 +83,6 @@ parse_request:
     cmp x5, x6
     b.eq Lreq_options
 
-    // BREW ?  (compare first 4 bytes, then 5th byte)
-    ldr w5, [x19]
-    movz w6, #0x5242           // "BR"
-    movk w6, #0x5745, lsl #16  // "EW"
-    cmp w5, w6
-    b.ne 1f
-    ldrb w7, [x19, #4]
-    cmp w7, #' '
-    b.eq Lreq_brew
-1:
     // none of the above — unknown method
     mov x21, UNKNOWN_ID
     b Lreq_method_done
@@ -107,17 +97,12 @@ Lreq_head:
 Lreq_options:
     mov x21, OPTIONS_ID
     mov x22, #0 // no default file for OPTIONS
-    b Lreq_method_done
-Lreq_brew:
-    mov x21, BREW_ID
 Lreq_method_done:
     str x21, [x23, #REQ_METHOD]
     str xzr, [x23, #REQ_STREAM_ID] // HTTP/1 is never on a stream
 
-    // BREW/unknown methods are answered 418/501 by the dispatch without
-    // any path handling — same as the pre-Stage-1 flow.
-    cmp x21, #BREW_ID
-    b.eq Lreq_skip_parse
+    // Unknown methods are answered 501 by the dispatch without any path
+    // handling — same as the pre-Stage-1 flow.
     cmp x21, #UNKNOWN_ID
     b.eq Lreq_skip_parse
 

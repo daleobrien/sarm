@@ -14,8 +14,8 @@
 //   Close whenever:
 //     - the header length is 0 (no request has actually been observed —
 //       nothing to justify keeping the connection alive on);
-//     - the method is not GET, HEAD or OPTIONS (BREW/unknown included —
-//       those are the 418/501 paths);
+//     - the method is not GET, HEAD or OPTIONS (unknown methods are
+//       the 501 path);
 //     - the response status means the parser lost sync (400, 408, 413,
 //       431, 500);
 //     - the request carries a Content-Length or Transfer-Encoding
@@ -30,7 +30,7 @@
 // Input/Arguments:
 //   x0 -> raw request buffer (header, e.g. "GET / HTTP/1.1\r\n...")
 //   x1 -> header length (one byte past the final \r\n\r\n)
-//   x2 -> method id (GET_ID / HEAD_ID / OPTIONS_ID / BREW_ID / UNKNOWN_ID)
+//   x2 -> method id (GET_ID / HEAD_ID / OPTIONS_ID / UNKNOWN_ID)
 //   x3 -> response status code about to be sent
 //
 // Output/Returns:

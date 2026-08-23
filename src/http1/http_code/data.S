@@ -53,9 +53,6 @@ header_414: .ascii "HTTP/1.1 414 URI Too Long"
 header_416: .ascii "HTTP/1.1 416 Range Not Satisfiable"
 .equ header_416_len, . - header_416
 
-.align 4
-header_418: .ascii "HTTP/1.1 418 I'm a teapot"
-.equ header_418_len, . - header_418
 
 .align 4
 header_431: .ascii "HTTP/1.1 431 Request Header Fields Too Large"
@@ -124,8 +121,6 @@ status_table:
     .quad 414,    (header_414 - status_table),  header_414_len
     .quad 0
     .quad 416,    (header_416 - status_table),  header_416_len
-    .quad 0
-    .quad 418,    (header_418 - status_table),  header_418_len
     .quad 0
     .quad 431,    (header_431 - status_table),  header_431_len
     .quad 0

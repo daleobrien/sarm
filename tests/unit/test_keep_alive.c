@@ -11,8 +11,7 @@
 #define GET_ID     0
 #define HEAD_ID    1
 #define OPTIONS_ID 2
-#define BREW_ID    3
-#define UNKNOWN_ID 4
+#define UNKNOWN_ID 3
 
 #define LITLEN(s) ((int64_t)(sizeof(s) - 1))
 
@@ -56,7 +55,7 @@ static void test_keep_alive_method(void) {
 	TEST_SUITE("http1_should_keep_alive — method");
 
 	check("BREW closes even at 200",
-	      "BREW / HTTP/1.1\r\nHost: localhost\r\n\r\n", BREW_ID, 418, 0);
+	      "BREW / HTTP/1.1\r\nHost: localhost\r\n\r\n", UNKNOWN_ID, 501, 0);
 	check("UNKNOWN (POST etc) closes even at 200",
 	      "POST / HTTP/1.1\r\nHost: localhost\r\n\r\n", UNKNOWN_ID, 501, 0);
 }

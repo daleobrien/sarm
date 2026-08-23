@@ -12,8 +12,7 @@
 #define GET_ID     0
 #define HEAD_ID    1
 #define OPTIONS_ID 2
-#define BREW_ID    3
-#define UNKNOWN_ID 4
+#define UNKNOWN_ID 3
 
 // ── the request struct, mirroring the REQ_* offsets in defs.S ─────
 typedef struct {
@@ -188,12 +187,12 @@ static void test_parse_request_methods(void) {
 	carry = parse_request_wrapper(req, len);
 	ASSERT_EQ("DELETE method == UNKNOWN_ID", UNKNOWN_ID, REQ->method);
 
-	// BREW is detected separately (dispatch → 418)
+	// BREW has no special handling — it is just another unknown method
 	req = "BREW / HTTP/1.1\r\nHost: localhost\r\n\r\n";
 	len = LITLEN("BREW / HTTP/1.1\r\nHost: localhost\r\n\r\n");
 	carry = parse_request_wrapper(req, len);
 	ASSERT_EQ("BREW carry clear", 0, carry);
-	ASSERT_EQ("BREW method == BREW_ID", BREW_ID, REQ->method);
+	ASSERT_EQ("BREW method == UNKNOWN_ID", UNKNOWN_ID, REQ->method);
 }
 
 // ── tests: authority ──────────────────────────────────────────────

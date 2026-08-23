@@ -48,7 +48,7 @@ means a header-only error response.
 
 Produced by current handlers:
 
-`200` `204` `206` · `400` `403` `404` `408` `414` `416` `418` `431` · `500` `501` `505`
+`200` `204` `206` · `400` `403` `404` `408` `414` `416` `431` · `500` `501` `505`
 
 Still present in `find_http_code`'s table but unreachable — leftovers from the
 removed PUT/CGI/process-limit features: `201` `409` `411` `413` `502` `503` `507`.

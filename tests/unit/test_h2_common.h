@@ -45,8 +45,7 @@
 #define GET_ID     0
 #define HEAD_ID    1
 #define OPTIONS_ID 2
-#define BREW_ID    3
-#define UNKNOWN_ID 4
+#define UNKNOWN_ID 3
 
 #define H2_ERR_NO_ERROR          0
 #define H2_ERR_PROTOCOL_ERROR     1

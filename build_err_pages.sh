@@ -18,7 +18,6 @@ done <<EOF
 413:Content Too Large:that's too big for tiny rats
 414:URI Too Long:that's too long for tiny rats
 416:Range Not Satisfiable:that range is outside of these rats' scope
-418:I'm a Teapot:rats are drinking tea in the garden, please wait warmly...
 431:Header Header Fields Too Large:tiny rats need tiny heads
 500:Internal Server Error:the rats chewed the server's wires
 501:Not Implemented:the rats haven't learned how to do that

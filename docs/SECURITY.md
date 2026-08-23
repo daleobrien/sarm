@@ -354,7 +354,7 @@ the one place still wanting a targeted **state** fuzzer — §14 A5.
 ### 7.3 HTTP/1
 
 Read → `parse_header_end` → `verify_http_version` → `parse_request` → dispatch
-(GET/HEAD/OPTIONS, `BREW`→418, else 501) → `create_response` →
+(GET/HEAD/OPTIONS, else 501) → `create_response` →
 `http1_write_response` → `http1_keepalive_continue`.
 
 The keep-alive decision is a predicate (`http1_should_keep_alive`) over the raw

@@ -316,13 +316,14 @@ static void test_h2_pseudo_validate(void) {
 	ASSERT_EQ("non-origin :path → PROTOCOL_ERROR", H2_ERR_PROTOCOL_ERROR,
 	          h2_build_request_wrapper(1, 2, &carry));
 
-	// BREW is not a normal request — no :path required, like HTTP/1
+	// an unknown method is not a normal request — no :path required,
+	// like HTTP/1
 	f[0] = field(":method", "BREW");
 	set_fields(f, 1);
-	ASSERT_EQ("BREW without :path accepted", 0,
+	ASSERT_EQ("unknown method without :path accepted", 0,
 	          h2_build_request_wrapper(3, 1, &carry));
 	ASSERT_EQ("carry clear", 0, carry);
-	ASSERT_EQ("method == BREW_ID", BREW_ID, REQ->method);
+	ASSERT_EQ("method == UNKNOWN_ID", UNKNOWN_ID, REQ->method);
 	ASSERT_EQ("stream_id == 3", 3, REQ->stream_id);
 }
 

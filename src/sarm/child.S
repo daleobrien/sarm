@@ -250,9 +250,6 @@ read_failed:
     b.eq Lhead_method
     cmp w0, #OPTIONS_ID
     b.eq Loptions_method
-    cmp w0, #BREW_ID
-    b.eq L418
-
     // none of the above — unknown method
     b L501
 
@@ -273,10 +270,6 @@ L400:
     b reply_status
 L408:
     mov x0, #408
-    mov x1, #0
-    b reply_status
-L418:
-    mov x0, #418
     mov x1, #0
     b reply_status
 L431:

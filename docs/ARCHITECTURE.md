@@ -149,8 +149,8 @@ preface prefix. Match → `h2_connection_loop` owns the rest of the connection.
 No match → HTTP/1: `parse_header_end` finds `\r\n\r\n` (buffer full → 431, never
 completes → 400, `ETIMEDOUT` → 408, peer reset → silent close),
 `verify_http_version` (HTTP/1.1 must carry `Host:`; bare `HTTP/` → 505),
-`parse_request`, then dispatch on method: GET, HEAD, OPTIONS, `BREW` → 418,
-anything else → 501.
+`parse_request`, then dispatch on method: GET, HEAD, OPTIONS; anything else
+→ 501.
 
 ## HTTP/1 keep-alive (`src/http1/keep_alive.S`, `src/sarm/child.S`)
 

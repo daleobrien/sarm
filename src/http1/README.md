@@ -11,7 +11,7 @@ would be misparsed as the start of the next request line.
 
 **Respond and close** — do not keep the connection alive — when any of:
 
-- the method is not GET, HEAD or OPTIONS (including the 501 and 418 paths);
+- the method is not GET, HEAD or OPTIONS (including the 501 path);
 - the request carries `Content-Length` or `Transfer-Encoding`;
 - the request is HTTP/1.0 without `Connection: keep-alive`;
 - the request carries `Connection: close`;
