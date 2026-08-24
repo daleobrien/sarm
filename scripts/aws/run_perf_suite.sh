@@ -507,6 +507,19 @@ if ! skipped calls && [ -n "$TOP_SYMS" ] && [ -n "$PERF" ]; then
     if [ ! -w "$TRACEFS/uprobe_events" ] && ! sudo test -w "$TRACEFS/uprobe_events"; then
         warn "no writable $TRACEFS/uprobe_events — skipping call counts"
     else
+        # kernel.perf_event_paranoid=-1 buys unprivileged access to hardware
+        # counters, but not to tracefs: /sys/kernel/tracing is mode 700 and
+        # root-owned, so an unprivileged perf cannot read the tracepoint's
+        # id file even though the probe exists ("No permissions to read
+        # .../events/sarmbench/<sym>"). Count these events as root.
+        CALL_PERF="$PERF"
+        if [ "$CALL_PERF" != "sudo perf" ] && [ ! -r "$TRACEFS/events" ]; then
+            if sudo -n perf --version >/dev/null 2>&1; then
+                CALL_PERF="sudo perf"
+            else
+                warn "$TRACEFS not readable and no sudo perf — call counts may fail"
+            fi
+        fi
         EVENTS=""
         ATTACHED=""
         for sym in $(printf '%s\n' "$TOP_SYMS" | head -12); do
@@ -531,11 +544,13 @@ if ! skipped calls && [ -n "$TOP_SYMS" ] && [ -n "$PERF" ]; then
             info "counting:${ATTACHED}"
             start_server auto
             start_load h2tls "$DURATION"
-            $PERF stat -a -C "$SERVER_CPUS" -e "$EVENTS" \
+            $CALL_PERF stat -a -C "$SERVER_CPUS" -e "$EVENTS" \
                 -o "$OUTDIR/call_counts.txt" -- sleep "$((DURATION - 2))" \
                 2>>"$OUTDIR/call_counts.log" || warn "perf stat failed — see call_counts.log"
             wait_load
             stop_server
+            [ "$CALL_PERF" = "sudo perf" ] && \
+                sudo chown "$(id -u):$(id -g)" "$OUTDIR/call_counts.txt" 2>/dev/null
             awk '$2 ~ /^sarmbench:/ {sub(/^sarmbench:/, "", $2); printf "   %16s  %s\n", $1, $2}' \
                 "$OUTDIR/call_counts.txt" 2>/dev/null | tee -a "$OUTDIR/summary.txt"
         fi
