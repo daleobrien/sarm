@@ -37,6 +37,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "asm_sym.h"
+
 // ── the assembly under test ──────────────────────────────────────────
 // Declared as data rather than functions: everything is called through
 // `bench_call`, which needs the address and nothing else. sarm's symbols
@@ -75,8 +77,7 @@ static uint64_t bench_call(const void *fn, uint64_t iters) {
 	uint64_t t0 = now_ns();
 	__asm__ __volatile__(
 		"1:\n"
-		"  adrp x8, _bargs@PAGE\n"
-		"  add  x8, x8, _bargs@PAGEOFF\n"
+		ASM_ADDR_C("x8", "bargs")
 		"  ldp  x0, x1, [x8]\n"
 		"  ldp  x2, x3, [x8, #16]\n"
 		"  ldp  x4, x5, [x8, #32]\n"
@@ -84,8 +85,7 @@ static uint64_t bench_call(const void *fn, uint64_t iters) {
 		"  blr  %[fn]\n"
 		"  subs %[n], %[n], #1\n"
 		"  b.ne 1b\n"
-		"  adrp x8, _bret@PAGE\n"
-		"  add  x8, x8, _bret@PAGEOFF\n"
+		ASM_ADDR_C("x8", "bret")
 		"  str  x0, [x8]\n"
 		: [n] "+r"(n)
 		: [fn] "r"(fn)

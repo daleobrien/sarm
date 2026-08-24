@@ -26,25 +26,23 @@
 #include <string.h>
 #include <time.h>
 
+#include "asm_sym.h"
+
 #define H2_MAX_STREAMS 32
 #define H2S_SIZE 32
 
-// The asm symbols carry no leading underscore, so a plain C `extern` will
-// not resolve against them on Mach-O. Take their addresses the same way
-// tests/unit/test_h2_common.h does.
+// A plain C `extern` will not resolve against these on Mach-O, where C
+// symbols are underscore-prefixed and these (defined in .S) are not.
+// ASM_ADDR_ASM spells the address for whichever object format we are on.
 static inline uint8_t *h2_streams_addr(void) {
     uint8_t *p;
-    asm volatile("adrp %0, h2_streams@PAGE\n"
-                 "add  %0, %0, h2_streams@PAGEOFF\n"
-                 : "=r"(p));
+    asm volatile(ASM_ADDR_ASM("%0", "h2_streams") : "=r"(p));
     return p;
 }
 
 static inline uint32_t *h2_stream_ids_addr(void) {
     uint32_t *p;
-    asm volatile("adrp %0, h2_stream_ids@PAGE\n"
-                 "add  %0, %0, h2_stream_ids@PAGEOFF\n"
-                 : "=r"(p));
+    asm volatile(ASM_ADDR_ASM("%0", "h2_stream_ids") : "=r"(p));
     return p;
 }
 

@@ -17,6 +17,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "asm_sym.h"
+
 // aes_gcm_encrypt(x0=key[16], x1=iv[12], x2=aad, x3=aad_len, x4=pt,
 //                  x5=pt_len, x6=ct_out, x7=tag_out[16])
 // aes_gcm_decrypt has the matching seal-reversed signature; used here only
@@ -63,8 +65,7 @@ static uint64_t timed_calls(uint64_t iters) {
 	uint64_t t0 = now_ns();
 	__asm__ __volatile__(
 		"1:\n"
-		"  adrp x8, _gcm_args@PAGE\n"
-		"  add  x8, x8, _gcm_args@PAGEOFF\n"
+		ASM_ADDR_C("x8", "gcm_args")
 		"  ldp  x0, x1, [x8]\n"
 		"  ldp  x2, x3, [x8, #16]\n"
 		"  ldp  x4, x5, [x8, #32]\n"
