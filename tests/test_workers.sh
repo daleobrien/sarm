@@ -8,7 +8,9 @@
 #     the arguments that must be rejected (Step 14)
 #   * the workers actually exist and actually all accept (Step 15)
 #   * SIGTERM/SIGINT shut every worker down, leave in-flight connections
-#     alone, and free the port immediately (Step 16)
+#     alone, and free the port immediately (Step 16) — including the
+#     single-worker and no_fork modes, which fork nothing but still have
+#     to die on the signal so the Docker container answers Ctrl-C
 #
 # The socket-level halves live in tests/worker_checks.py; this file starts
 # and stops servers and reports in the same ok/nope style as the other
@@ -308,6 +310,54 @@ for sig in TERM INT; do
         nope "--workers 4 did not start (SIG$sig check skipped)"
     fi
 done
+
+# The default (single-worker) server must answer SIGINT/SIGTERM too. It
+# forks no workers, so before the handler was installed unconditionally it
+# ran with the DEFAULT disposition — fine under a shell, fatal in a
+# container: the kernel discards a SIG_DFL signal aimed at pid 1, so
+# `ENTRYPOINT ["/sarm", "8443"]` on a scratch image ignored both Ctrl-C
+# and `docker stop` and only died to the SIGKILL that followed.
+for sig in TERM INT; do
+    if start_server; then
+        parent=$(worker_pids | head -1)
+        kill -"$sig" "$parent" 2>/dev/null
+        left=1
+        deadline=$((SECONDS + 5))
+        while [ $SECONDS -lt $deadline ]; do
+            if [ "$(worker_count)" -eq 0 ]; then left=0; break; fi
+            sleep 0.25
+        done
+        if [ "$left" -eq 0 ]; then
+            ok "SIG$sig stops the default single-worker server (pid-1 safe)"
+        else
+            nope "SIG$sig did not stop the single-worker server"
+            kill_all
+        fi
+    else
+        nope "default server did not start (single-worker SIG$sig skipped)"
+    fi
+    kill_all
+done
+
+# ...and so must the no_fork debug mode, for the same reason.
+if start_server d; then
+    parent=$(worker_pids | head -1)
+    kill -INT "$parent" 2>/dev/null
+    left=1
+    deadline=$((SECONDS + 5))
+    while [ $SECONDS -lt $deadline ]; do
+        if [ "$(worker_count)" -eq 0 ]; then left=0; break; fi
+        sleep 0.25
+    done
+    if [ "$left" -eq 0 ]; then
+        ok "SIGINT stops the no_fork debug server"
+    else
+        nope "SIGINT did not stop the no_fork debug server"
+    fi
+else
+    nope "no_fork server did not start (SIGINT check skipped)"
+fi
+kill_all
 
 # in-flight connections must survive the shutdown
 if start_server --workers 3; then

@@ -390,10 +390,13 @@ ENDFUNC install_sigchld
 //   accepting by closing the shared listening socket, sends SIGTERM to
 //   every forked worker, then exits.
 //
-//   Only the forking process installs this — it is installed AFTER the
-//   spawn loop so the workers keep the default disposition and simply
-//   die when signalled, and so `--workers 1` (which forks nothing) is
-//   left bit-identical to the pre-Phase-3 server.
+//   Only the process that owns worker_pids installs this — it goes in
+//   AFTER the spawn loop so the forked workers keep the default
+//   disposition and simply die when signalled. `--workers 1` and the
+//   no_fork debug mode install it as well, with an empty worker list:
+//   the kill loop below then runs zero times and this is just
+//   close() + exit(0), which is exactly what a pid-1 process in a
+//   container needs in order to answer Ctrl-C at all.
 //
 //   The per-connection children are deliberately NOT signalled: they
 //   are not in worker_pids, so an in-flight response finishes. Their
@@ -754,13 +757,15 @@ FUNC skip_argv
     //
     // The original process becomes the last worker rather than
     // supervising idly, which is what makes `--workers 1` fork nothing at
-    // all and stay bit-identical to the pre-Phase-3 server.
+    // all — the only thing it does beyond the pre-Phase-3 server is
+    // install the shutdown handler below.
     ldr_l x9, worker_count
     cmp x9, #1
-    b.le loop                   // one worker — no fork, nothing to track
+    b.le Linstall_shutdown      // one worker — no fork, nothing to track,
+                                //   but still catch SIGINT/SIGTERM below
 
     ldr_l x9, no_fork
-    cbnz x9, loop               // debug mode is single-process by definition
+    cbnz x9, Linstall_shutdown  // debug mode is single-process by definition
 
     mov x23, #1                 // this process is worker 1 of worker_count
 Lspawn_loop:
@@ -811,12 +816,23 @@ Lworker_child:
     b loop
 
     // ── shutdown handling (Plan.md Phase 3, Step 16) ──────────────────
-    // Reached only by the process that forked workers, and only once it
-    // has finished forking them: the workers inherit the DEFAULT
-    // SIGTERM/SIGINT disposition and die on the signal, while this
-    // process catches it and passes it on. Installing before the fork
-    // loop would give every worker a handler and a half-filled pid list,
-    // and they would all signal each other.
+    // Reached only by the process that owns the worker list, and only
+    // once it has finished forking: the forked workers inherit the
+    // DEFAULT SIGTERM/SIGINT disposition and die on the signal, while
+    // this process catches it and passes it on. Installing before the
+    // fork loop would give every worker a handler and a half-filled pid
+    // list, and they would all signal each other.
+    //
+    // `--workers 1` and the no_fork debug mode land here too, with an
+    // empty worker_pids: the handler then just closes the listening
+    // socket and exits(0). That costs a syscall neither mode used
+    // before, and it is what makes Ctrl-C work in a container. The
+    // kernel drops any signal whose disposition is still SIG_DFL when
+    // the target is pid 1, and `ENTRYPOINT ["/sarm", "8443"]` on a
+    // scratch image makes this process pid 1 — so without a handler
+    // installed, Ctrl-C (SIGINT, forwarded by `docker run -it`) and
+    // `docker stop` (SIGTERM) were both silently discarded, and the
+    // container only ever died to the SIGKILL ten seconds later.
 Linstall_shutdown:
 #ifdef __linux__
     sub sp, sp, #32
