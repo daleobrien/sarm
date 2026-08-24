@@ -430,7 +430,10 @@ if ! skipped micro; then
     # +crypto on ASFLAGS as well as CFLAGS: the AES and GHASH sources use
     # aese/aesmc/pmull, which GNU as rejects under a plain -march=armv8-a.
     # Without it every bench that links an AES object fails to assemble.
-    LINUX_FLAGS=(ASFLAGS="-g -O2 -march=armv8-a+crypto" CFLAGS="-g -O2 -march=armv8-a+crypto" LDFLAGS="")
+    # -I ../../include has to be repeated here: overriding CFLAGS on the
+    # command line replaces the Makefile's value outright, and the C drivers
+    # include include/asm_sym.h.
+    LINUX_FLAGS=(ASFLAGS="-g -O2 -march=armv8-a+crypto" CFLAGS="-g -O2 -march=armv8-a+crypto -I ../../include" LDFLAGS="")
     : > "$OUTDIR/micro.jsonl"
     for bench in memcpy aes128_encrypt aes_gcm_encrypt gcm_ghash_run \
                  p256_fe_mul p256_bn_mul p256_reduce p256_point_mul \

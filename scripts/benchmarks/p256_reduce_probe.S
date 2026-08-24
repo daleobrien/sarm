@@ -13,6 +13,8 @@
 // trampoline to the real, globally-linked p256_reduce. Kept as a
 // trampoline (rather than having bench_p256_reduce.c/bench_p256_fe_mul.c
 // call p256_reduce directly) so neither of those files needed to change.
+#include "../../src/defs.S"
+
 .text
 .align 2
 .extern p256_reduce
