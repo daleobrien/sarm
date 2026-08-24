@@ -38,9 +38,21 @@
 //   none (void) - pt_len ciphertext bytes and the 16-byte tag written
 //
 // Clobbered Registers:
-//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v11,
-//   v16-v25, NZCV (v22-v25 via aes128_encrypt, which holds four round
-//   keys there — this function's own live state stays in v16-v21)
+//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
+//   v16-v28, NZCV
+//
+//   v8-v15 are deliberately untouched: AAPCS64 makes d8-d15 callee-saved,
+//   and this function has no prologue for them.
+//
+//   The CTR section holds the AES-128 round-key schedule RK0..RK10 across
+//   v16-v26 and the counter-block template in v27, so all of v16-v28 is
+//   live at some point. The GHASH stage then reuses v16-v28 for its own
+//   constants and subkey powers; the two never overlap in time, which is
+//   why the GHASH setup sits after the CTR loop rather than on entry.
+//   (This header previously read v0-v11/v16-v25: the v8-v11 came from a
+//   version of aes128_encrypt that has since moved off those registers,
+//   and v26-v28 were already being written by the subkey-power load
+//   without being declared.)
 //
 // Stack Usage:
 //   aes_gcm_encrypt_ctx: 144 bytes - 88 for x19-x28 + x30 (+1 slot) and
@@ -54,6 +66,88 @@
 
 .text
 .align 2
+
+// ── inline AES-128 round scheduling for the CTR keystream ────────────
+// The round keys sit in v16-v26 (RK0..RK10) for the whole CTR section,
+// loaded once per record rather than once per block. `bl aes128_encrypt`
+// per block reloaded all 176 bytes every time: on a Neoverse-N1 profile
+// of an HTTP/2-over-TLS load that single `ld1` of the schedule was 77% of
+// aes128_encrypt's samples, and the pair was 12.3% of all cycles.
+//
+// AESE/AESMC are 2-cycle-latency, ~1-per-cycle-throughput on N1, so a
+// single serial block chain leaves most of the crypto unit idle. Four
+// independent chains fill it for very nearly the cost of one. Each
+// `aese vN` stays immediately in front of its `aesmc vN` so the
+// fused-pair optimisation in the pipeline still fires.
+
+.macro aes_round4 rk
+    aese    v0.16b, \rk\().16b
+    aesmc   v0.16b, v0.16b
+    aese    v1.16b, \rk\().16b
+    aesmc   v1.16b, v1.16b
+    aese    v2.16b, \rk\().16b
+    aesmc   v2.16b, v2.16b
+    aese    v3.16b, \rk\().16b
+    aesmc   v3.16b, v3.16b
+.endm
+
+// Nine full rounds (RK0..RK8), then round 10: AESE with RK9 and a plain
+// XOR of RK10, which is FIPS-197's final round without MixColumns.
+.macro aes_block4
+    aes_round4 v16
+    aes_round4 v17
+    aes_round4 v18
+    aes_round4 v19
+    aes_round4 v20
+    aes_round4 v21
+    aes_round4 v22
+    aes_round4 v23
+    aes_round4 v24
+    aese    v0.16b, v25.16b
+    eor     v0.16b, v0.16b, v26.16b
+    aese    v1.16b, v25.16b
+    eor     v1.16b, v1.16b, v26.16b
+    aese    v2.16b, v25.16b
+    eor     v2.16b, v2.16b, v26.16b
+    aese    v3.16b, v25.16b
+    eor     v3.16b, v3.16b, v26.16b
+.endm
+
+// One block, same schedule, for the 0-3 leftover blocks and the tail.
+.macro aes_block1 st
+    aese    \st\().16b, v16.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v17.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v18.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v19.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v20.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v21.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v22.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v23.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v24.16b
+    aesmc   \st\().16b, \st\().16b
+    aese    \st\().16b, v25.16b
+    eor     \st\().16b, \st\().16b, v26.16b
+.endm
+
+// Build one counter block: the 12-byte IV is invariant across the record
+// and stays in the template v27; only the big-endian 32-bit counter in
+// lane 3 changes. \ctr is a *w* register — the +1/+2/+3 offsets its
+// callers pass must be 32-bit adds so they wrap at 2^32 exactly like
+// SP 800-38D inc32 (and like the gcm_inc32 this replaces). A 64-bit add
+// would silently diverge on the wrapping record.
+.macro gcm_ctr_block dst, ctr
+    rev     w9, \ctr
+    mov     \dst\().16b, v27.16b
+    mov     \dst\().s[3], w9
+.endm
 
 // ── key-pointer entry: build a one-shot context, then seal with it ──
 FUNC aes_gcm_encrypt
@@ -96,21 +190,11 @@ FUNC aes_gcm_encrypt_ctx
     add     x25, sp, #96               // jbuf (counter block)
     add     x26, x0, #GCM_CTX_RK       // rk (176-byte round keys)
 
-    // ── GHASH constants ──
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
-    mov     x10, #0x87
-    dup     v17.2d, x10
-    movi    v18.16b, #0
-    movi    v21.16b, #0x0f
-
-    // ── H', already in the natural domain, out of the context ──
-    // Deriving it here — expand the key, encrypt a zero block, rbit the
-    // result — is what this used to cost per record, for a value that
-    // cannot change while the key does not. aes_gcm_ctx_init does it
-    // once per epoch instead.
-    add     x9, x0, #GCM_CTX_H
-    ld1     {v19.16b}, [x9]
+    // The GHASH constants (v16-v21) and H' used to be set up here. They
+    // are needed only from .Lgcm_enc_ghash onwards, and the CTR section
+    // below wants v16-v26 for the round-key schedule, so their setup now
+    // sits immediately before the hashing instead. Nothing between here
+    // and there reads them.
 
     // ── J0 = IV || 0x00000001; tag mask = E_K(J0) ──
     ldr     x9, [x27]                  // IV[0..8)
@@ -126,29 +210,62 @@ FUNC aes_gcm_encrypt_ctx
     bl      aes128_encrypt
 
     // ── CTR: C_i = P_i ⊕ E_K(J0+i), i = 1, 2, ... ──
-    gcm_inc32 x25                      // J0 -> J1
+    // The round-key schedule is hoisted out of the block loop into
+    // v16-v26 and the counter block is built in registers from the
+    // template v27, so a block costs its ten AES rounds and nothing
+    // else — no call, no 176-byte reload, no keystream round trip
+    // through the stack.
+    mov     x9, x26                    // walk the schedule, keep x26 = ctx
+    ld1     {v16.16b, v17.16b, v18.16b, v19.16b}, [x9], #64
+    ld1     {v20.16b, v21.16b, v22.16b, v23.16b}, [x9], #64
+    ld1     {v24.16b, v25.16b, v26.16b}, [x9]
+    ld1     {v27.16b}, [x25]           // counter template: IV || (lane 3 spare)
+    mov     w10, #2                    // inc32(J0) — first data block counter
+
     lsr     x28, x22, #4               // full 16-byte blocks
     and     x27, x22, #0xf             // trailing partial-block bytes
-    cbz     x28, .Lgcm_enc_tail
-.Lgcm_enc_blockloop:
-    mov     x0, x25                    // counter block
-    mov     x1, x26
-    add     x2, sp, #128               // keystream block
-    bl      aes128_encrypt
-    ld1     {v0.16b}, [x21], #16       // plaintext block
-    add     x9, sp, #128
-    ld1     {v1.16b}, [x9]
-    eor     v0.16b, v0.16b, v1.16b
-    st1     {v0.16b}, [x23], #16       // ciphertext block
-    gcm_inc32 x25
-    subs    x28, x28, #1
-    b.ne    .Lgcm_enc_blockloop
+    lsr     x11, x28, #2               // groups of four
+    cbz     x11, .Lgcm_enc_blocks1
+.Lgcm_enc_block4:
+    gcm_ctr_block v0, w10
+    add     w12, w10, #1               // 32-bit adds: wrap like inc32
+    gcm_ctr_block v1, w12
+    add     w12, w10, #2
+    gcm_ctr_block v2, w12
+    add     w12, w10, #3
+    gcm_ctr_block v3, w12
+    add     w10, w10, #4
+
+    aes_block4
+
+    ld1     {v4.16b, v5.16b, v6.16b, v7.16b}, [x21], #64
+    eor     v0.16b, v0.16b, v4.16b
+    eor     v1.16b, v1.16b, v5.16b
+    eor     v2.16b, v2.16b, v6.16b
+    eor     v3.16b, v3.16b, v7.16b
+    st1     {v0.16b, v1.16b, v2.16b, v3.16b}, [x23], #64
+    subs    x11, x11, #1
+    b.ne    .Lgcm_enc_block4
+.Lgcm_enc_blocks1:
+    ands    x11, x28, #3               // 0-3 full blocks left over
+    b.eq    .Lgcm_enc_tail
+.Lgcm_enc_block1:
+    gcm_ctr_block v0, w10
+    add     w10, w10, #1
+    aes_block1 v0
+    ld1     {v4.16b}, [x21], #16
+    eor     v0.16b, v0.16b, v4.16b
+    st1     {v0.16b}, [x23], #16
+    subs    x11, x11, #1
+    b.ne    .Lgcm_enc_block1
 .Lgcm_enc_tail:
     cbz     x27, .Lgcm_enc_ghash
-    mov     x0, x25
-    mov     x1, x26
-    add     x2, sp, #128
-    bl      aes128_encrypt
+    // Partial trailing block: the keystream does go to the stack here,
+    // because the byte-wise XOR below indexes it.
+    gcm_ctr_block v0, w10
+    aes_block1 v0
+    add     x9, sp, #128
+    st1     {v0.16b}, [x9]
     mov     x28, #0
 .Lgcm_enc_tailloop:
     ldrb    w9, [x21, x28]             // partial block, byte by byte
@@ -162,12 +279,28 @@ FUNC aes_gcm_encrypt_ctx
 
     // ── tag = E_K(J0) ⊕ GHASH_H(A || C || lengths) ──
 .Lgcm_enc_ghash:
+    // ── GHASH constants ──
+    // Set up here rather than on entry: the CTR section above holds the
+    // AES round-key schedule across v16-v26, so every one of these would
+    // have been destroyed by it. Nothing before this point reads them.
+    adr_l   x9, .Lgcm_rbit_table
+    ld1     {v16.16b}, [x9]
+    mov     x10, #0x87
+    dup     v17.2d, x10
+    movi    v18.16b, #0
+    movi    v21.16b, #0x0f
+
+    // ── H', already in the natural domain, out of the context ──
+    // Deriving it here — expand the key, encrypt a zero block, rbit the
+    // result — is what this used to cost per record, for a value that
+    // cannot change while the key does not. aes_gcm_ctx_init does it
+    // once per epoch instead.
+    add     x9, x26, #GCM_CTX_H
+    ld1     {v19.16b}, [x9]
+
     // ── the GHASH subkey powers, out of the context ──
     // .Lgcm_ghash_run's 4-block path reads H^2..H^4 and their rolled
-    // cross terms from v22-v28 and used to derive them itself, once per
-    // record. Loaded here rather than with H above because
-    // aes128_encrypt holds four round keys in v22-v25 — so this has to
-    // come after the last block encryption, not before it.
+    // cross terms from v22-v28.
     add     x9, x26, #GCM_CTX_H2
     ld1     {v22.16b, v23.16b, v24.16b, v25.16b}, [x9], #64
     ld1     {v26.16b, v27.16b, v28.16b}, [x9]
