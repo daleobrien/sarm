@@ -17,7 +17,7 @@
 AS      := cc
 CC      := cc
 ASFLAGS := -g -O2 -arch arm64
-CFLAGS  := -g -O2 -arch arm64
+CFLAGS  := -g -O2 -arch arm64 -I ../../include
 LDFLAGS := -arch arm64
 
 _bench_obj:

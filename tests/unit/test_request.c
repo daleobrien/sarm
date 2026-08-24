@@ -7,6 +7,7 @@
 // by the parser itself (parse → request → dispatch).
 
 #include "test_harness.h"
+#include "asm_sym.h"
 
 // method ids, mirroring defs.S
 #define GET_ID     0
@@ -32,8 +33,7 @@ typedef struct {
 static inline const request_t *request_addr(void) {
 	request_t *p;
 	asm volatile(
-		"adrp x0, request@PAGE\n"
-		"add  x0, x0, request@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "request")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");

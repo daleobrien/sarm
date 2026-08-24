@@ -17,6 +17,7 @@
 // yet" defaults, and tls_alpn_h2 is the "h2" ALPN identifier.
 
 #include "test_harness.h"
+#include "asm_sym.h"
 
 // ── TLS wire constants, mirroring defs.S (RFC 8446) ────────────────
 
@@ -175,8 +176,7 @@
 #define ASM_SYM_ADDR(sym) ({ \
 	uintptr_t _addr; \
 	asm volatile( \
-		"adrp x0, " #sym "@PAGE\n\t" \
-		"add  x0, x0, " #sym "@PAGEOFF\n\t" \
+		ASM_ADDR_ASM("x0", #sym) \
 		"mov  %0, x0\n\t" \
 		: "=r"(_addr) \
 		: \

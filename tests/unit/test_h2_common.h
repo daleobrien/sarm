@@ -10,6 +10,7 @@
 #define TEST_H2_COMMON_H
 
 #include "test_harness.h"
+#include "asm_sym.h"
 
 // ── HTTP/2 constants, mirroring defs.S ─────────────────────────────
 #define H2_FRAME_DATA          0
@@ -212,8 +213,7 @@ extern int64_t embedded_etag_len __asm__("embedded_etag_len");
 static inline const request_t *request_addr(void) {
 	request_t *p;
 	asm volatile(
-		"adrp x0, request@PAGE\n"
-		"add  x0, x0, request@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "request")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -353,8 +353,7 @@ static void reset_conn(h2_conn_t *conn) {
 static inline h2_conn_t *h2_conn_addr(void) {
 	h2_conn_t *p;
 	asm volatile(
-		"adrp x0, h2_conn@PAGE\n"
-		"add  x0, x0, h2_conn@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_conn")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -366,8 +365,7 @@ static inline h2_conn_t *h2_conn_addr(void) {
 static inline int64_t connection_mode_value(void) {
 	int64_t v;
 	asm volatile(
-		"adrp x0, connection_mode@PAGE\n"
-		"add  x0, x0, connection_mode@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "connection_mode")
 		"ldr  %0, [x0]\n"
 		: "=r"(v)
 		:: "x0", "memory");
@@ -376,8 +374,7 @@ static inline int64_t connection_mode_value(void) {
 
 static inline void set_connection_mode(int64_t mode) {
 	asm volatile(
-		"adrp x0, connection_mode@PAGE\n"
-		"add  x0, x0, connection_mode@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "connection_mode")
 		"str  %0, [x0]\n"
 		:: "r"(mode)
 		: "x0", "memory");
@@ -386,8 +383,7 @@ static inline void set_connection_mode(int64_t mode) {
 static inline const uint8_t *h2_preface_addr(void) {
 	const uint8_t *p;
 	asm volatile(
-		"adrp x0, h2_preface@PAGE\n"
-		"add  x0, x0, h2_preface@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_preface")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -397,8 +393,7 @@ static inline const uint8_t *h2_preface_addr(void) {
 static inline const uint8_t *h2_settings_frame_addr(void) {
 	const uint8_t *p;
 	asm volatile(
-		"adrp x0, h2_settings_frame@PAGE\n"
-		"add  x0, x0, h2_settings_frame@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_settings_frame")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -410,8 +405,7 @@ static inline const uint8_t *h2_settings_frame_addr(void) {
 static inline h2_stream_t *h2_streams_addr(void) {
 	h2_stream_t *p;
 	asm volatile(
-		"adrp x0, h2_streams@PAGE\n"
-		"add  x0, x0, h2_streams@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_streams")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -425,8 +419,7 @@ static inline h2_stream_t *h2_streams_addr(void) {
 static inline uint32_t *h2_stream_ids_addr(void) {
 	uint32_t *p;
 	asm volatile(
-		"adrp x0, h2_stream_ids@PAGE\n"
-		"add  x0, x0, h2_stream_ids@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_stream_ids")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");
@@ -1025,8 +1018,7 @@ static inline int64_t h2_connection_loop_wrapper(int64_t fd, uint8_t *buf,
 static inline h2_hpack_field_t *h2_hpack_fields_addr(void) {
 	h2_hpack_field_t *p;
 	asm volatile(
-		"adrp x0, h2_hpack_fields@PAGE\n"
-		"add  x0, x0, h2_hpack_fields@PAGEOFF\n"
+		ASM_ADDR_ASM("x0", "h2_hpack_fields")
 		"mov  %0, x0\n"
 		: "=r"(p)
 		:: "x0");

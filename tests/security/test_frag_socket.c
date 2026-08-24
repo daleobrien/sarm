@@ -51,6 +51,7 @@
 #include "frag_common.h"
 
 #include <string.h>
+#include "asm_sym.h"
 
 // ── the record layer's constants (src/tls/record/_constants.S) ──────
 #define TLS_RECORD_HEADER_LEN   5
@@ -84,7 +85,7 @@
 
 #define DEFINE_SYM(fn, name) \
     static inline void *fn(void) { void *p; \
-        __asm__("adrp %0, " #name "@PAGE\n\tadd %0, %0, " #name "@PAGEOFF" \
+        __asm__(ASM_ADDR_ASM("%0", #name) \
                 : "=r"(p)); return p; }
 
 DEFINE_SYM(sym_transport_mode,   transport_mode)

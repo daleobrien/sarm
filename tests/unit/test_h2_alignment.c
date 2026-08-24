@@ -20,13 +20,13 @@
 // Built by the same rule as the other test_h2_* suites (links H2_LIBS).
 
 #include "test_harness.h"
+#include "asm_sym.h"
 
 // Take the address of an assembly symbol by name (see note above).
 #define ASM_SYM_ADDR(sym) ({ \
 	uintptr_t _addr; \
 	asm volatile( \
-		"adrp x0, " #sym "@PAGE\n\t" \
-		"add  x0, x0, " #sym "@PAGEOFF\n\t" \
+		ASM_ADDR_ASM("x0", #sym) \
 		"mov  %0, x0\n\t" \
 		: "=r"(_addr) \
 		: \

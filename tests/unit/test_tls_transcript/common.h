@@ -2,6 +2,7 @@
 #pragma once
 
 #include "../test_harness.h"
+#include "asm_sym.h"
 
 // ── asm entry points (bare labels, pinned via __asm__) ───────────────
 
@@ -35,8 +36,7 @@ extern void tls_transcript_hash(void *out) __asm__("tls_transcript_hash");
 #define ASM_SYM_ADDR(sym) ({ \
 	uintptr_t _addr; \
 	asm volatile( \
-		"adrp x0, " #sym "@PAGE\n\t" \
-		"add  x0, x0, " #sym "@PAGEOFF\n\t" \
+		ASM_ADDR_ASM("x0", #sym) \
 		"mov  %0, x0\n\t" \
 		: "=r"(_addr) \
 		: \

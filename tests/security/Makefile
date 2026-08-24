@@ -20,7 +20,7 @@
 .PHONY: all test build clean
 
 CC      := cc
-CFLAGS  := -g -O1 -arch arm64 -Wall -Wextra -Wno-unused-function
+CFLAGS  := -g -O1 -arch arm64 -Wall -Wextra -Wno-unused-function -I ../../include
 LDFLAGS := -arch arm64
 
 # -O1, not -O2: these tests deliberately dereference out-of-bounds

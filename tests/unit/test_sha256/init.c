@@ -3,6 +3,7 @@
 // Tests for SHA-256 context initialization and layout verification.
 
 #include "test_harness.h"
+#include "asm_sym.h"
 
 extern void sha256_init(void *ctx) __asm__("sha256_init");
 extern const uint32_t sha256_h256[8] __asm__("sha256_h256");
@@ -22,8 +23,7 @@ extern const uint32_t sha256_h256[8] __asm__("sha256_h256");
 #define ASM_SYM_ADDR(sym) ({ \
 	uintptr_t _addr; \
 	asm volatile( \
-		"adrp x0, " #sym "@PAGE\n\t" \
-		"add  x0, x0, " #sym "@PAGEOFF\n\t" \
+		ASM_ADDR_ASM("x0", #sym) \
 		"mov  %0, x0\n\t" \
 		: "=r"(_addr) \
 		: \

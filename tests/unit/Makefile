@@ -20,7 +20,7 @@
 AS      := cc
 CC      := cc
 ASFLAGS := -g -O2 -arch arm64 -I ../../src
-CFLAGS  := -g -O2 -arch arm64 -I .
+CFLAGS  := -g -O2 -arch arm64 -I . -I ../../include
 LDFLAGS := -arch arm64
 
 # ── build directory ─────────────────────────────────────────────────

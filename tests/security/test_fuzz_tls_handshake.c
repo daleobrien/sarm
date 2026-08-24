@@ -54,6 +54,7 @@
 
 #include <sys/socket.h>
 #include <string.h>
+#include "asm_sym.h"
 
 // ── constants from src/defs.S ───────────────────────────────────────
 #define TLS_HS_CONNECTED   7
@@ -99,7 +100,7 @@
 // come from the same place the code does.
 #define DEFINE_SYM(fn, name) \
     static inline void *fn(void) { void *p; \
-        __asm__("adrp %0, " #name "@PAGE\n\tadd %0, %0, " #name "@PAGEOFF" \
+        __asm__(ASM_ADDR_ASM("%0", #name) \
                 : "=r"(p)); return p; }
 
 DEFINE_SYM(sym_hs_state,          tls_hs_state)
