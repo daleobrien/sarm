@@ -5,7 +5,7 @@
 // decoder can scan only the entries whose length matches the
 // number of bits accumulated so far.
 .align 4
-h2_huffman_table:
+OBJECT h2_huffman_table
     .word 0x00000000  // symbol 48 (0), 5 bits
     .word 48
     .word 0x00000001  // symbol 49 (1), 5 bits
@@ -520,12 +520,13 @@ h2_huffman_table:
     .word 22
     .word 0x3fffffff  // symbol 256 (.), 30 bits
     .word 256
+ENDOBJ h2_huffman_table
 
 // h2_huffman_len_start[32] — the table offset where each code
 // length begins; the entries for length N occupy
 // [h2_huffman_len_start[N], h2_huffman_len_start[N+1]).
 .align 4
-h2_huffman_len_start:
+OBJECT h2_huffman_len_start
     .word 0  // length 0: 0 entries
     .word 0  // length 1: 0 entries
     .word 0  // length 2: 0 entries
@@ -558,3 +559,4 @@ h2_huffman_len_start:
     .word 253  // length 29: 0 entries
     .word 253  // length 30: 4 entries
     .word 257  // sentinel — end of the length-30 range
+ENDOBJ h2_huffman_len_start

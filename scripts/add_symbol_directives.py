@@ -29,10 +29,26 @@ fall-through aliases, without needing a name-based heuristic -- so real
 functions that merely end in `_end` (child_end, parse_header_end) are
 converted like any other.
 
-A `.global` is removed only for a symbol this script actually converted;
-the macro re-emits it. Symbols that were not converted -- sentinels, and
-symbols whose label lives in an #included file (h2_huffman_table) -- keep
-their directive, or they would vanish from the symbol table.
+A `.global` is removed only for a symbol whose definition this script
+actually converted, since the macro re-emits it; symbols left alone --
+the sentinels above -- keep their directive, or they would vanish from
+the symbol table.
+
+#include is followed, because a symbol's .global and its label do not
+have to sit in the same file: h2_huffman_table is declared in
+src/hpack/data.S and defined in the src/h2_huffman_table.S it includes,
+which also has no section directive of its own and is rodata only by
+virtue of where it is included. An included file is therefore annotated
+using its includer's globals and the section state at the include site,
+and the includer then drops the .global the macro has taken over.
+
+A closing directive is never placed outside the #if/#else branch that
+opened the symbol. An extent is otherwise free to run past an #endif --
+`.text` is what stops the scan, and the blank line before it is trimmed
+away -- which puts ENDOBJ where it is assembled unconditionally for a
+label that only exists in some builds. GNU as rejects the resulting
+`.size sym, . - sym` as non-constant; Mach-O never notices, because
+there ENDOBJ expands to nothing at all.
 
 Generated files are skipped: their generators emit plain labels, so any
 annotation here would be blown away on the next `make assets`.
@@ -52,6 +68,12 @@ LABEL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*):(.*)$")
 GLOBAL_RE = re.compile(r"^\s*\.global\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?://.*)?$")
 SECTION_RE = re.compile(r"^\s*(\.text|\.data|\.bss|rodata|\.section)\b")
 ALIGN_RE = re.compile(r"^\s*\.(align|balign|p2align)\b")
+INCLUDE_RE = re.compile(r'^\s*#include\s+"([^"]+)"')
+CPP_IF_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b")
+# An already-emitted opener. Recognised so that re-running over an
+# annotated tree sees what a bare label looked like before, and is a
+# no-op rather than nesting a second extent around the first.
+MACRO_DEF_RE = re.compile(r"^\s*(?:OBJECT|FUNC)\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$")
 
 DATA_SECTIONS = {".data", ".bss", "rodata"}
 
@@ -76,9 +98,12 @@ def code(line):
     return line.split("//")[0].strip()
 
 
-def section_kinds(lines):
-    """Line index -> True when that line sits in a data section."""
-    in_data = False
+def section_kinds(lines, in_data=False):
+    """Line index -> True when that line sits in a data section.
+
+    `in_data` seeds the state for a file that has no section directive of
+    its own because it is #included into one (h2_huffman_table.S).
+    """
     out = []
     for line in lines:
         m = SECTION_RE.match(code(line))
@@ -88,7 +113,41 @@ def section_kinds(lines):
     return out
 
 
-def body_end(lines, start, is_data, globals_found):
+def cond_regions(lines):
+    """enter[i] -- the #if/#else branch a line (or an insertion at i) is in.
+
+    Each region is the stack of (conditional id, branch number) enclosing
+    that point, so two positions compare equal only when the assembler
+    reaches both under exactly the same conditions. Length is len(lines)+1:
+    the last entry is the region at end of file.
+
+    A closing directive must land in the same region as its opener. Without
+    this, a symbol defined inside `#if SARM_RNG_INJECT` gets an ENDOBJ after
+    the `#endif`, so every build that leaves the block out still emits
+    `.size sym, . - sym` for a label that does not exist -- which GNU as
+    rejects as a non-constant expression, while Mach-O never notices
+    because its ENDOBJ is empty.
+    """
+    enter = []
+    stack = []
+    seq = 0
+    for line in lines:
+        m = CPP_IF_RE.match(line)
+        kw = m.group(1) if m else None
+        enter.append(tuple(stack))  # before this line takes effect
+        if kw in ("if", "ifdef", "ifndef"):
+            seq += 1
+            stack.append((seq, 0))
+        elif kw in ("elif", "else") and stack:
+            cid, branch = stack[-1]
+            stack[-1] = (cid, branch + 1)
+        elif kw == "endif" and stack:
+            stack.pop()
+    enter.append(tuple(stack))
+    return enter
+
+
+def body_end(lines, start, is_data, globals_found, enter=None):
     """Index one past the last line of the body opened at `start`.
 
     Scans forward to the line that begins the next thing, then walks back
@@ -102,6 +161,9 @@ def body_end(lines, start, is_data, globals_found):
             continue
         if SECTION_RE.match(stripped) or GLOBAL_RE.match(lines[j]):
             stop = j
+            break
+        if MACRO_DEF_RE.match(lines[j]):
+            stop = j  # an opener always starts a new symbol, either section
             break
         m = LABEL_RE.match(stripped)
         if m and (is_data or m.group(1) in globals_found):
@@ -117,6 +179,11 @@ def body_end(lines, start, is_data, globals_found):
             break
         return k
 
+    if enter is not None:
+        # Never close outside the conditional branch that opened it.
+        while stop > start + 1 and enter[stop] != enter[start]:
+            stop -= 1
+
     stop = trim_blanks(stop)
     # A trailing comment block belongs to whatever comes next only if a
     # blank line separates it from this body; otherwise it is a
@@ -131,17 +198,27 @@ def body_end(lines, start, is_data, globals_found):
     return stop
 
 
-def process(path):
+def process(path, extra_globals=frozenset(), in_data=False, also_strip=frozenset()):
+    """Annotate one file.
+
+    `extra_globals` are symbols declared .global by a file that #includes
+    this one, `in_data` seeds the section state from that include site,
+    and `also_strip` are symbols whose .global this file still carries but
+    whose definition -- and therefore whose macro-emitted .global -- now
+    lives in a file it includes.
+    """
     text = path.read_text()
     lines = text.split("\n")
 
     globals_found = {
         m.group(1) for line in lines for m in [GLOBAL_RE.match(line)] if m
     }
+    globals_found |= set(extra_globals)
     if not globals_found:
         return text, []
 
-    is_data_at = section_kinds(lines)
+    is_data_at = section_kinds(lines, in_data)
+    enter = cond_regions(lines)
 
     # Plan every conversion before touching the list, so no index shifts
     # underneath us.
@@ -158,7 +235,7 @@ def process(path):
             continue
 
         is_data = is_data_at[i]
-        end = body_end(lines, i, is_data, globals_found)
+        end = body_end(lines, i, is_data, globals_found, enter)
 
         # Empty body: an extent sentinel or a pure alias. Leave the label
         # and its .global alone -- a zero .size is worse than none.
@@ -172,7 +249,7 @@ def process(path):
         )
         converted.add(name)
 
-    if not converted:
+    if not converted and not (also_strip & globals_found):
         return text, []
 
     out = []
@@ -190,7 +267,7 @@ def process(path):
             continue
 
         g = GLOBAL_RE.match(line)
-        if g and g.group(1) in converted:
+        if g and (g.group(1) in converted or g.group(1) in also_strip):
             continue  # the macro emits it now
 
         out.append(line)
@@ -199,24 +276,79 @@ def process(path):
     return "\n".join(out), sorted(converted)
 
 
+def include_context(paths):
+    """Work out what each #included file inherits from its includer.
+
+    An included file may hold the labels for symbols the *includer*
+    declares .global, and may have no section directive of its own
+    (h2_huffman_table.S is a rodata table only because hpack/data.S is in
+    rodata at the point it includes it). Returns, per included path, the
+    extra globals and the section state at the include site, plus the map
+    from each includer to the files it pulls in.
+    """
+    owned = set(paths)
+    extra = {}
+    in_data = {}
+    includes = {}
+
+    for path in paths:
+        lines = path.read_text().split("\n")
+        kinds = section_kinds(lines)
+        own = {m.group(1) for line in lines
+               for m in [GLOBAL_RE.match(line)] if m}
+        for i, line in enumerate(lines):
+            m = INCLUDE_RE.match(line)
+            if not m:
+                continue
+            target = (path.parent / m.group(1)).resolve()
+            if target not in owned or target == path:
+                continue
+            includes.setdefault(path, set()).add(target)
+            extra.setdefault(target, set()).update(own)
+            in_data[target] = kinds[i]
+
+    return extra, in_data, includes
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="report, don't write")
     args = ap.parse_args()
 
-    touched = total = 0
-    for path in find_files():
-        rel = path.relative_to(ROOT).as_posix()
-        if rel in SKIP_FILES:
+    paths = [p for p in find_files()
+             if p.relative_to(ROOT).as_posix() not in SKIP_FILES]
+    extra, in_data, includes = include_context(paths)
+
+    results = {}
+    converted_in = {}
+
+    # Included files first: what they convert decides which .global lines
+    # their includers no longer need to carry.
+    for path in paths:
+        if path not in extra:
             continue
-        new_text, converted = process(path)
-        if not converted or new_text == path.read_text():
+        text, converted = process(path, extra[path], in_data.get(path, False))
+        results[path] = text
+        converted_in[path] = set(converted)
+
+    for path in paths:
+        if path in results:
+            continue
+        strip = set().union(*(converted_in.get(t, set())
+                              for t in includes.get(path, ())) or [set()])
+        results[path], converted = process(path, also_strip=strip)
+        converted_in[path] = set(converted)
+
+    touched = total = 0
+    for path in paths:
+        if results[path] == path.read_text():
             continue
         touched += 1
-        total += len(converted)
-        print(f"{rel}: {len(converted)} symbol(s)")
+        total += len(converted_in[path])
+        print(f"{path.relative_to(ROOT).as_posix()}: "
+              f"{len(converted_in[path])} symbol(s)")
         if not args.check:
-            path.write_text(new_text)
+            path.write_text(results[path])
 
     verb = "would annotate" if args.check else "annotated"
     print(f"\n{verb} {total} symbol(s) across {touched} file(s)")

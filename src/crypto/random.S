@@ -132,8 +132,8 @@ OBJECT crypto_random_fail_calls
 ENDOBJ crypto_random_fail_calls
 OBJECT crypto_random_fail_at
     .quad   SARM_RNG_FAIL_NTH
-#endif
 ENDOBJ crypto_random_fail_at
+#endif
 
 .text
 .align 2

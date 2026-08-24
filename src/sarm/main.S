@@ -450,6 +450,7 @@ Lws_done:
     SCWINUM SYS_exit
     mov x0, #0
     SCWISVC
+ENDFUNC worker_shutdown
 
 #ifndef __linux__
 // ─────────────────────────────────────────────────────────────────────
@@ -480,7 +481,6 @@ Lws_done:
 // Stack Usage:
 //   none
 // ─────────────────────────────────────────────────────────────────────
-ENDFUNC worker_shutdown
 .align 2
 FUNC sig_tramp
     mov x5, x0                  // catcher
@@ -499,6 +499,7 @@ FUNC sig_tramp
     SCWINUM SYS_exit
     mov x0, #0
     SCWISVC
+ENDFUNC sig_tramp
 #endif
 
 #ifdef __linux__
@@ -508,12 +509,11 @@ FUNC sig_tramp
 // happens to hold). Darwin gets here through dyld, which calls this as
 // main(argc, argv, ...) with the arguments already in x0/x1, so only
 // Linux needs the unpack.
-ENDFUNC sig_tramp
 FUNC _start
     ldr x0, [sp]                // argc
     add x1, sp, #8              // argv
-#endif
 ENDFUNC _start
+#endif
 FUNC _main
     // ── argument scan (Plan.md Phase 3, Step 14) ──────────────────────
     // Walks argv[1..argc) rather than looking only at argv[1], so the

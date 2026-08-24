@@ -96,8 +96,6 @@
 //
 //   FUNC sym        opens a function: .global + .type + the label
 //   ENDFUNC sym     closes it: size = current address - sym
-//   ENDFUNC_TO s,n  closes a non-fall-through entry whose extent ends
-//                   at another symbol n (tail-duplicated entries)
 //   OBJECT sym      opens a data object: .global + .type + the label
 //   ENDOBJ sym      closes it: size = current address - sym
 #ifdef __linux__
@@ -108,9 +106,6 @@
 .endm
 .macro ENDFUNC sym
     .size \sym, . - \sym
-.endm
-.macro ENDFUNC_TO sym, next
-    .size \sym, \next - \sym
 .endm
 .macro OBJECT sym
     .global \sym
@@ -126,8 +121,6 @@
 \sym:
 .endm
 .macro ENDFUNC sym
-.endm
-.macro ENDFUNC_TO sym, next
 .endm
 .macro OBJECT sym
     .global \sym
