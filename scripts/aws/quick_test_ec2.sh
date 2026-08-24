@@ -16,7 +16,9 @@
 #   3. upload this working tree (tracked files, as they are on disk)
 #   4. scripts/aws/setup_c6g_metal.sh   — toolchain, tuning, build, smoke
 #   5. scripts/aws/run_perf_suite.sh --quick
-#   6. pull the results into ./perf-results/ec2-<timestamp>/
+#   6. pull the results into ./perf-results/ec2-<timestamp>/ — this
+#      happens on the way out too, so a failed, interrupted or
+#      timed-out run still brings home whatever perf managed to write
 #   7. terminate, and delete the keypair and security group
 #
 # Usage:
@@ -91,6 +93,49 @@ SG_ID=""
 KEY_NAME=""
 WATCHDOG=""
 STARTED=$(date +%s)
+RESULTS_FETCHED=0
+
+# ── pulling the results home ──────────────────────────────────────────
+# Defined before cleanup() because cleanup calls it: whatever the suite
+# managed to write is worth having, and on a failed or interrupted run it
+# is worth more than on a clean one. Idempotent and entirely best-effort —
+# nothing in here may prevent the instance from being terminated. Only
+# usable once REMOTE exists; before that it is a no-op.
+fetch_results() {
+    [ "$RESULTS_FETCHED" = 1 ] && return 0
+    [ -n "${REMOTE:-}" ] || return 0
+    RESULTS_FETCHED=1
+
+    mkdir -p "$LOCAL_OUT"
+    # The logs of this side of the run exist regardless of whether the box
+    # is still reachable, so save them first.
+    cp "$WORK/setup.log" "$WORK/suite.log" "$LOCAL_OUT/" 2>/dev/null || true
+
+    say "Downloading results"
+    # Streamed as a tarball rather than scp -r: recent scp speaks SFTP and
+    # will not expand a remote glob, and perf.data files are worth the gzip.
+    if rsh "cd \$HOME/sarm/perf-results && tar -czf - '$RUNID'" > "$WORK/results.tar.gz" 2>/dev/null \
+        && [ -s "$WORK/results.tar.gz" ]; then
+        tar -xzf "$WORK/results.tar.gz" -C "$LOCAL_OUT" --strip-components 1 2>/dev/null || \
+            warn "results tarball arrived but would not unpack"
+        info "$(du -sh "$LOCAL_OUT" | cut -f1) retrieved"
+    else
+        warn "could not retrieve the results directory — keeping what we have locally"
+    fi
+    rsh 'uname -a; nproc; head -20 /proc/cpuinfo' > "$LOCAL_OUT/host.txt" 2>/dev/null || true
+    # Anything the suite wrote outside its own directory, plus what the
+    # kernel logged: on a run that died early these are often the only
+    # evidence of why.
+    rsh 'journalctl -n 2000 --no-pager 2>/dev/null; dmesg 2>/dev/null | tail -200' \
+        > "$LOCAL_OUT/instance-journal.txt" 2>/dev/null || true
+
+    # A redirection creates its file even when the ssh behind it fails, so
+    # an unreachable box leaves a directory of zero-byte stubs. Neither
+    # they nor the empty directory are worth keeping in perf-results/.
+    find "$LOCAL_OUT" -maxdepth 1 -type f -empty -delete 2>/dev/null || true
+    rmdir "$LOCAL_OUT" 2>/dev/null && { warn "nothing was retrieved"; return 0; }
+    info "results in $LOCAL_OUT"
+}
 
 # ── cleanup: the reason this script exists ────────────────────────────
 # Runs on every exit path — success, failure (set -e), Ctrl-C, watchdog
@@ -100,6 +145,12 @@ cleanup() {
     local rc=$?
     trap - EXIT INT TERM
     [ -n "$WATCHDOG" ] && kill "$WATCHDOG" 2>/dev/null || true
+
+    # Before the machine goes away — every path that reaches here without
+    # having downloaded yet (a failed suite, Ctrl-C, the watchdog) still
+    # gets whatever perf wrote. A clean run has already fetched, and this
+    # is then a no-op.
+    fetch_results || warn "results download failed"
 
     if [ -n "$INSTANCE_ID" ]; then
         if [ "$KEEP" = 1 ]; then
@@ -318,18 +369,7 @@ else
         2>&1 | tee "$WORK/suite.log"
 
     # ── 6. bring the results home ─────────────────────────────────────
-    say "Downloading results"
-    mkdir -p "$LOCAL_OUT"
-    # Streamed as a tarball rather than scp -r: recent scp speaks SFTP and
-    # will not expand a remote glob, and perf.data files are worth the gzip.
-    if rsh "cd \$HOME/sarm/perf-results && tar -czf - '$RUNID'" > "$WORK/results.tar.gz"; then
-        tar -xzf "$WORK/results.tar.gz" -C "$LOCAL_OUT" --strip-components 1
-        info "$(du -sh "$LOCAL_OUT" | cut -f1) retrieved"
-    else
-        warn "could not retrieve the results directory"
-    fi
-    cp "$WORK/setup.log" "$WORK/suite.log" "$LOCAL_OUT/" 2>/dev/null || true
-    rsh 'uname -a; nproc; cat /proc/cpuinfo | head -20' > "$LOCAL_OUT/host.txt" 2>/dev/null || true
+    fetch_results
 
     say "Results in $LOCAL_OUT"
     ls -1 "$LOCAL_OUT" | sed 's/^/   /'
