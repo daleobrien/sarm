@@ -12,7 +12,7 @@
 #
 # What it does:
 #   1. ephemeral SSH keypair + security group locked to your public IP
-#   2. launch c6g.metal on Ubuntu 24.04 arm64 (AMI resolved from SSM)
+#   2. launch c6g.metal on the latest Ubuntu arm64 (AMI resolved from SSM)
 #   3. upload this working tree (tracked files, as they are on disk)
 #   4. scripts/aws/setup_c6g_metal.sh   — toolchain, tuning, build, smoke
 #   5. scripts/aws/run_perf_suite.sh --quick
@@ -23,6 +23,7 @@
 #   ./scripts/aws/quick_test_ec2.sh
 #   ./scripts/aws/quick_test_ec2.sh --yes                  # no confirmation
 #   ./scripts/aws/quick_test_ec2.sh --suite-args '--duration 30 --repeat 7'
+#   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
 #   ./scripts/aws/quick_test_ec2.sh --keep                 # leave it running
 #
@@ -39,7 +40,7 @@ REPO="$PWD"
 REGION="${AWS_REGION_OVERRIDE:-ap-southeast-4}"     # Melbourne
 ITYPE="c6g.metal"
 AMI=""
-AMI_SSM="/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+UBUNTU="26.04"          # latest release (Resolute, an LTS)
 VOLUME_GB=40
 SUITE_ARGS="--quick"
 TIMEOUT=3600            # local watchdog, seconds
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --region)      REGION="$2"; shift ;;
         --type)        ITYPE="$2"; shift ;;
         --ami)         AMI="$2"; shift ;;
+        --ubuntu)      UBUNTU="$2"; shift ;;
         --volume-gb)   VOLUME_GB="$2"; shift ;;
         --suite-args)  SUITE_ARGS="$2"; shift ;;
         --timeout)     TIMEOUT="$2"; shift ;;
@@ -62,7 +64,7 @@ while [ $# -gt 0 ]; do
         --setup-only)  SKIP_SUITE=1 ;;
         --keep)        KEEP=1 ;;
         -y|--yes)      ASSUME_YES=1 ;;
-        -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//;$d'; exit 0 ;;
+        -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed -E 's/^#[[:space:]]?//;$d'; exit 0 ;;
         *) echo "$0: unknown flag $1" >&2; exit 2 ;;
     esac
     shift
@@ -140,9 +142,16 @@ trap cleanup EXIT INT TERM
 
 # ── 0. plan ───────────────────────────────────────────────────────────
 say "Plan"
+# Canonical publishes a "current" pointer per release, so this always picks
+# up the newest daily build of that release rather than a frozen serial.
+AMI_SSM="/aws/service/canonical/ubuntu/server/$UBUNTU/stable/current/arm64/hvm/ebs-gp3/ami-id"
 [ -z "$AMI" ] && AMI="$("${AWSC[@]}" ssm get-parameters --names "$AMI_SSM" \
     --query 'Parameters[].Value')"
-[ -n "$AMI" ] && [ "$AMI" != "None" ] || die "could not resolve an Ubuntu arm64 AMI in $REGION"
+[ -n "$AMI" ] && [ "$AMI" != "None" ] || die "no Ubuntu $UBUNTU arm64 image in $REGION.
+   List what Canonical publishes there with:
+     aws --region $REGION ssm get-parameters-by-path --recursive \\
+         --path /aws/service/canonical/ubuntu/server --query 'Parameters[].Name' \\
+       | tr '\\t' '\\n' | grep 'current/arm64/hvm/ebs-gp3'"
 
 AZ="$("${AWSC[@]}" ec2 describe-instance-type-offerings \
         --location-type availability-zone \
@@ -150,7 +159,8 @@ AZ="$("${AWSC[@]}" ec2 describe-instance-type-offerings \
         --query 'InstanceTypeOfferings[0].Location')"
 [ -n "$AZ" ] && [ "$AZ" != "None" ] || die "$ITYPE is not offered in $REGION"
 
-printf '   %-14s %s\n' region "$REGION" type "$ITYPE" az "$AZ" ami "$AMI" \
+printf '   %-14s %s\n' region "$REGION" type "$ITYPE" az "$AZ" \
+    ubuntu "$UBUNTU" ami "$AMI" \
     suite "run_perf_suite.sh $SUITE_ARGS" timeout "${TIMEOUT}s (deadman ${DEADMAN}m)" \
     results "$LOCAL_OUT"
 
