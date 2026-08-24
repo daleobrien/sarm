@@ -19,7 +19,16 @@
 #   6. pull the results into ./perf-results/ec2-<timestamp>/ — this
 #      happens on the way out too, so a failed, interrupted or
 #      timed-out run still brings home whatever perf managed to write
-#   7. terminate, and delete the keypair and security group
+#   7. fire off the terminate call and the keypair delete, and hand the
+#      security group to the deferred-deletion list (below) — we do not
+#      wait around for the instance to actually die
+#
+# Deferred security groups: a security group cannot be deleted while an
+# instance still holds it, and a terminating bare-metal instance can take
+# many minutes to let go. Rather than sit there watching it, the group is
+# appended to a list and every later run of this script starts by trying
+# to delete whatever is on that list, dropping the ones that succeed (or
+# that no longer exist) and leaving the rest for next time.
 #
 # Usage:
 #   ./scripts/aws/quick_test_ec2.sh
@@ -28,6 +37,8 @@
 #   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
 #   ./scripts/aws/quick_test_ec2.sh --keep                 # leave it running
+#   ./scripts/aws/quick_test_ec2.sh --sweep-only           # just drain the
+#                                                          # deferred SG list
 #
 # Needs: awscli v2 with credentials, ssh, scp, git. c6g.metal counts 64
 # vCPUs against the "Running On-Demand Standard instances" quota in the
@@ -51,6 +62,10 @@ SSH_CIDR=""
 ASSUME_YES=0
 KEEP=0
 SKIP_SUITE=0
+SWEEP_ONLY=0
+
+# Security groups awaiting deletion, one "<region> <sg-id> <tag>" per line.
+PENDING_SG_FILE="${SARM_PENDING_SG_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm/pending-security-groups}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -64,6 +79,7 @@ while [ $# -gt 0 ]; do
         --deadman)     DEADMAN="$2"; shift ;;
         --ssh-cidr)    SSH_CIDR="$2"; shift ;;
         --setup-only)  SKIP_SUITE=1 ;;
+        --sweep-only)  SWEEP_ONLY=1 ;;
         --keep)        KEEP=1 ;;
         -y|--yes)      ASSUME_YES=1 ;;
         -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed -E 's/^#[[:space:]]?//;$d'; exit 0 ;;
@@ -94,6 +110,55 @@ KEY_NAME=""
 WATCHDOG=""
 STARTED=$(date +%s)
 RESULTS_FETCHED=0
+
+# ── deferred security-group deletion ──────────────────────────────────
+# A security group is still attached to a terminating instance for as long
+# as that instance takes to disappear, which on bare metal is minutes. We
+# refuse to pay for that wall-clock, so instead of waiting we write the
+# group down and let a later run collect it. The list is plain text, one
+# "<region> <sg-id> <tag>" per line, and is rewritten atomically so two
+# scripts racing on it cannot leave it half-written.
+defer_security_group() {
+    local sg="$1"
+    mkdir -p "$(dirname "$PENDING_SG_FILE")" 2>/dev/null || return 0
+    printf '%s %s %s\n' "$REGION" "$sg" "$TAG" >> "$PENDING_SG_FILE" || return 0
+    info "security group $sg queued for deletion on a later run"
+}
+
+# Try every group on the list; drop the ones that go away, keep the ones
+# that are still held by an instance that has not finished dying. Entirely
+# best-effort: this must never be a reason for a run to fail or to stall,
+# so it never waits on anything and always returns 0.
+sweep_pending_security_groups() {
+    [ -s "$PENDING_SG_FILE" ] || return 0
+
+    local tmp kept=0 gone=0 err region sg tag
+    tmp="$(mktemp "${PENDING_SG_FILE}.XXXXXX")" || return 0
+
+    while read -r region sg tag; do
+        [ -n "${sg:-}" ] || continue
+        if err="$(aws --region "$region" --output text \
+                    ec2 delete-security-group --group-id "$sg" 2>&1)"; then
+            gone=$((gone + 1))
+        elif printf '%s' "$err" | grep -q 'InvalidGroup\.NotFound'; then
+            # Already deleted by hand or by an earlier run: nothing to keep.
+            gone=$((gone + 1))
+        else
+            printf '%s %s %s\n' "$region" "$sg" "${tag:-}" >> "$tmp"
+            kept=$((kept + 1))
+        fi
+    done < "$PENDING_SG_FILE"
+
+    if [ -s "$tmp" ]; then
+        mv "$tmp" "$PENDING_SG_FILE"
+    else
+        rm -f "$tmp" "$PENDING_SG_FILE"
+    fi
+
+    [ "$gone" -gt 0 ] && info "deleted $gone deferred security group(s)"
+    [ "$kept" -gt 0 ] && info "$kept still attached — will retry next run"
+    return 0
+}
 
 # ── pulling the results home ──────────────────────────────────────────
 # Defined before cleanup() because cleanup calls it: whatever the suite
@@ -160,24 +225,26 @@ cleanup() {
             warn "it will self-terminate after ${DEADMAN} minutes regardless."
             info "ssh key kept at $KEYFILE"
             info "ssh -i $KEYFILE ubuntu@${PUBLIC_IP:-<ip>}"
+            # Queued rather than deleted: the group is in use for as long
+            # as you keep the box, and the sweep will simply skip it until
+            # it is not.
+            [ -n "$SG_ID" ] && defer_security_group "$SG_ID"
             printf '\n'
             exit "$rc"
         fi
         say "Terminating $INSTANCE_ID"
+        # The API call is what stops the billing clock; the instance
+        # reaching the terminated state can take many minutes on bare
+        # metal and there is nothing here that needs to see it happen.
         "${AWSC[@]}" ec2 terminate-instances --instance-ids "$INSTANCE_ID" \
             --query 'TerminatingInstances[].CurrentState.Name' 2>&1 | sed 's/^/   /' || \
             warn "terminate call failed — CHECK THE CONSOLE for $INSTANCE_ID"
-        info "waiting for it to actually be gone"
-        "${AWSC[@]}" ec2 wait instance-terminated --instance-ids "$INSTANCE_ID" 2>/dev/null || \
-            warn "stopped waiting — CHECK THE CONSOLE for $INSTANCE_ID"
     fi
 
-    # The security group cannot be deleted while an instance still holds
-    # it, which is why this comes after the terminated wait.
+    # The security group cannot be deleted while the instance still holds
+    # it, and we are not waiting for that. Onto the list it goes.
     if [ -n "$SG_ID" ]; then
-        "${AWSC[@]}" ec2 delete-security-group --group-id "$SG_ID" 2>/dev/null \
-            && info "deleted security group $SG_ID" \
-            || warn "could not delete security group $SG_ID — delete it by hand"
+        defer_security_group "$SG_ID"
     fi
     if [ -n "$KEY_NAME" ]; then
         "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 \
@@ -190,6 +257,21 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT INT TERM
+
+# ── collect what earlier runs left behind ─────────────────────────────
+# Cheap, and doing it first means the leftovers of the previous run are
+# usually gone by the time this one launches anything.
+sweep_pending_security_groups
+
+if [ "$SWEEP_ONLY" = 1 ]; then
+    if [ -s "$PENDING_SG_FILE" ]; then
+        info "still pending in $PENDING_SG_FILE:"
+        sed 's/^/     /' "$PENDING_SG_FILE"
+    else
+        info "no security groups pending deletion"
+    fi
+    exit 0
+fi
 
 # ── 0. plan ───────────────────────────────────────────────────────────
 say "Plan"
