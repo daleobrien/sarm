@@ -25,8 +25,7 @@
 
 .text
 .align 2
-.global check_path_safety
-check_path_safety:
+FUNC check_path_safety
     // if we've reached the end and no issues yet, it's safe
     cbz x1, Lsafe
 
@@ -52,3 +51,4 @@ Lsafe:
 Lunsafe:
     mov x0, #0
     ret
+ENDFUNC check_path_safety

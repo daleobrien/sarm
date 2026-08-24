@@ -46,8 +46,7 @@
 
 .text
 .align 2
-.global h2_huffman_decode
-h2_huffman_decode:
+FUNC h2_huffman_decode
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -150,3 +149,4 @@ h2_huffman_decode:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #96
     ret
+ENDFUNC h2_huffman_decode

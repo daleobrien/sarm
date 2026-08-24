@@ -33,8 +33,7 @@
 
 .text
 .align 4
-.global streqn_i
-streqn_i:
+FUNC streqn_i
     cbz x2, Lstreqn_i_match
 
     // Short inputs (the common case for every current caller — MIME
@@ -156,3 +155,4 @@ Lstreqn_i_match:
 Lstreqn_i_no_match:
     mov x0, #0
     ret
+ENDFUNC streqn_i

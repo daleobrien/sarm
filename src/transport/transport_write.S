@@ -45,8 +45,7 @@
 
 .text
 .align 2
-.global transport_write
-transport_write:
+FUNC transport_write
     ldr_l   x9, transport_mode
     cbnz    x9, .Ltransport_write_tls
     b       raw_write_all
@@ -99,3 +98,4 @@ transport_write:
     // x0 already holds the failing call's error code; carry is
     // already set by the b.cs we fell through from.
     b       .Ltw_tls_ret
+ENDFUNC transport_write

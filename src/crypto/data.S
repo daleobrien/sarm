@@ -24,13 +24,17 @@
 .data
 .align 4
 .global sha256_ctx
-.global sha256_ctx_state
-.global sha256_ctx_bitlen
-.global sha256_ctx_buf
-.global sha256_ctx_buflen
 
 sha256_ctx:
-sha256_ctx_state:    .skip 32        // SHA256_CTX_STATE — set by sha256_init
-sha256_ctx_bitlen:   .quad 0         // SHA256_CTX_BITLEN — set by sha256_init
-sha256_ctx_buf:      .skip 64        // SHA256_CTX_BUF — partial block
-sha256_ctx_buflen:   .quad 0         // SHA256_CTX_BUFLEN — set by sha256_init
+OBJECT sha256_ctx_state
+                     .skip 32        // SHA256_CTX_STATE — set by sha256_init
+ENDOBJ sha256_ctx_state
+OBJECT sha256_ctx_bitlen
+                     .quad 0         // SHA256_CTX_BITLEN — set by sha256_init
+ENDOBJ sha256_ctx_bitlen
+OBJECT sha256_ctx_buf
+                     .skip 64        // SHA256_CTX_BUF — partial block
+ENDOBJ sha256_ctx_buf
+OBJECT sha256_ctx_buflen
+                     .quad 0         // SHA256_CTX_BUFLEN — set by sha256_init
+ENDOBJ sha256_ctx_buflen

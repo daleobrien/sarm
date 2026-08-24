@@ -39,8 +39,7 @@
 
 .text
 .align 2
-.global tls_server_hello_write
-tls_server_hello_write:
+FUNC tls_server_hello_write
     adr_l   x12, tls_state
     mov     x9, x0                          // cursor
     ldr     x11, [x12, #TLS_SESSION_ID_LEN] // 0..32
@@ -144,3 +143,4 @@ tls_server_hello_write:
 
     add     x0, x10, #4                     // total message length
     ret
+ENDFUNC tls_server_hello_write

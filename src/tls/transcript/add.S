@@ -39,8 +39,7 @@
 
 .text
 .align 2
-.global tls_transcript_add
-tls_transcript_add:
+FUNC tls_transcript_add
     sub     sp, sp, #32
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -71,3 +70,4 @@ tls_transcript_add:
     ldp     x19, x20, [sp]
     add     sp, sp, #32
     ret
+ENDFUNC tls_transcript_add

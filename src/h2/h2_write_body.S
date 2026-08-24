@@ -64,8 +64,7 @@
 
 .text
 .align 2
-.global h2_write_body
-h2_write_body:
+FUNC h2_write_body
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -282,3 +281,4 @@ h2_write_body:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #96
     ret
+ENDFUNC h2_write_body

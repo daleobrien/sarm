@@ -83,8 +83,7 @@
 
 .text
 .align 2
-.global tls_parse_client_hello
-tls_parse_client_hello:
+FUNC tls_parse_client_hello
     // legacy_version(2) + random(32) + session_id length(1) — the
     // fixed-size prefix before any variable-length field.
     cmp     x1, #35
@@ -451,3 +450,4 @@ tls_parse_client_hello:
 .Lch_fail:
     cmp     xzr, xzr                 // failure — carry set
     ret
+ENDFUNC tls_parse_client_hello

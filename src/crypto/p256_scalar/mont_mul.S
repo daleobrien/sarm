@@ -130,8 +130,7 @@
 .endm
 
 .align 2
-.global p256_scalar_mont_mul
-p256_scalar_mont_mul:
+FUNC p256_scalar_mont_mul
     sub     sp, sp, #48
     stp     x19, x20, [sp, #0]
     stp     x21, x22, [sp, #16]
@@ -223,3 +222,4 @@ p256_scalar_mont_mul:
     ldp     x19, x20, [sp, #0]
     add     sp, sp, #48
     ret
+ENDFUNC p256_scalar_mont_mul

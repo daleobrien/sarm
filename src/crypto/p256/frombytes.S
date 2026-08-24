@@ -20,8 +20,7 @@
 //   x2-x5
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_frombytes
-p256_fe_frombytes:
+FUNC p256_fe_frombytes
     ldr     x2, [x1, #0]
     rev     x2, x2                  // most significant 8 bytes -> limb3
     ldr     x3, [x1, #8]
@@ -35,3 +34,4 @@ p256_fe_frombytes:
     str     x3, [x0, #16]
     str     x2, [x0, #24]
     ret
+ENDFUNC p256_fe_frombytes

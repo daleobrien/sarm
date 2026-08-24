@@ -30,70 +30,92 @@
 .data
 .align 4
 .global tls_state
-.global tls_fd
-.global tls_hs_state
-.global tls_client_random
-.global tls_server_random
-.global tls_client_key_share
-.global tls_server_key_share
-.global tls_shared_secret
-.global tls_transcript_hash_field
-.global tls_handshake_secret
-.global tls_master_secret
-.global tls_client_hs_key
-.global tls_client_hs_iv
-.global tls_server_hs_key
-.global tls_server_hs_iv
-.global tls_client_app_key
-.global tls_client_app_iv
-.global tls_server_app_key
-.global tls_server_app_iv
-.global tls_client_seq
-.global tls_server_seq
-.global tls_alpn_len
-.global tls_alpn
-.global tls_session_id_len
-.global tls_session_id
-.global tls_server_hs_traffic_secret
-.global tls_client_hs_traffic_secret
-.global tls_hs_msg_buf
-.global tls_hs_record_buf
-.global tls_client_gcm_ctx
-.global tls_server_gcm_ctx
 
 // tls_state — one block per connection (a connection handler is one
 // process, so the global is per-connection, like request/response).
 // Scalar fields take explicit initial values; byte arrays are zeroed
 // by .skip until the handshake fills them.
 tls_state:
-tls_fd:                .quad -1            // TLS_FD — no connection yet
-tls_hs_state:          .quad TLS_HS_START  // TLS_HS_STATE
-tls_client_random:     .skip TLS_RANDOM_LEN
-tls_server_random:     .skip TLS_RANDOM_LEN
-tls_client_key_share:  .skip TLS_KEY_SHARE_LEN
-tls_server_key_share:  .skip TLS_KEY_SHARE_LEN
-tls_shared_secret:     .skip TLS_KEY_SHARE_LEN  // 32 B X25519 shared secret
-tls_transcript_hash_field:   .skip TLS_DIGEST_LEN
-tls_handshake_secret:  .skip TLS_SECRET_LEN
-tls_master_secret:     .skip TLS_SECRET_LEN
-tls_client_hs_key:     .skip TLS_KEY_LEN
-tls_client_hs_iv:      .skip TLS_IV_STRIDE  // 12 B IV + 4 B pad (TLS_IV_LEN + pad)
-tls_server_hs_key:     .skip TLS_KEY_LEN
-tls_server_hs_iv:      .skip TLS_IV_STRIDE
-tls_client_app_key:    .skip TLS_KEY_LEN
-tls_client_app_iv:     .skip TLS_IV_STRIDE
-tls_server_app_key:    .skip TLS_KEY_LEN
-tls_server_app_iv:     .skip TLS_IV_STRIDE
-tls_client_seq:        .quad 0             // TLS_CLIENT_SEQ — record seqs start at 0
-tls_server_seq:        .quad 0             // TLS_SERVER_SEQ
-tls_alpn_len:          .quad 0             // TLS_ALPN_LEN — nothing negotiated yet
-tls_alpn:              .skip TLS_ALPN_BUF  // TLS_ALPN
-tls_session_id_len:    .quad 0             // TLS_SESSION_ID_LEN — the
+OBJECT tls_fd
+                       .quad -1            // TLS_FD — no connection yet
+ENDOBJ tls_fd
+OBJECT tls_hs_state
+                       .quad TLS_HS_START  // TLS_HS_STATE
+ENDOBJ tls_hs_state
+OBJECT tls_client_random
+                       .skip TLS_RANDOM_LEN
+ENDOBJ tls_client_random
+OBJECT tls_server_random
+                       .skip TLS_RANDOM_LEN
+ENDOBJ tls_server_random
+OBJECT tls_client_key_share
+                       .skip TLS_KEY_SHARE_LEN
+ENDOBJ tls_client_key_share
+OBJECT tls_server_key_share
+                       .skip TLS_KEY_SHARE_LEN
+ENDOBJ tls_server_key_share
+OBJECT tls_shared_secret
+                       .skip TLS_KEY_SHARE_LEN  // 32 B X25519 shared secret
+ENDOBJ tls_shared_secret
+OBJECT tls_transcript_hash_field
+                             .skip TLS_DIGEST_LEN
+ENDOBJ tls_transcript_hash_field
+OBJECT tls_handshake_secret
+                       .skip TLS_SECRET_LEN
+ENDOBJ tls_handshake_secret
+OBJECT tls_master_secret
+                       .skip TLS_SECRET_LEN
+ENDOBJ tls_master_secret
+OBJECT tls_client_hs_key
+                       .skip TLS_KEY_LEN
+ENDOBJ tls_client_hs_key
+OBJECT tls_client_hs_iv
+                       .skip TLS_IV_STRIDE  // 12 B IV + 4 B pad (TLS_IV_LEN + pad)
+ENDOBJ tls_client_hs_iv
+OBJECT tls_server_hs_key
+                       .skip TLS_KEY_LEN
+ENDOBJ tls_server_hs_key
+OBJECT tls_server_hs_iv
+                       .skip TLS_IV_STRIDE
+ENDOBJ tls_server_hs_iv
+OBJECT tls_client_app_key
+                       .skip TLS_KEY_LEN
+ENDOBJ tls_client_app_key
+OBJECT tls_client_app_iv
+                       .skip TLS_IV_STRIDE
+ENDOBJ tls_client_app_iv
+OBJECT tls_server_app_key
+                       .skip TLS_KEY_LEN
+ENDOBJ tls_server_app_key
+OBJECT tls_server_app_iv
+                       .skip TLS_IV_STRIDE
+ENDOBJ tls_server_app_iv
+OBJECT tls_client_seq
+                       .quad 0             // TLS_CLIENT_SEQ — record seqs start at 0
+ENDOBJ tls_client_seq
+OBJECT tls_server_seq
+                       .quad 0             // TLS_SERVER_SEQ
+ENDOBJ tls_server_seq
+OBJECT tls_alpn_len
+                       .quad 0             // TLS_ALPN_LEN — nothing negotiated yet
+ENDOBJ tls_alpn_len
+OBJECT tls_alpn
+                       .skip TLS_ALPN_BUF  // TLS_ALPN
+ENDOBJ tls_alpn
+OBJECT tls_session_id_len
+                       .quad 0             // TLS_SESSION_ID_LEN — the
                                             //   client's legacy_session_id
                                             //   length, echoed in ServerHello
-tls_session_id:        .skip 32            // TLS_SESSION_ID
-tls_server_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_SERVER_HS_TRAFFIC_SECRET
-tls_client_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_CLIENT_HS_TRAFFIC_SECRET
+ENDOBJ tls_session_id_len
+OBJECT tls_session_id
+                       .skip 32            // TLS_SESSION_ID
+ENDOBJ tls_session_id
+OBJECT tls_server_hs_traffic_secret
+                              .skip TLS_SECRET_LEN  // TLS_SERVER_HS_TRAFFIC_SECRET
+ENDOBJ tls_server_hs_traffic_secret
+OBJECT tls_client_hs_traffic_secret
+                              .skip TLS_SECRET_LEN  // TLS_CLIENT_HS_TRAFFIC_SECRET
+ENDOBJ tls_client_hs_traffic_secret
 
 // tls_client_gcm_ctx / tls_server_gcm_ctx — the AES-128-GCM key
 // contexts the record layer seals and opens with, one per direction.
@@ -115,8 +137,12 @@ tls_client_hs_traffic_secret: .skip TLS_SECRET_LEN  // TLS_CLIENT_HS_TRAFFIC_SEC
 // test_tls.c's offset sweep covers tls_state's protocol fields, not
 // caches derived from them.
 .align 4
-tls_client_gcm_ctx: .skip GCM_CTX_SIZE
-tls_server_gcm_ctx: .skip GCM_CTX_SIZE
+OBJECT tls_client_gcm_ctx
+                    .skip GCM_CTX_SIZE
+ENDOBJ tls_client_gcm_ctx
+OBJECT tls_server_gcm_ctx
+                    .skip GCM_CTX_SIZE
+ENDOBJ tls_server_gcm_ctx
 
 // tls_hs_msg_buf — scratch buffer for constructing one plaintext
 // handshake message body at a time during tls_server_handshake (Phase
@@ -128,7 +154,9 @@ tls_server_gcm_ctx: .skip GCM_CTX_SIZE
 // at 13 + the embedded DER certificate's length, comfortably under
 // 1 KB for a P-256 cert).
 .align 4
-tls_hs_msg_buf: .skip 2048
+OBJECT tls_hs_msg_buf
+                .skip 2048
+ENDOBJ tls_hs_msg_buf
 
 // tls_hs_record_buf — scratch buffer for one whole TLS record (header
 // + fragment) at a time during tls_server_handshake: reading the
@@ -141,23 +169,25 @@ tls_hs_msg_buf: .skip 2048
 // too. Sized to the largest record this server ever needs to hold:
 // header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded.
 .align 4
-tls_hs_record_buf: .skip 16448
+OBJECT tls_hs_record_buf
+                   .skip 16448
+ENDOBJ tls_hs_record_buf
 
 // tls_alpn_h2 — the ALPN identifier this server offers: "h2" (2 bytes,
 // 16-aligned like every string in the tree).
 .align 4
-.global tls_alpn_h2
-tls_alpn_h2:
+OBJECT tls_alpn_h2
     .ascii "h2"
+ENDOBJ tls_alpn_h2
 
 // tls_sni_hostname — the one hostname the ClientHello parser matches
 // server_name extensions against. No virtual-host
 // infrastructure exists yet, so this is a single compile-time value
 // rather than a field in tls_state.
 .align 4
-.global tls_sni_hostname
-tls_sni_hostname:
+OBJECT tls_sni_hostname
     .ascii "localhost"
+ENDOBJ tls_sni_hostname
 
 // tls_transcript_ctx — the running SHA-256 context of the handshake
 // transcript. SHA256_CTX_SIZE bytes laid out by the
@@ -169,13 +199,17 @@ tls_sni_hostname:
 // initial storage, exactly like sha256_ctx.
 .align 4
 .global tls_transcript_ctx
-.global tls_transcript_ctx_state
-.global tls_transcript_ctx_bitlen
-.global tls_transcript_ctx_buf
-.global tls_transcript_ctx_buflen
 
 tls_transcript_ctx:
-tls_transcript_ctx_state:   .skip 32        // SHA256_CTX_STATE — set by tls_transcript_init
-tls_transcript_ctx_bitlen:  .quad 0         // SHA256_CTX_BITLEN
-tls_transcript_ctx_buf:     .skip 64        // SHA256_CTX_BUF
-tls_transcript_ctx_buflen:  .quad 0         // SHA256_CTX_BUFLEN
+OBJECT tls_transcript_ctx_state
+                            .skip 32        // SHA256_CTX_STATE — set by tls_transcript_init
+ENDOBJ tls_transcript_ctx_state
+OBJECT tls_transcript_ctx_bitlen
+                            .quad 0         // SHA256_CTX_BITLEN
+ENDOBJ tls_transcript_ctx_bitlen
+OBJECT tls_transcript_ctx_buf
+                            .skip 64        // SHA256_CTX_BUF
+ENDOBJ tls_transcript_ctx_buf
+OBJECT tls_transcript_ctx_buflen
+                            .quad 0         // SHA256_CTX_BUFLEN
+ENDOBJ tls_transcript_ctx_buflen

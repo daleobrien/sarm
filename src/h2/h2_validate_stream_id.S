@@ -30,8 +30,7 @@
 
 .text
 .align 2
-.global h2_validate_stream_id
-h2_validate_stream_id:
+FUNC h2_validate_stream_id
     str x30, [sp, #-16]!   // save our return address — find clobbers x30
     ldr w4, [x0, #H2F_STREAM_ID]
     cbz w4, .Lh2_bad_stream_id
@@ -53,3 +52,4 @@ h2_validate_stream_id:
     cmp xzr, xzr
     mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
+ENDFUNC h2_validate_stream_id

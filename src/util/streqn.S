@@ -33,8 +33,7 @@
 // ─────────────────────────────────────────────────────────────────────
 .text
 .align 4                        // 16-byte instruction alignment (2^4)
-.global streqn
-streqn:
+FUNC streqn
     cbz x2, Lstreqn_match
 
 Lneon_loop:
@@ -88,3 +87,4 @@ Lstreqn_match:
 Lstreqn_no_match:
     mov x0, #0
     ret
+ENDFUNC streqn

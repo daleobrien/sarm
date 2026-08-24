@@ -36,8 +36,7 @@
 
 .text
 .align 2
-.global itoa
-itoa:
+FUNC itoa
     add x1, x1, #ITOA_BUF_SIZE // Start at the END of the buffer and write backwards
     mov x2, #0      // length counter
     mov x3, #10     // divisor
@@ -54,3 +53,4 @@ itoa:
     mov x0, x1 // x0 = pointer to start
     mov x1, x2 // x1 = length
     ret
+ENDFUNC itoa

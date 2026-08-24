@@ -39,8 +39,7 @@
 
 .text
 .align 2
-.global parse_h2_path
-parse_h2_path:
+FUNC parse_h2_path
     stp x29, x30, [sp, #-64]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -181,3 +180,4 @@ parse_h2_path:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
     ret
+ENDFUNC parse_h2_path

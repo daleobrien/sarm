@@ -28,8 +28,7 @@
 
 .text
 .align 2
-.global get_header_field
-get_header_field:
+FUNC get_header_field
     stp x29, x30, [sp, #-64]!
     stp x19, x20, [sp, #16]
     stp x21, x23, [sp, #32]
@@ -140,3 +139,4 @@ L400:
     mov x0, #400
     mov x1, #0
     b reply_status
+ENDFUNC get_header_field

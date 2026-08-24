@@ -25,8 +25,7 @@
 //   accumulator
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_inv
-p256_fe_inv:
+FUNC p256_fe_inv
     sub     sp, sp, #80
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -80,3 +79,4 @@ p256_fe_inv:
     ldp     x29, x30, [sp]
     add     sp, sp, #80
     ret
+ENDFUNC p256_fe_inv

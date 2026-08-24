@@ -23,8 +23,7 @@
 //   slots (zi, zi2, zi3)
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_to_affine
-p256_point_to_affine:
+FUNC p256_point_to_affine
     sub     sp, sp, #144
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -64,3 +63,4 @@ p256_point_to_affine:
     ldp     x29, x30, [sp]
     add     sp, sp, #144
     ret
+ENDFUNC p256_point_to_affine

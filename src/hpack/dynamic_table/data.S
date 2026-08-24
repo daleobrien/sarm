@@ -32,25 +32,25 @@
 
 .bss
 .align 4
-h2_hpack_dyn_max:
+OBJECT h2_hpack_dyn_max
     .skip 8
-h2_hpack_dyn_size:
+ENDOBJ h2_hpack_dyn_max
+OBJECT h2_hpack_dyn_size
     .skip 8
-h2_hpack_dyn_used:
+ENDOBJ h2_hpack_dyn_size
+OBJECT h2_hpack_dyn_used
     .skip 8
-h2_hpack_dyn_count:
+ENDOBJ h2_hpack_dyn_used
+OBJECT h2_hpack_dyn_count
     .skip 8
-h2_hpack_dyn_tail:
+ENDOBJ h2_hpack_dyn_count
+OBJECT h2_hpack_dyn_tail
     .skip 8
-h2_hpack_dyn_entries:
+ENDOBJ h2_hpack_dyn_tail
+OBJECT h2_hpack_dyn_entries
     .skip H2_HPACK_DYN_CAP_ENTRIES * H2_HPACK_DYN_ENTRY_SIZE
-h2_hpack_dyn_bytes:
+ENDOBJ h2_hpack_dyn_entries
+OBJECT h2_hpack_dyn_bytes
     .skip H2_HPACK_HEADER_TABLE_SIZE
+ENDOBJ h2_hpack_dyn_bytes
 
-.global h2_hpack_dyn_max
-.global h2_hpack_dyn_size
-.global h2_hpack_dyn_used
-.global h2_hpack_dyn_count
-.global h2_hpack_dyn_tail
-.global h2_hpack_dyn_entries
-.global h2_hpack_dyn_bytes

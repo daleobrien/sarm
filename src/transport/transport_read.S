@@ -45,8 +45,7 @@
 
 .text
 .align 2
-.global transport_read
-transport_read:
+FUNC transport_read
     ldr_l   x9, transport_mode
     cbnz    x9, .Ltransport_read_tls
 
@@ -207,3 +206,4 @@ transport_read:
     ldp     x19, x20, [sp]
     add     sp, sp, #48
     ret
+ENDFUNC transport_read

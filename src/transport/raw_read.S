@@ -31,8 +31,7 @@
 
 .text
 .align 2
-.global raw_read_exact
-raw_read_exact:
+FUNC raw_read_exact
     stp     x19, x20, [sp, #-32]!
     stp     x21, x30, [sp, #16]
     mov     x19, x0             // fd
@@ -70,3 +69,4 @@ raw_read_exact:
     ldp     x21, x30, [sp, #16]
     ldp     x19, x20, [sp], #32
     ret
+ENDFUNC raw_read_exact

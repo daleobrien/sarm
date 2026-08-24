@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_recip
-x25519_fe_recip:
+FUNC x25519_fe_recip
     sub     sp, sp, #192
     stp     x19, x20, [sp, #160]
     str     x30, [sp, #176]
@@ -286,6 +285,7 @@ x25519_fe_recip:
     ldr     x30, [sp, #176]
     add     sp, sp, #192
     ret
+ENDFUNC x25519_fe_recip
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519

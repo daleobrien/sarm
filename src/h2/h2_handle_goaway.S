@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global h2_handle_goaway
-h2_handle_goaway:
+FUNC h2_handle_goaway
     str x30, [sp, #-16]!   // save the return address
     // connection-scoped — stream id must be 0 (§6.8)
     ldr w3, [x0, #H2F_STREAM_ID]
@@ -75,3 +74,4 @@ h2_handle_goaway:
     cmp xzr, xzr
     mov x0, #H2_ERR_FRAME_SIZE_ERROR
     ret
+ENDFUNC h2_handle_goaway

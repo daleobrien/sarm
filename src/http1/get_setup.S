@@ -34,8 +34,7 @@
 // NOTE this function opens a file and doesn't close it -- it saves the open
 // file descriptor in file_des, which is in data.S's .data. child_end should
 // close it, but be aware!
-.global get_setup
-get_setup:
+FUNC get_setup
     stp x29, x30, [sp, #-32]!
     stp x19, x20, [sp, #16]
 
@@ -87,3 +86,4 @@ L404:
     mov x0, #404
     mov x1, #0
     b reply_status
+ENDFUNC get_setup

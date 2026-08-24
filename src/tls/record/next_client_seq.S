@@ -24,10 +24,10 @@
 
 .text
 .align 2
-.global tls_record_next_client_seq
-tls_record_next_client_seq:
+FUNC tls_record_next_client_seq
     adr_l   x1, tls_client_seq
     ldr     x0, [x1]
     add     x2, x0, #1
     str     x2, [x1]
     ret
+ENDFUNC tls_record_next_client_seq

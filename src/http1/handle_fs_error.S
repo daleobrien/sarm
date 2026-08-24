@@ -29,8 +29,7 @@
 //
 // output
 // none, branches to reply_status and quits.
-.global handle_fs_error
-handle_fs_error:
+FUNC handle_fs_error
     cb eq, x0, #ENAMETOOLONG, L414
     cb eq, x0, #EINVAL, L400
     // 403 since it's caused by O_NOFOLLOW_ANY most likely. if we ever allow
@@ -75,3 +74,4 @@ L500:
 L507:
     mov x0, #507
     b reply_status
+ENDFUNC handle_fs_error

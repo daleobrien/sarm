@@ -47,8 +47,7 @@
 
 .text
 .align 2
-.global lookup_embedded
-lookup_embedded:
+FUNC lookup_embedded
     stp x29, x30, [sp, #-48]!
     stp x19, x20, [sp, #16]
     stp x22, x23, [sp, #32]
@@ -120,3 +119,4 @@ Lle_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #48
     ret
+ENDFUNC lookup_embedded

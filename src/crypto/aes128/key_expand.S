@@ -50,8 +50,7 @@
 //   0 bytes — leaf function, no stack frame
 // ─────────────────────────────────────────────────────────────────────
 
-.global aes128_key_expand
-aes128_key_expand:
+FUNC aes128_key_expand
     ld1     {v0.16b}, [x0]          // v0 = RK0 = the key itself
     st1     {v0.16b}, [x1], #16     // RK0 -> schedule
 
@@ -111,3 +110,4 @@ aes128_key_expand:
 .Laes128_tbl:
 .byte 0x80, 0x0e, 0x80, 0x80, 0x80, 0x80, 0x0f, 0x80
 .byte 0x80, 0x80, 0x80, 0x0c, 0x0d, 0x80, 0x80, 0x80
+ENDFUNC aes128_key_expand

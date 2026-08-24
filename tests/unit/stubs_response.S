@@ -107,7 +107,7 @@ stub_big_etag_end:
 // Pointer columns are offsets from embedded_files, matching what
 // embed_www.sh generates (docs/SECURITY.md Step 13) — lookup_embedded
 // adds the base back.
-embedded_files:
+OBJECT embedded_files
     .8byte (stub_index_path - embedded_files), (stub_index_path_end - stub_index_path - 1)
     .8byte (stub_index_content - embedded_files), (stub_index_content_end - stub_index_content)
     .8byte (stub_index_ct - embedded_files), (stub_index_ct_end - stub_index_ct - 1)
@@ -143,12 +143,12 @@ embedded_files:
     .8byte (stub_big_ct - embedded_files), (stub_big_ct_end - stub_big_ct - 1)
     .8byte 0
     .8byte (stub_big_etag - embedded_files), (stub_big_etag_end - stub_big_etag - 1)
+ENDOBJ embedded_files
 
-embedded_count:
+OBJECT embedded_count
     .quad 6
+ENDOBJ embedded_count
 
-.global embedded_files
-.global embedded_count
 
 // ── stub for sarm.S (reply_status tails into child_end) ───────────
 
@@ -160,10 +160,10 @@ embedded_count:
 // test calls reply_status with flag=1, which returns via its own frame
 // instead of reaching this symbol; this stub only exists so the linker
 // can resolve the `b child_end` in get/head/reply_status.
-child_end:
+FUNC child_end
     ret
+ENDFUNC child_end
 
-.global child_end
 
 // http1_keepalive_continue — normally in child.S (Plan.md Phase 1, Step
 // 6): resets per-request state and either resumes the connection or
@@ -173,7 +173,7 @@ child_end:
 // about connection continuation at all; this stub only exists so the
 // linker can resolve the `b http1_keepalive_continue` in get/head/
 // reply_status.
-http1_keepalive_continue:
+FUNC http1_keepalive_continue
     ret
+ENDFUNC http1_keepalive_continue
 
-.global http1_keepalive_continue

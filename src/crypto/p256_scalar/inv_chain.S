@@ -28,21 +28,20 @@ rodata
 
 // R^2 mod n, R = 2^256 -- multiplying by this in Montgomery
 // form is what converts a plain scalar into Montgomery form.
-.global p256_scalar_rr_n
-p256_scalar_rr_n:
+OBJECT p256_scalar_rr_n
     .quad 0x83244c95be79eea2
     .quad 0x4699799c49bd6fa6
     .quad 0x2845b2392b6bec59
     .quad 0x66e12d94f3d95620
+ENDOBJ p256_scalar_rr_n
 
 // -n^-1 mod 2^64, the Montgomery reduction multiplier.
-.global p256_scalar_n0inv
-p256_scalar_n0inv:
+OBJECT p256_scalar_n0inv
     .quad 0xccd1c8aaee00bc4f
+ENDOBJ p256_scalar_n0inv
 
 .align 4
-.global p256_scalar_inv_chain
-p256_scalar_inv_chain:
+OBJECT p256_scalar_inv_chain
     .byte    1,    0,    1,    0   // ones2 = ones1^(2^1) * ones1
     .byte    2,    1,    1,    0   // ones3 = ones2^(2^1) * ones1
     .byte    3,    2,    1,    0   // ones4 = ones3^(2^1) * ones1
@@ -88,4 +87,5 @@ p256_scalar_inv_chain:
     .byte    9,    9,    2,    0   // acc = acc^(2^2) * ones1
     .byte    9,    9,    6,    3   // acc = acc^(2^6) * ones4
     .byte 0xFF, 0xFF, 0xFF, 0xFF   // end of program
+ENDOBJ p256_scalar_inv_chain
 

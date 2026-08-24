@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_sqr_times
-x25519_fe_sqr_times:
+FUNC x25519_fe_sqr_times
     // count == 0 — a^(2^0) = a (Step 5, docs/SECURITY.md §3.5).
     // The squaring loop is a do-while (subs/b.ne), so a zero count would
     // fall in and run 2^64 times: a hang, not a wrong answer. Every call
@@ -354,6 +353,7 @@ x25519_fe_sqr_times:
     stp     x5, x6, [x0, #16]
     str     x7, [x0, #32]
     ret
+ENDFUNC x25519_fe_sqr_times
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_sqr

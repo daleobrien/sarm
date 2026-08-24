@@ -87,8 +87,7 @@ khs_empty_hash:
 
 .text
 .align 2
-.global tls_derive_handshake_secrets
-tls_derive_handshake_secrets:
+FUNC tls_derive_handshake_secrets
     sub     sp, sp, #192
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -226,3 +225,4 @@ tls_derive_handshake_secrets:
     ldr     x30, [sp, #16]
     add     sp, sp, #192
     ret
+ENDFUNC tls_derive_handshake_secrets

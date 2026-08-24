@@ -40,8 +40,7 @@
 
 .text
 .align 2
-.global tls_certificate_write
-tls_certificate_write:
+FUNC tls_certificate_write
     mov     x9, x0                          // cursor
     adr_l   x1, tls_cert_der
     adr_l   x2, tls_cert_der_end
@@ -101,3 +100,4 @@ tls_certificate_write:
 
     add     x0, x11, #4                     // total message length
     ret
+ENDFUNC tls_certificate_write

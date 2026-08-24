@@ -184,10 +184,10 @@
 
 .text
 
-.global x25519_fe_sqr
-x25519_fe_sqr:
+FUNC x25519_fe_sqr
     mov     x2, #1
     b       x25519_fe_sqr_times
+ENDFUNC x25519_fe_sqr
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_scalar_product

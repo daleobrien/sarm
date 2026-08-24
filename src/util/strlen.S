@@ -24,8 +24,7 @@
 
 .text
 .align 4
-.global strlen
-strlen:
+FUNC strlen
     mov     x0, x1                  // x0 tracks our current position
 
     // ─── 1. PAGE-SAFE ALIGNMENT ───
@@ -73,3 +72,4 @@ Lfound:
     add     x0, x0, x2              // Exact address of NUL
     sub     x0, x0, x1              // Compute length (End - Start)
     ret
+ENDFUNC strlen

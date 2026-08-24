@@ -68,8 +68,7 @@
 
 .text
 .align 2
-.global hmac_sha256
-hmac_sha256:
+FUNC hmac_sha256
     stp     x19, x20, [sp, #-320]!
     stp     x21, x22, [sp, #16]
     stp     x23, x24, [sp, #32]
@@ -215,3 +214,4 @@ hmac_sha256:
     eor     v4.16b, v4.16b, v0.16b
     st1     {v1.16b, v2.16b, v3.16b, v4.16b}, [x0]
     ret
+ENDFUNC hmac_sha256

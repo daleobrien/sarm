@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519
-x25519:
+FUNC x25519
     sub     sp, sp, #528
     stp     x19, x20, [sp, #432]
     stp     x21, x22, [sp, #448]
@@ -400,3 +399,4 @@ x25519:
     ldr     x30, [sp, #512]
     add     sp, sp, #528
     ret
+ENDFUNC x25519

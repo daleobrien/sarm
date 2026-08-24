@@ -17,8 +17,7 @@
 
 rodata
 .align 4
-.global p256_comb_table
-p256_comb_table:
+OBJECT p256_comb_table
     // block 0: multiples of 2^0 * G
     // [0][1]
     .quad 0xf4a13945d898c296
@@ -8723,3 +8722,4 @@ p256_comb_table:
     .quad 0x0aec59db5f515585
     .quad 0x104eea317809e86f
     .quad 0x6e3eda646b3724df
+ENDOBJ p256_comb_table

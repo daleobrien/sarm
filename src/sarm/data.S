@@ -13,7 +13,8 @@
 
 rodata
 .align 4 // one is a .word (4 bytes) — pad it out to 16
-one: .word 1
+OBJECT one
+     .word 1
+ENDOBJ one
 .align 4
 
-.global one

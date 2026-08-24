@@ -20,8 +20,7 @@
 //   scratch slots plus a 96-byte dbl-result buffer (slot 22..24)
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_add
-p256_point_add:
+FUNC p256_point_add
     sub     sp, sp, #880
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -284,3 +283,4 @@ p256_point_add:
     ret
 
 #undef ASLOT
+ENDFUNC p256_point_add

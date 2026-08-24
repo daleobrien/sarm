@@ -23,8 +23,7 @@
 .text
 .align 2
 // for HEAD, reply with just the header. pretty short n sweet.
-.global head
-head:
+FUNC head
     bl get_setup // this does basically everything we want.
 
     // HEAD sends headers only: body_length = 0. Content-Length still
@@ -49,3 +48,4 @@ L500:
     mov x0, #500
     mov x1, #0
     b reply_status
+ENDFUNC head

@@ -28,8 +28,7 @@
 
 .text
 .align 2
-.global h2_handle_data
-h2_handle_data:
+FUNC h2_handle_data
     str x30, [sp, #-16]!   // save the return address
     mov x10, x0            // hdr
     mov x11, x2            // conn — unused beyond this, kept for symmetry
@@ -65,3 +64,4 @@ h2_handle_data:
 .Lh2_stream_error:
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_handle_data

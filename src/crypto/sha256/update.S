@@ -31,9 +31,8 @@
 
 .text
 .align 2
-.global sha256_update
 
-sha256_update:
+FUNC sha256_update
     cbz     x2, .Lsha256_update_done          // len == 0: no-op
     stp     x19, x20, [sp, #-48]!
     stp     x21, x22, [sp, #16]
@@ -126,3 +125,4 @@ sha256_update:
     b.ne    .Lsha256_memcpy_loop
 .Lsha256_memcpy_done:
     ret
+ENDFUNC sha256_update

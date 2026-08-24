@@ -24,8 +24,7 @@
 
 .text
 .align 4                        // 16-byte instruction alignment (2^4)
-.global atoi
-atoi:
+FUNC atoi
     // Load 16 bytes from the string instantly
     ldr q0, [x0]
 
@@ -100,3 +99,4 @@ Latoi_error:
     cmp xzr, xzr
     mov x0, #0
     ret
+ENDFUNC atoi

@@ -56,8 +56,7 @@
 
 .text
 .align 2
-.global tls_record_decrypt
-tls_record_decrypt:
+FUNC tls_record_decrypt
     sub     sp, sp, #80
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -148,3 +147,4 @@ tls_record_decrypt:
     ldp     x19, x20, [sp]
     add     sp, sp, #80
     ret
+ENDFUNC tls_record_decrypt

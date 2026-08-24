@@ -25,8 +25,7 @@
 
 .text
 .align 2
-.global h2_validate_frame
-h2_validate_frame:
+FUNC h2_validate_frame
     ldr w2, [x0, #H2F_LENGTH]
 
     // absolute wire limit: the 24-bit length field caps at 2^24 - 1
@@ -47,3 +46,4 @@ h2_validate_frame:
     cmp xzr, xzr // failure — carry set
     mov x0, #H2_ERR_FRAME_SIZE_ERROR
     ret
+ENDFUNC h2_validate_frame

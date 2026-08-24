@@ -44,13 +44,13 @@ rodata
 
 // ── group a: .aac, .apng, .avi, .avif ──
 .align 4
-.global file_types_a            // visible in the stripped binary too,
                                 // for tests/hardening_checks.py
-file_types_a:
+OBJECT file_types_a
     mime_entry ".aac",   "audio/aac"
     mime_entry ".apng",  "image/apng"
     mime_entry ".avi",   "video/x-msvideo"
     mime_entry ".avif",  "image/avif"
+ENDOBJ file_types_a
 
 // ── group b: .bmp, .bz2 ──
 file_types_b:
@@ -161,8 +161,7 @@ unknown_ct: .ascii "text/plain; charset=utf-8"
 
 .text
 .align 2
-.global get_filetype
-get_filetype:
+FUNC get_filetype
     // push the link register to the stack sorta. since we bl strcmp, we need
     // to preserve it
     stp x29, x30, [sp, #-64]!
@@ -379,3 +378,4 @@ Lreturn:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
     ret
+ENDFUNC get_filetype

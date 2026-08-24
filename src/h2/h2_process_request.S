@@ -39,8 +39,7 @@
 
 .text
 .align 2
-.global h2_process_request
-h2_process_request:
+FUNC h2_process_request
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -258,3 +257,4 @@ h2_process_request:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #96
     ret
+ENDFUNC h2_process_request

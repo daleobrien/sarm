@@ -37,8 +37,7 @@
 
 .text
 .align 2
-.global h2_handle_settings
-h2_handle_settings:
+FUNC h2_handle_settings
     str x30, [sp, #-16]!   // save the return address — the ACK reply calls write_all
     // SETTINGS is a connection-level frame — stream id must be 0
     ldr w3, [x0, #H2F_STREAM_ID]
@@ -216,3 +215,4 @@ h2_handle_settings:
     cmp xzr, xzr
     mov x0, #H2_ERR_FLOW_CONTROL_ERROR
     ret
+ENDFUNC h2_handle_settings

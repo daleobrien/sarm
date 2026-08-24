@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global h2_handle_window_update
-h2_handle_window_update:
+FUNC h2_handle_window_update
     str x30, [sp, #-16]!   // save the return address — find clobbers x30
     mov x7, #H2_MAX_FLOW_WINDOW   // 2^31 - 1 — the window ceiling (§5.2)
     // exactly 4 payload bytes — one 32-bit increment (§6.9)
@@ -109,3 +108,4 @@ h2_handle_window_update:
     cmp xzr, xzr
     mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
+ENDFUNC h2_handle_window_update

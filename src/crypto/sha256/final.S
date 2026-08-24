@@ -29,9 +29,8 @@
 
 .text
 .align 2
-.global sha256_final
 
-sha256_final:
+FUNC sha256_final
     stp     x19, x20, [sp, #-48]!
     stp     x21, x22, [sp, #16]
     str     x30, [sp, #32]                    // save return address
@@ -96,3 +95,4 @@ sha256_final:
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp], #48
     ret
+ENDFUNC sha256_final

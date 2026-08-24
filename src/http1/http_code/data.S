@@ -58,10 +58,11 @@ header_416: .ascii "HTTP/1.1 416 Range Not Satisfiable"
 header_431: .ascii "HTTP/1.1 431 Request Header Fields Too Large"
 .equ header_431_len, . - header_431
 
-.global header_500
 .align 4
-header_500: .ascii "HTTP/1.1 500 Internal Server Error"
+OBJECT header_500
+            .ascii "HTTP/1.1 500 Internal Server Error"
 .equ header_500_len, . - header_500
+ENDOBJ header_500
 .global header_500_len
 
 .align 4
@@ -93,8 +94,7 @@ header_507: .ascii "HTTP/1.1 507 Insufficient Storage"
 // load-time relocation, and the Linux build is a position-independent
 // executable with no dynamic linker to apply one (docs/SECURITY.md
 // Step 13). find_http_code adds the table base back.
-.global status_table
-status_table:
+OBJECT status_table
     //    status, str offset from status_table, length
     .quad 200,    (header_200 - status_table),  header_200_len
     .quad 0 // padding — 32-byte entries keep every entry 16-aligned
@@ -138,3 +138,4 @@ status_table:
     .quad 0
 
     .quad 0 // mark the end
+ENDOBJ status_table

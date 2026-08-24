@@ -54,11 +54,9 @@
 
 .text
 .align 2
-.global aes_gcm_encrypt
-.global aes_gcm_encrypt_ctx
 
 // ── key-pointer entry: build a one-shot context, then seal with it ──
-aes_gcm_encrypt:
+FUNC aes_gcm_encrypt
     sub     sp, sp, #368
     str     x30, [sp, #304]
     stp     x1, x2, [sp, #312]         // aes_gcm_ctx_init clobbers
@@ -76,8 +74,9 @@ aes_gcm_encrypt:
     ldr     x30, [sp, #304]
     add     sp, sp, #368
     ret
+ENDFUNC aes_gcm_encrypt
 
-aes_gcm_encrypt_ctx:
+FUNC aes_gcm_encrypt_ctx
     sub     sp, sp, #144
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -198,3 +197,4 @@ aes_gcm_encrypt_ctx:
     ldp     x19, x20, [sp]
     add     sp, sp, #144
     ret
+ENDFUNC aes_gcm_encrypt_ctx

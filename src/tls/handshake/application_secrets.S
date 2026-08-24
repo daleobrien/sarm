@@ -65,8 +65,7 @@ as_label_iv:
 
 .text
 .align 2
-.global tls_derive_application_secrets
-tls_derive_application_secrets:
+FUNC tls_derive_application_secrets
     sub     sp, sp, #96
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -148,3 +147,4 @@ tls_derive_application_secrets:
     ldr     x30, [sp, #16]
     add     sp, sp, #96
     ret
+ENDFUNC tls_derive_application_secrets

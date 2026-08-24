@@ -33,9 +33,8 @@
 
 .text
 .align 2
-.global p256_ecdsa_sign_with_k
 
-p256_ecdsa_sign_with_k:
+FUNC p256_ecdsa_sign_with_k
     sub     sp, sp, #416
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -135,3 +134,4 @@ p256_ecdsa_sign_with_k:
     ret
 
 #undef ESLOT
+ENDFUNC p256_ecdsa_sign_with_k

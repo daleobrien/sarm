@@ -29,9 +29,8 @@
 
 .text
 .align 4
-.global sha256
 
-sha256:
+FUNC sha256
     cbz     x2, .Ldone
 
     ld1     {v0.4s, v1.4s}, [x0]      // v0 = ABCD, v1 = EFGH  (current state)
@@ -153,3 +152,4 @@ sha256:
 
 .Ldone:
     ret
+ENDFUNC sha256

@@ -23,8 +23,7 @@
 
 .text
 .align 2
-.global find_http_code
-find_http_code:
+FUNC find_http_code
     adr_l x3, status_table
     mov x5, x3                  // keep the table base — entries are
                                 // offsets from it, not addresses
@@ -51,3 +50,4 @@ find_http_code:
     mov x1, #0
     mov x2, #0
     ret
+ENDFUNC find_http_code

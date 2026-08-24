@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global parse_path
-parse_path:
+FUNC parse_path
     // preserve link register so we can bl to other functions properly
     stp x29, x30, [sp, #-64]!
     stp x20, x21, [sp, #16]
@@ -314,3 +313,4 @@ L414:
     mov x0, #414
     mov x1, #0
     b reply_status
+ENDFUNC parse_path

@@ -21,8 +21,7 @@
 
 .text
 .align 2
-.global h2_send_rst_stream
-h2_send_rst_stream:
+FUNC h2_send_rst_stream
     str x30, [sp, #-16]!
     sub sp, sp, #32
     // payload length = 4
@@ -56,3 +55,4 @@ h2_send_rst_stream:
     add sp, sp, #32
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_send_rst_stream

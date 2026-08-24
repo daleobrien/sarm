@@ -42,8 +42,7 @@
 
 .text
 .align 2
-.global h2_hpack_dyn_insert
-h2_hpack_dyn_insert:
+FUNC h2_hpack_dyn_insert
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -160,3 +159,4 @@ h2_hpack_dyn_insert:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #96
     ret
+ENDFUNC h2_hpack_dyn_insert

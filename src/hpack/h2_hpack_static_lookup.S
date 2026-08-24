@@ -39,9 +39,8 @@ rodata
 // link-time-resolved differences instead and the lookup adds the base
 // back. 61 entries x 2 pointers is most of what the binary would
 // otherwise need fixed up.
-.global h2_hpack_static_table   // visible in the stripped binary too,
                                 // for tests/hardening_checks.py
-h2_hpack_static_table:
+OBJECT h2_hpack_static_table
     //   1  :authority                    (empty)
     .quad (hp_s_authority - h2_hpack_static_table), hp_l_authority, (hp_empty - h2_hpack_static_table), 0
     //   2  :method                       GET
@@ -164,6 +163,7 @@ h2_hpack_static_table:
     .quad (hp_s_via - h2_hpack_static_table), hp_l_via, (hp_empty - h2_hpack_static_table), 0
     //  61  www-authenticate              (empty)
     .quad (hp_s_www_authenticate - h2_hpack_static_table), hp_l_www_authenticate, (hp_empty - h2_hpack_static_table), 0
+ENDOBJ h2_hpack_static_table
 
 // ── the table's strings ──────────────────────────────────────────────
 
@@ -443,8 +443,7 @@ hp_v_gzip_deflate:
 
 .text
 .align 2
-.global h2_hpack_static_lookup
-h2_hpack_static_lookup:
+FUNC h2_hpack_static_lookup
     cbz x0, .Lhpack_lookup_bad
     cmp x0, #H2_HPACK_STATIC_TABLE_SIZE
     b.hi .Lhpack_lookup_bad
@@ -464,3 +463,4 @@ h2_hpack_static_lookup:
     cmp xzr, xzr
     mov x0, #H2_ERR_COMPRESSION_ERROR
     ret
+ENDFUNC h2_hpack_static_lookup

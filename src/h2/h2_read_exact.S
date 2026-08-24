@@ -24,6 +24,6 @@
 
 .text
 .align 2
-.global h2_read_exact
-h2_read_exact:
+FUNC h2_read_exact
     b transport_read
+ENDFUNC h2_read_exact

@@ -24,9 +24,8 @@
 
 .text
 .align 2
-.global sha256_init
 
-sha256_init:
+FUNC sha256_init
     adr_l   x1, sha256_h256
     ld1     {v0.4s, v1.4s}, [x1]              // FIPS 180-4 IV (H0..H7)
     st1     {v0.4s, v1.4s}, [x0]              // ctx->state
@@ -38,3 +37,4 @@ sha256_init:
     stp     xzr, xzr, [x0, #(SHA256_CTX_BUF + 48)]
     str     xzr, [x0, #SHA256_CTX_BUFLEN]     // nothing buffered yet
     ret
+ENDFUNC sha256_init

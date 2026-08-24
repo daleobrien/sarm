@@ -32,8 +32,9 @@ rodata
 // Zeroed at startup; each decode rewrites the first `count` entries.
 .bss
 .align 4
-h2_hpack_fields:
+OBJECT h2_hpack_fields
     .skip H2_HPACK_MAX_FIELDS * H2_HPACK_FIELD_SIZE
+ENDOBJ h2_hpack_fields
 
 // h2_hpack_str_buf — decoded Huffman string output. Huffman strings
 // don't point into the input block (they are re-expanded), so the
@@ -43,14 +44,13 @@ h2_hpack_fields:
 // decoded strings stay valid until the next block decode, which is long
 // enough for h2_build_request to copy out the pseudo-headers.
 .align 4
-h2_hpack_str_buf:
+OBJECT h2_hpack_str_buf
     .skip H2_HPACK_STR_BUF_SIZE
+ENDOBJ h2_hpack_str_buf
 
 // current write offset into h2_hpack_str_buf
 .align 4
-h2_hpack_str_off:
+OBJECT h2_hpack_str_off
     .skip 8
+ENDOBJ h2_hpack_str_off
 
-.global h2_hpack_fields
-.global h2_hpack_str_buf
-.global h2_hpack_str_off

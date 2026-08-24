@@ -62,8 +62,7 @@
 
 .text
 .align 2
-.global tls_read_record
-tls_read_record:
+FUNC tls_read_record
     sub     sp, sp, #48
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -112,6 +111,7 @@ tls_read_record:
     ldp     x19, x20, [sp]
     add     sp, sp, #48
     ret
+ENDFUNC tls_read_record
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: tls_read_record_prefilled
@@ -154,8 +154,7 @@ tls_read_record:
 //   48 bytes: x19-x23 (x23 alone in an 8 B slot), x30
 // ─────────────────────────────────────────────────────────────────────
 
-.global tls_read_record_prefilled
-tls_read_record_prefilled:
+FUNC tls_read_record_prefilled
     sub     sp, sp, #48
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -216,3 +215,4 @@ tls_read_record_prefilled:
     ldp     x19, x20, [sp]
     add     sp, sp, #48
     ret
+ENDFUNC tls_read_record_prefilled

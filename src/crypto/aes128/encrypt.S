@@ -52,8 +52,7 @@
 //   0 bytes — leaf function, no stack frame
 // ─────────────────────────────────────────────────────────────────────
 
-.global aes128_encrypt
-aes128_encrypt:
+FUNC aes128_encrypt
     // 1. Load the 16-byte input block into Neon register v0
     ld1 {v0.16b}, [x0]
 
@@ -110,3 +109,4 @@ aes128_encrypt:
     st1 {v0.16b}, [x2]
 
     ret
+ENDFUNC aes128_encrypt

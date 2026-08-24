@@ -34,8 +34,7 @@
 
 .text
 .align 2
-.global raw_writev_all
-raw_writev_all:
+FUNC raw_writev_all
     stp     x25, x26, [sp, #-32]!
     stp     x27, x28, [sp, #16]
     mov     x25, x0             // fd
@@ -108,3 +107,4 @@ raw_writev_all:
                                  // connection)
     // x0 is already errno
     b       3b
+ENDFUNC raw_writev_all

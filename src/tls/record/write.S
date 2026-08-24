@@ -32,8 +32,7 @@
 
 .text
 .align 2
-.global tls_record_write
-tls_record_write:
+FUNC tls_record_write
     sub     sp, sp, #32
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -80,3 +79,4 @@ tls_record_write:
     ldp     x19, x20, [sp]
     add     sp, sp, #32
     ret
+ENDFUNC tls_record_write

@@ -34,8 +34,7 @@
 //   none — leaf function, no calls out
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_bn_mul
-p256_bn_mul:
+FUNC p256_bn_mul
     add     x5, x2, x4              // total = na + nb
     mov     x6, #0
 .Lbn_mul_zero:
@@ -96,3 +95,4 @@ p256_bn_mul:
 
 .Lbn_mul_done:
     ret
+ENDFUNC p256_bn_mul

@@ -51,8 +51,7 @@
 
 .text
 .align 2
-.global h2_handle_headers
-h2_handle_headers:
+FUNC h2_handle_headers
     stp x19, x20, [sp, #-48]!
     stp x21, x22, [sp, #16]
     str x30, [sp, #32]
@@ -183,3 +182,4 @@ h2_handle_headers:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #48
     ret                      // x0 = error, carry set
+ENDFUNC h2_handle_headers

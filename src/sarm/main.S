@@ -191,13 +191,8 @@ worker_pids:        .skip (MAX_WORKERS * 8)
 .extern child_end
 
 #ifdef __linux__
-.global _start
 #else
-.global _main
 #endif
-.global skip_argv
-.global loop
-.global exit
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: install_sigchld
@@ -228,8 +223,7 @@ worker_pids:        .skip (MAX_WORKERS * 8)
 //   32 bytes for the sigaction struct
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global install_sigchld
-install_sigchld:
+FUNC install_sigchld
 #ifdef __linux__
     sub sp, sp, #32
     mov x0, #SIG_IGN
@@ -386,6 +380,7 @@ Ldc_fallback:
     add sp, sp, #32
     ret
 #endif
+ENDFUNC install_sigchld
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: worker_shutdown
@@ -427,8 +422,7 @@ Ldc_fallback:
 //   none
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global worker_shutdown
-worker_shutdown:
+FUNC worker_shutdown
     // stop accepting: close the one shared listening socket. The forked
     // workers hold their own copies of this descriptor; each of those is
     // closed exactly once, by the kernel, as the worker exits below.
@@ -486,9 +480,9 @@ Lws_done:
 // Stack Usage:
 //   none
 // ─────────────────────────────────────────────────────────────────────
+ENDFUNC worker_shutdown
 .align 2
-.global sig_tramp
-sig_tramp:
+FUNC sig_tramp
     mov x5, x0                  // catcher
     mov x6, x1                  // infostyle, for the sigreturn below
     mov x7, x4                  // ucontext,  ditto
@@ -514,11 +508,13 @@ sig_tramp:
 // happens to hold). Darwin gets here through dyld, which calls this as
 // main(argc, argv, ...) with the arguments already in x0/x1, so only
 // Linux needs the unpack.
-_start:
+ENDFUNC sig_tramp
+FUNC _start
     ldr x0, [sp]                // argc
     add x1, sp, #8              // argv
 #endif
-_main:
+ENDFUNC _start
+FUNC _main
     // ── argument scan (Plan.md Phase 3, Step 14) ──────────────────────
     // Walks argv[1..argc) rather than looking only at argv[1], so the
     // `--workers N` flag can sit alongside the existing positional port.
@@ -624,8 +620,9 @@ Largv_workers_set:
 Largv_next:
     add x21, x21, #1
     b Largv_loop
+ENDFUNC _main
 
-skip_argv:
+FUNC skip_argv
     // ── no core dumps, ever (docs/SECURITY.md §13.2) ───────────
     // A core of this process is a complete memory disclosure: the
     // private scalar, the handshake secrets and every traffic key are
@@ -867,8 +864,9 @@ Linstall_shutdown:
 #endif
     // a failure here is not fatal: the server still serves, it just
     // leaves its workers behind on an explicit kill of this process.
+ENDFUNC skip_argv
 
-loop:
+FUNC loop
     // accept(sockfd, NULL, NULL)
 #ifdef __linux__
     SCWINUM SYS_accept4
@@ -1048,9 +1046,10 @@ Lmain_tls_close:
     adr_l x9, transport_mode
     str xzr, [x9]               // TRANSPORT_PLAIN == 0
     b child_end
+ENDFUNC loop
 
 
-exit:
+FUNC exit
     // shutdown(sockfd, SHUT_RDRW)
     SCWINUM SYS_shutdown
     ldr_l x0, sockfd
@@ -1086,4 +1085,5 @@ help_exit:
     SCWINUM SYS_exit
     mov x0, #0
     SCWISVC
+ENDFUNC exit
 

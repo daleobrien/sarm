@@ -19,29 +19,34 @@
 
 rodata
 .align 4
-www_prefix: .ascii DOCROOT // DOCROOT from config.S
+OBJECT www_prefix
+            .ascii DOCROOT // DOCROOT from config.S
+ENDOBJ www_prefix
 .align 4
-default_file: .ascii DEFAULT_FILE // also from config.S
+OBJECT default_file
+              .ascii DEFAULT_FILE // also from config.S
+ENDOBJ default_file
 .align 4 // pad the strings out to 16-byte multiples
 
 .bss
 // probably way too defensive, but can't hurt, eh?
 // + 1 is rounded up to a 16-byte multiple so what follows stays aligned.
 .align 4
-filename_buf: .skip (filename_buf_size + 1 + 15) & ~15
+OBJECT filename_buf
+              .skip (filename_buf_size + 1 + 15) & ~15
+ENDOBJ filename_buf
 .align 4
-query_buf: .skip query_buf_size
+OBJECT query_buf
+           .skip query_buf_size
 .align 4
 // authority_buf holds a NUL-terminated copy of the Host header value.
 // +1 leaves room for the terminator when the value fills the buffer
 // (rounded up to a 16-byte multiple, like filename_buf).
 // The size bound lives in defs.S (AUTHORITY_BUF_SIZE), shared with the
 // HTTP/2 request builder.
+ENDOBJ query_buf
 .align 4
-authority_buf: .skip (AUTHORITY_BUF_SIZE + 1 + 15) & ~15
+OBJECT authority_buf
+               .skip (AUTHORITY_BUF_SIZE + 1 + 15) & ~15
+ENDOBJ authority_buf
 
-.global www_prefix
-.global default_file
-.global filename_buf
-.global query_buf
-.global authority_buf

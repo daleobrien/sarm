@@ -42,8 +42,7 @@ rodata
 // Exported (like the other static tables) so that
 // tests/hardening_checks.py can still find it in the stripped
 // production binary, where local symbols are gone.
-.global h2_frame_handlers
-h2_frame_handlers:
+OBJECT h2_frame_handlers
     .quad (h2_handle_data - h2_frame_handlers)
     .quad (h2_handle_headers - h2_frame_handlers)
     .quad (h2_handle_priority - h2_frame_handlers)
@@ -54,11 +53,11 @@ h2_frame_handlers:
     .quad (h2_handle_goaway - h2_frame_handlers)
     .quad (h2_handle_window_update - h2_frame_handlers)
     .quad (h2_handle_continuation - h2_frame_handlers)
+ENDOBJ h2_frame_handlers
 
 .text
 .align 2
-.global h2_dispatch_frame
-h2_dispatch_frame:
+FUNC h2_dispatch_frame
     ldr w3, [x0, #H2F_TYPE]
     cmp w3, #H2_FRAME_CONTINUATION
     b.hi .Lh2_unknown_frame
@@ -75,3 +74,4 @@ h2_dispatch_frame:
     cmn xzr, xzr
     mov x0, #0
     ret
+ENDFUNC h2_dispatch_frame

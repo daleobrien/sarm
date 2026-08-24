@@ -26,6 +26,6 @@
 
 .text
 .align 2
-.global write_all
-write_all:
+FUNC write_all
     b transport_write
+ENDFUNC write_all

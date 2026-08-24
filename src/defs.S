@@ -83,6 +83,60 @@
 .endm
 #endif
 
+// ── Symbol typing: FUNC / ENDFUNC / OBJECT / ENDOBJ ─────────────────
+// Every exported symbol gets an ELF type (%function/%object) and an
+// exact extent. Without them the symbol table carries STT_NOTYPE
+// markers with no size: bpftrace can't attach to them properly, perf
+// annotate has no end to stop disassembling at, and `nm -S`/objdump
+// report nothing about how big anything is.
+//
+// Mach-O has no .type/.size directives (they are ELF concepts), so on
+// Apple hosts these macros collapse to the bare label — the sources
+// stay cross-assemblable from either platform, like adr_l above.
+//
+//   FUNC sym        opens a function: .global + .type + the label
+//   ENDFUNC sym     closes it: size = current address - sym
+//   ENDFUNC_TO s,n  closes a non-fall-through entry whose extent ends
+//                   at another symbol n (tail-duplicated entries)
+//   OBJECT sym      opens a data object: .global + .type + the label
+//   ENDOBJ sym      closes it: size = current address - sym
+#ifdef __linux__
+.macro FUNC sym
+    .global \sym
+    .type \sym, %function
+\sym:
+.endm
+.macro ENDFUNC sym
+    .size \sym, . - \sym
+.endm
+.macro ENDFUNC_TO sym, next
+    .size \sym, \next - \sym
+.endm
+.macro OBJECT sym
+    .global \sym
+    .type \sym, %object
+\sym:
+.endm
+.macro ENDOBJ sym
+    .size \sym, . - \sym
+.endm
+#else
+.macro FUNC sym
+    .global \sym
+\sym:
+.endm
+.macro ENDFUNC sym
+.endm
+.macro ENDFUNC_TO sym, next
+.endm
+.macro OBJECT sym
+    .global \sym
+\sym:
+.endm
+.macro ENDOBJ sym
+.endm
+#endif
+
 // (c)ompare and (b)ranch, (eq/ne/gt/etc), x0, x1, label
 .macro cb cond, r1, r2, l
     cmp \r1, \r2

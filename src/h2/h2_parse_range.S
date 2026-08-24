@@ -40,8 +40,7 @@ h2_bytes_name:
 
 .text
 .align 2
-.global h2_parse_range
-h2_parse_range:
+FUNC h2_parse_range
     str x30, [sp, #-16]!
     mov x6, x0              // value ptr — survives streqn_i / atoi_n
     mov x7, x1              // value length
@@ -146,3 +145,4 @@ h2_parse_range:
     mov x0, #0
     mov x1, #0
     ret
+ENDFUNC h2_parse_range

@@ -60,8 +60,7 @@
 //   10-slot, 320-byte chain table
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_scalar_inv
-p256_scalar_inv:
+FUNC p256_scalar_inv
     sub     sp, sp, #416
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -142,3 +141,4 @@ p256_scalar_inv:
     ldp     x29, x30, [sp]
     add     sp, sp, #416
     ret
+ENDFUNC p256_scalar_inv

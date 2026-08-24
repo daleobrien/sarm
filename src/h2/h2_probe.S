@@ -27,8 +27,7 @@
 
 .text
 .align 2
-.global h2_probe
-h2_probe:
+FUNC h2_probe
     cbz x1, .Lh2probe_no
     mov x2, #H2_PREFACE_LEN
     cmp x1, x2
@@ -50,3 +49,4 @@ h2_probe:
 .Lh2probe_no:
     mov x0, #0
     ret
+ENDFUNC h2_probe

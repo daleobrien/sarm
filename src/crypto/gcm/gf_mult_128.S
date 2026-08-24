@@ -28,9 +28,8 @@
 
 .text
 .align 2
-.global gf_mult_128
 
-gf_mult_128:
+FUNC gf_mult_128
     sub     sp, sp, #16
     str     x30, [sp]
 
@@ -52,3 +51,4 @@ gf_mult_128:
     ldr     x30, [sp]
     add     sp, sp, #16
     ret
+ENDFUNC gf_mult_128

@@ -96,8 +96,7 @@ h2_range_buf:
 
 .text
 .align 2
-.global h2_build_request
-h2_build_request:
+FUNC h2_build_request
     stp x19, x20, [sp, #-160]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -375,3 +374,4 @@ h2_build_request:
     mov x6, #1
     str x6, [sp, #144]
     b .Lh2_req_store
+ENDFUNC h2_build_request

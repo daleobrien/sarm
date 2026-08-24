@@ -24,8 +24,7 @@
 
 .text
 .align 2
-.global check_path_traversal
-check_path_traversal:
+FUNC check_path_traversal
     mov x2, #0
     mov x3, #0
     mov x4, #0
@@ -81,3 +80,4 @@ Lno_path_traversal:
 Lpath_traversal:
     mov x0, #0
     ret
+ENDFUNC check_path_traversal

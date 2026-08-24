@@ -24,7 +24,7 @@
 // these RFC 9113 §6.5.2 initial values and updates them as SETTINGS
 // frames arrive. h2_validate_frame reads H2C_MAX_RX_FRAME_SIZE, the
 // frame size this endpoint is willing to receive.
-h2_conn:
+OBJECT h2_conn
     .quad 0                               // H2C_LAST_FRAME_TYPE
     .quad H2_DEFAULT_MAX_FRAME_SIZE        // H2C_MAX_RX_FRAME_SIZE
     .quad H2_DEFAULT_HEADER_TABLE_SIZE     // H2C_SETTINGS_HEADER_TABLE_SIZE
@@ -39,13 +39,15 @@ h2_conn:
     .quad -1                              // H2C_FD — no connection yet (Stage 13)
     .quad 0                               // H2C_GOAWAY_RECEIVED (Stage 13)
     .quad 0                               // H2C_GOAWAY_LAST_STREAM_ID (Stage 13)
+ENDOBJ h2_conn
 
 .bss
 .align 4
 // h2_frame_header — scratch for the parsed frame header. The connection
 // loop parses the 9 wire bytes into this before validating/dispatching.
-h2_frame_header:
+OBJECT h2_frame_header
     .skip H2F_SIZE
+ENDOBJ h2_frame_header
 
 // h2_streams — the fixed stream table (§5.1). H2_MAX_STREAMS entries of
 // H2S_SIZE bytes; a zero stream_id marks a free slot (wire ids are
@@ -53,8 +55,9 @@ h2_frame_header:
 // takes a free slot first, then — Stage 12 — recycles a CLOSED entry so
 // a long-lived connection can serve more than H2_MAX_STREAMS requests.
 .align 4
-h2_streams:
+OBJECT h2_streams
     .skip H2_MAX_STREAMS * H2S_SIZE
+ENDOBJ h2_streams
 
 // h2_frame_buf — one outgoing frame: a 9-byte frame header followed by
 // its payload (an HPACK header block or a DATA chunk). The response
@@ -64,8 +67,9 @@ h2_streams:
 // h2_frame_buf_size is defined in defs.S (needed as an immediate by
 // h2_write_headers too).
 .align 4
-h2_frame_buf:
+OBJECT h2_frame_buf
     .skip h2_frame_buf_size
+ENDOBJ h2_frame_buf
 
 // h2_wait_buf — one *incoming* frame, for h2_write_body's flow-control
 // wait loop only. It cannot share `buf` with the connection loop: a
@@ -81,11 +85,7 @@ h2_frame_buf:
 // request is destroyed where it sits. Latent over TLS only because the
 // unparsed bytes live in the TLS stage buffer there instead.
 .align 4
-h2_wait_buf:
+OBJECT h2_wait_buf
     .skip h2_wait_buf_size
+ENDOBJ h2_wait_buf
 
-.global h2_conn
-.global h2_frame_header
-.global h2_streams
-.global h2_frame_buf
-.global h2_wait_buf

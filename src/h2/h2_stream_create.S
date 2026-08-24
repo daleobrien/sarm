@@ -34,8 +34,7 @@
 
 .text
 .align 2
-.global h2_stream_create
-h2_stream_create:
+FUNC h2_stream_create
     mov x2, x0             // id
     mov x3, x1             // conn
     adr_l x4, h2_streams
@@ -90,3 +89,4 @@ h2_stream_create:
     cmp xzr, xzr
     mov x0, #H2_ERR_REFUSED_STREAM
     ret
+ENDFUNC h2_stream_create

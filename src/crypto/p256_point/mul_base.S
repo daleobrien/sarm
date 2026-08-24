@@ -57,8 +57,7 @@
 //   constant 1, and a 96-byte cand buffer
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_mul_base
-p256_point_mul_base:
+FUNC p256_point_mul_base
     sub     sp, sp, #368
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -218,3 +217,4 @@ p256_point_mul_base:
     ldp     x29, x30, [sp]
     add     sp, sp, #368
     ret
+ENDFUNC p256_point_mul_base

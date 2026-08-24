@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global tls_transcript_hash
-tls_transcript_hash:
+FUNC tls_transcript_hash
     sub     sp, sp, #144
     stp     x19, x30, [sp]
 
@@ -66,3 +65,4 @@ tls_transcript_hash:
     ldp     x19, x30, [sp]
     add     sp, sp, #144
     ret
+ENDFUNC tls_transcript_hash

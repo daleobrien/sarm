@@ -44,8 +44,7 @@
 
 .text
 .align 2
-.global h2_hpack_decode_int
-h2_hpack_decode_int:
+FUNC h2_hpack_decode_int
     mov x8, x2                  // end — x2 becomes the accumulator below
     cmp x0, x8
     b.hs .Lhpack_int_error      // not even the prefix octet is readable
@@ -86,3 +85,4 @@ h2_hpack_decode_int:
     cmp xzr, xzr                // failure — carry set
     mov x0, #H2_ERR_COMPRESSION_ERROR
     ret
+ENDFUNC h2_hpack_decode_int

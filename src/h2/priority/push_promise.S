@@ -23,8 +23,8 @@
 
 .text
 .align 2
-.global h2_handle_push_promise
-h2_handle_push_promise:
+FUNC h2_handle_push_promise
     cmn xzr, xzr // success — carry clear
     mov x0, #0
     ret
+ENDFUNC h2_handle_push_promise

@@ -50,9 +50,8 @@
 
 .text
 .align 2
-.global ghash
 
-ghash:
+FUNC ghash
     sub     sp, sp, #96
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -103,3 +102,4 @@ ghash:
     ldp     x19, x20, [sp]
     add     sp, sp, #96
     ret
+ENDFUNC ghash

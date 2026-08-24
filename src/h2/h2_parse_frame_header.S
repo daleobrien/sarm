@@ -23,8 +23,7 @@
 
 .text
 .align 2
-.global h2_parse_frame_header
-h2_parse_frame_header:
+FUNC h2_parse_frame_header
     // payload length — 24-bit big-endian, bytes 0..2
     ldrb w2, [x0]
     ldrb w3, [x0, #1]
@@ -52,3 +51,4 @@ h2_parse_frame_header:
     and w2, w2, #0x7fffffff
     str w2, [x1, #H2F_STREAM_ID]
     ret
+ENDFUNC h2_parse_frame_header

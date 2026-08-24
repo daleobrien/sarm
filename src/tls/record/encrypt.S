@@ -49,8 +49,7 @@
 
 .text
 .align 2
-.global tls_record_encrypt
-tls_record_encrypt:
+FUNC tls_record_encrypt
     sub     sp, sp, #80
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -139,3 +138,4 @@ tls_record_encrypt:
     ldp     x19, x20, [sp]
     add     sp, sp, #80
     ret
+ENDFUNC tls_record_encrypt

@@ -40,8 +40,7 @@
 
 .text
 .align 2
-.global tls_finished_verify_data
-tls_finished_verify_data:
+FUNC tls_finished_verify_data
     str     x30, [sp, #-16]!
 
     mov     x9, x0                      // finished_key
@@ -57,3 +56,4 @@ tls_finished_verify_data:
 
     ldr     x30, [sp], #16
     ret
+ENDFUNC tls_finished_verify_data

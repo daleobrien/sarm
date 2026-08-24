@@ -45,8 +45,7 @@ h2_stream_transitions:
 
 .text
 .align 2
-.global h2_stream_event
-h2_stream_event:
+FUNC h2_stream_event
     ldr x2, [x0, #H2S_STATE]
     cmp x2, #H2_STREAM_CLOSED
     b.hi .Lh2_stream_bad_event   // defensive: unknown state
@@ -74,3 +73,4 @@ h2_stream_event:
     cmp xzr, xzr
     mov x0, #H2_ERR_PROTOCOL_ERROR
     ret
+ENDFUNC h2_stream_event

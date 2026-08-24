@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_swap_conditional
-x25519_swap_conditional:
+FUNC x25519_swap_conditional
     cmp     x2, #0
     csetm   x9, ne                     // x9 = 0 - iswap (all-ones if set)
 
@@ -224,6 +223,7 @@ x25519_swap_conditional:
     stp     x12, x13, [x1, #16]
     str     x14, [x1, #32]
     ret
+ENDFUNC x25519_swap_conditional
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_recip

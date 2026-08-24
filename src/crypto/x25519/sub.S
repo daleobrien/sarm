@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_sub
-x25519_fe_sub:
+FUNC x25519_fe_sub
     ldp     x3, x4, [x1]
     ldp     x5, x6, [x1, #16]
     ldr     x7, [x1, #32]
@@ -217,6 +216,7 @@ x25519_fe_sub:
     stp     x5, x6, [x0, #16]
     str     x7, [x0, #32]
     ret
+ENDFUNC x25519_fe_sub
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_mul

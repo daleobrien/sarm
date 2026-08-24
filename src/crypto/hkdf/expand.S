@@ -62,8 +62,7 @@
 
 .text
 .align 2
-.global hkdf_expand
-hkdf_expand:
+FUNC hkdf_expand
     // ── preconditions, checked before a single byte is written ──
     mov     x6, #HKDF_EXPAND_MAX_INFO
     cmp     x3, x6
@@ -184,3 +183,4 @@ hkdf_expand:
     b.ne    .Lhkdf_memcpy_loop
 .Lhkdf_memcpy_done:
     ret
+ENDFUNC hkdf_expand

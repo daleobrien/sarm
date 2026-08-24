@@ -22,8 +22,7 @@
 //   x2-x4
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_eq
-p256_fe_eq:
+FUNC p256_fe_eq
     ldr     x2, [x0, #0]
     ldr     x3, [x1, #0]
     eor     x2, x2, x3
@@ -42,3 +41,4 @@ p256_fe_eq:
     cmp     x2, #0
     cset    x0, eq
     ret
+ENDFUNC p256_fe_eq

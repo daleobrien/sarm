@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_mul
-x25519_fe_mul:
+FUNC x25519_fe_mul
     sub     sp, sp, #96
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -348,6 +347,7 @@ x25519_fe_mul:
     ldp     x27, x28, [sp, #64]
     add     sp, sp, #96
     ret
+ENDFUNC x25519_fe_mul
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_sqr_times

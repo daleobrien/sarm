@@ -43,8 +43,7 @@
 
 .text
 .align 2
-.global tls_certificate_verify_sign_with_k
-tls_certificate_verify_sign_with_k:
+FUNC tls_certificate_verify_sign_with_k
     sub     sp, sp, #80
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -71,3 +70,4 @@ tls_certificate_verify_sign_with_k:
     ldp     x19, x20, [sp]
     add     sp, sp, #80
     ret
+ENDFUNC tls_certificate_verify_sign_with_k

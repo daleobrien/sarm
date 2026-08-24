@@ -21,8 +21,7 @@
 
 .text
 .align 2
-.global options
-options:
+FUNC options
     // the request was already parsed into the `request` struct by
     // parse_request (sarm.S dispatch) — read the path from there.
     adr_l x9, request
@@ -53,3 +52,4 @@ L404:
     mov x0, #404
     mov x1, #0
     b reply_status
+ENDFUNC options

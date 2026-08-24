@@ -43,8 +43,7 @@
 
 .text
 .align 2
-.global h2_hpack_decode_string
-h2_hpack_decode_string:
+FUNC h2_hpack_decode_string
     stp x19, x30, [sp, #-48]!
     str x20, [sp, #16]
     str x21, [sp, #24]
@@ -110,3 +109,4 @@ h2_hpack_decode_string:
     ldr x20, [sp, #16]
     ldp x19, x30, [sp], #48
     ret                         // carry + error already set
+ENDFUNC h2_hpack_decode_string

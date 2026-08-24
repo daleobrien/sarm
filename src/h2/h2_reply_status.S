@@ -25,8 +25,7 @@
 
 .text
 .align 2
-.global h2_reply_status
-h2_reply_status:
+FUNC h2_reply_status
     stp x19, x20, [sp, #-48]!
     stp x21, x22, [sp, #16]
     str x30, [sp, #32]
@@ -51,3 +50,4 @@ h2_reply_status:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #48
     ret
+ENDFUNC h2_reply_status

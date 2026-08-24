@@ -83,8 +83,7 @@ h2_cr_buf:
 
 .text
 .align 2
-.global h2_stage_headers
-h2_stage_headers:
+FUNC h2_stage_headers
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -92,9 +91,9 @@ h2_stage_headers:
     mov x9, #1
     str x9, [sp, #56]       // stage the frame if it is small enough
     b .Lh2wh_entry
+ENDFUNC h2_stage_headers
 
-.global h2_write_headers
-h2_write_headers:
+FUNC h2_write_headers
     stp x19, x20, [sp, #-96]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
@@ -351,3 +350,4 @@ h2_write_headers:
     add x23, x23, x5
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_write_headers

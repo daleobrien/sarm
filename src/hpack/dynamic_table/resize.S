@@ -28,8 +28,7 @@
 
 .text
 .align 2
-.global h2_hpack_dyn_resize
-h2_hpack_dyn_resize:
+FUNC h2_hpack_dyn_resize
     str x30, [sp, #-16]!
     str_l x0, h2_hpack_dyn_max, x9
 
@@ -73,3 +72,4 @@ h2_hpack_dyn_resize:
 .Ldyn_resize_ret:
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_hpack_dyn_resize

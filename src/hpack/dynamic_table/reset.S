@@ -26,8 +26,7 @@
 
 .text
 .align 2
-.global h2_hpack_dyn_reset
-h2_hpack_dyn_reset:
+FUNC h2_hpack_dyn_reset
     mov     x9, #H2_HPACK_HEADER_TABLE_SIZE
     str_l   x9, h2_hpack_dyn_max, x10
     str_l   xzr, h2_hpack_dyn_size, x9
@@ -35,3 +34,4 @@ h2_hpack_dyn_reset:
     str_l   xzr, h2_hpack_dyn_count, x9
     str_l   xzr, h2_hpack_dyn_tail, x9
     ret
+ENDFUNC h2_hpack_dyn_reset

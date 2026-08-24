@@ -10,8 +10,7 @@
 
 rodata
 .align 4
-.global h2_settings_frame
-h2_settings_frame:
+OBJECT h2_settings_frame
     .byte 0x00, 0x00, 0x0c            // payload length (24-bit) = 12
     .byte H2_FRAME_SETTINGS           // type = SETTINGS
     .byte 0x00                        // flags = 0
@@ -24,4 +23,5 @@ h2_settings_frame:
     .byte 0x00, H2_SETTINGS_MAX_CONCURRENT_STREAMS
     .byte 0x00, 0x00, 0x00, MAX_CONCURRENT_STREAMS  // value = 32
 .equ h2_settings_frame_len, . - h2_settings_frame
+ENDOBJ h2_settings_frame
     .align 4 // pad the 21-byte frame to a 16-byte multiple

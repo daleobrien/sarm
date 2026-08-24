@@ -19,8 +19,7 @@
 //   x3-x4
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_cmov
-p256_fe_cmov:
+FUNC p256_fe_cmov
     cmp     x2, #0
     ldr     x3, [x0, #0]
     ldr     x4, [x1, #0]
@@ -39,3 +38,4 @@ p256_fe_cmov:
     csel    x3, x4, x3, ne
     str     x3, [x0, #24]
     ret
+ENDFUNC p256_fe_cmov

@@ -26,8 +26,7 @@
 
 .text
 .align 2
-.global h2_name_eq
-h2_name_eq:
+FUNC h2_name_eq
     cmp x1, x3
     b.ne .Lh2_name_ne
     mov x4, #0
@@ -46,3 +45,4 @@ h2_name_eq:
 .Lh2_name_ne:
     mov x0, #0
     ret
+ENDFUNC h2_name_eq

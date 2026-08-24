@@ -30,7 +30,6 @@ host_str: .ascii "Host"
 
 .text
 .align 2
-.global verify_http_version
 
 // verify the header has an HTTP version and that it's 1.1 or 1.0
 // if it's 1.1, ensure we have a Host: field.
@@ -40,7 +39,7 @@ host_str: .ascii "Host"
 //
 // returns
 // nothing, kills process on failure
-verify_http_version:
+FUNC verify_http_version
     stp x29, x30, [sp, #-32]!
     stp x20, x21, [sp, #16]
 
@@ -136,3 +135,4 @@ L505:
     mov x0, #505
     mov x1, #0
     b reply_status
+ENDFUNC verify_http_version

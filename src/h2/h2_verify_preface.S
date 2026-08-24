@@ -29,8 +29,7 @@
 
 .text
 .align 2
-.global h2_verify_preface
-h2_verify_preface:
+FUNC h2_verify_preface
     stp x29, x30, [sp, #-48]!
     stp x19, x20, [sp, #16]
     str x21, [sp, #32]
@@ -92,3 +91,4 @@ h2_verify_preface:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #48
     ret
+ENDFUNC h2_verify_preface

@@ -53,9 +53,8 @@
 
 .text
 .align 2
-.global aes_gcm_ctx_init
 
-aes_gcm_ctx_init:
+FUNC aes_gcm_ctx_init
     sub     sp, sp, #32
     str     x20, [sp, #16]
     str     x30, [sp, #24]
@@ -99,3 +98,4 @@ aes_gcm_ctx_init:
     ldr     x20, [sp, #16]
     add     sp, sp, #32
     ret
+ENDFUNC aes_gcm_ctx_init

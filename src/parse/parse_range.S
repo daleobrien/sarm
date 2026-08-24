@@ -35,17 +35,17 @@ bytes_match_str: .ascii "bytes"
 
 .bss
 .align 4
-range_buf: .skip (19 + 15) & ~15 // 19 bytes, rounded up to 16-byte multiple
+OBJECT range_buf
+           .skip (19 + 15) & ~15 // 19 bytes, rounded up to 16-byte multiple
+ENDOBJ range_buf
 .align 4
 
 // exported so http1_reset_request (Plan.md Phase 1, Step 4) can zero it
 // between requests on a kept-alive connection.
-.global range_buf
 
 .text
 .align 2
-.global parse_range
-parse_range:
+FUNC parse_range
     stp x29, x30, [sp, #-80]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -196,3 +196,4 @@ pr_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #80
     ret
+ENDFUNC parse_range

@@ -23,8 +23,7 @@
 
 .text
 .align 2
-.global h2_send_goaway
-h2_send_goaway:
+FUNC h2_send_goaway
     str x30, [sp, #-16]!
     sub sp, sp, #32
     // payload length = 8
@@ -63,3 +62,4 @@ h2_send_goaway:
     add sp, sp, #32
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_send_goaway

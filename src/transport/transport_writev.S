@@ -45,8 +45,7 @@
 
 .text
 .align 2
-.global transport_writev
-transport_writev:
+FUNC transport_writev
     ldr_l   x9, transport_mode
     cbnz    x9, .Ltwv_tls
 
@@ -98,3 +97,4 @@ transport_writev:
     ldp     x21, x22, [sp, #16]
     ldp     x19, x20, [sp], #64
     ret
+ENDFUNC transport_writev

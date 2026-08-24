@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_tobytes
-x25519_fe_tobytes:
+FUNC x25519_fe_tobytes
     ldp     x2, x3, [x1]
     ldp     x4, x5, [x1, #16]
     ldr     x6, [x1, #32]
@@ -230,6 +229,7 @@ x25519_fe_tobytes:
     orr     x7, x7, x8
     str     x7, [x0, #24]
     ret
+ENDFUNC x25519_fe_tobytes
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_add

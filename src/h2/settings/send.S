@@ -25,8 +25,8 @@
 
 .text
 .align 2
-.global h2_send_settings
-h2_send_settings:
+FUNC h2_send_settings
     adr_l x1, h2_settings_frame
     mov x2, #21                       // h2_settings_frame_len = 21 bytes
     b write_all
+ENDFUNC h2_send_settings

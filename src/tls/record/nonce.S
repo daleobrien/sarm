@@ -34,8 +34,7 @@
 
 .text
 .align 2
-.global tls_record_nonce
-tls_record_nonce:
+FUNC tls_record_nonce
     rev     x3, x1                  // sequence number, big-endian
     ldr     x4, [x0, #4]            // iv[4..11]
     eor     x3, x3, x4              // iv[4..11] XOR seq
@@ -43,3 +42,4 @@ tls_record_nonce:
     str     x4, [x2]                // out[0..7] = iv[0..7]
     str     x3, [x2, #4]            // out[4..11] = iv[4..11] XOR seq
     ret
+ENDFUNC tls_record_nonce

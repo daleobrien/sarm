@@ -31,8 +31,7 @@
 
 .text
 .align 2
-.global raw_write_all
-raw_write_all:
+FUNC raw_write_all
     stp     x25, x26, [sp, #-16]!
     mov     x25, x0             // fd
     mov     x26, #0             // total bytes written
@@ -69,3 +68,4 @@ raw_write_all:
     cmp     xzr, xzr            // set C=1 so we can b.cs
     // x0 is already errno
     b       3b
+ENDFUNC raw_write_all

@@ -29,8 +29,7 @@
 
 .text
 .align 2
-.global hkdf_extract
-hkdf_extract:
+FUNC hkdf_extract
     cbnz    x1, .Lextract_hmac     // salt provided: tail-call straight
                                    //   into hmac_sha256 (x0..x4 are
                                    //   already its exact arguments)
@@ -48,3 +47,4 @@ hkdf_extract:
 
 .Lextract_hmac:
     b       hmac_sha256            // tail call: PRK = HMAC(salt, IKM)
+ENDFUNC hkdf_extract

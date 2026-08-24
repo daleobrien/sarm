@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_frombytes
-x25519_fe_frombytes:
+FUNC x25519_fe_frombytes
     ldr     x2, [x1]
     ldr     x3, [x1, #8]
     ldr     x4, [x1, #16]
@@ -213,6 +212,7 @@ x25519_fe_frombytes:
     stp     x12, x14, [x0, #16]
     str     x15, [x0, #32]
     ret
+ENDFUNC x25519_fe_frombytes
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_fe_tobytes

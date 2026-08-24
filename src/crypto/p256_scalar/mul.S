@@ -6,8 +6,7 @@
 
 .text
 .align 2
-.global p256_scalar_mul
-p256_scalar_mul:
+FUNC p256_scalar_mul
     sub     sp, sp, #96
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -130,3 +129,4 @@ p256_scalar_reduce_wide:
     ldp     x29, x30, [sp]
     add     sp, sp, #192
     ret
+ENDFUNC p256_scalar_mul

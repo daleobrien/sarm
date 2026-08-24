@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global decode_url
-decode_url:
+FUNC decode_url
     stp x29, x30, [sp, #-32]!
     str x20, [sp, #16]
     mov x2, x0 // write pointer
@@ -132,3 +131,4 @@ Ldecode_epilogue:
     ldr x20, [sp, #16]
     ldp x29, x30, [sp], #32
     ret
+ENDFUNC decode_url

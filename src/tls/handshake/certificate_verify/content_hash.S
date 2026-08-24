@@ -54,8 +54,7 @@ cv_content_prefix_len = . - cv_content_prefix
 
 .text
 .align 2
-.global tls_certificate_verify_content_hash
-tls_certificate_verify_content_hash:
+FUNC tls_certificate_verify_content_hash
     sub     sp, sp, #144
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -84,3 +83,4 @@ tls_certificate_verify_content_hash:
     ldp     x19, x20, [sp]
     add     sp, sp, #144
     ret
+ENDFUNC tls_certificate_verify_content_hash

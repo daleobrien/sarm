@@ -59,8 +59,7 @@
 
 .text
 .align 2
-.global hkdf_expand_label
-hkdf_expand_label:
+FUNC hkdf_expand_label
     // ── preconditions, checked before the buffer is touched ──
     mov     x7, #HKDF_LABEL_MAX_LABEL
     cmp     x2, x7
@@ -169,3 +168,4 @@ hkdf_expand_label:
     b.ne    .Lhkdf_memcpy_loop
 .Lhkdf_memcpy_done:
     ret
+ENDFUNC hkdf_expand_label

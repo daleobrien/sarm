@@ -43,8 +43,7 @@
 
 .text
 .align 2
-.global tls_finished_write
-tls_finished_write:
+FUNC tls_finished_write
     sub     sp, sp, #64
     stp     x19, x20, [sp]
     str     x30, [sp, #16]
@@ -76,3 +75,4 @@ tls_finished_write:
     ldp     x19, x20, [sp]
     add     sp, sp, #64
     ret
+ENDFUNC tls_finished_write

@@ -37,9 +37,8 @@
 
 .text
 .align 2
-.global p256_ecdsa_verify
 
-p256_ecdsa_verify:
+FUNC p256_ecdsa_verify
     sub     sp, sp, #992
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -270,3 +269,4 @@ p256_ecdsa_verify:
     ret
 
 #undef VSLOT
+ENDFUNC p256_ecdsa_verify

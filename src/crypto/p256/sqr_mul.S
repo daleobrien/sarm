@@ -76,8 +76,7 @@
 //   buffers for its two multiplies, which this algorithm has no use for)
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_reduce
-p256_reduce:
+FUNC p256_reduce
     // Load all 8 T limbs. T0..T3 are consumed immediately below (their
     // words are used as-is, no reduction). T4..T7 (x2-x5) stay live
     // through the accumulation phase below since their halves each
@@ -303,6 +302,7 @@ p256_reduce:
     umulh   x11, x9, x10
     adc     \t4, \t4, x11           // proven not to carry out
 .endm
+ENDFUNC p256_reduce
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: p256_fe_sqr
@@ -317,9 +317,9 @@ p256_reduce:
 //   x0 — out fe pointer, x1 — a fe pointer
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_sqr
-p256_fe_sqr:
+FUNC p256_fe_sqr
     mov     x2, x1
+ENDFUNC p256_fe_sqr
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: p256_fe_mul
@@ -384,8 +384,7 @@ p256_fe_sqr:
 //   none — leaf function
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_mul
-p256_fe_mul:
+FUNC p256_fe_mul
     // a into x6-x9, then x1 becomes the b pointer — x2 held b but is
     // needed as T[4], and every b limb is read through x1 from here on.
     ldp     x6, x7, [x1, #0]
@@ -422,3 +421,4 @@ p256_fe_mul:
     // them, so enter past those loads. p256_reduce's `ret` returns to
     // this function's caller.
     b       .Lreduce_regs
+ENDFUNC p256_fe_mul

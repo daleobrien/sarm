@@ -65,8 +65,7 @@ http10_match_str: .ascii "HTTP/1.0"
 
 .text
 .align 2
-.global http1_should_keep_alive
-http1_should_keep_alive:
+FUNC http1_should_keep_alive
     stp x29, x30, [sp, #-80]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -242,3 +241,4 @@ Lhka_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #80
     ret
+ENDFUNC http1_should_keep_alive

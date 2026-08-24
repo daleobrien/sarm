@@ -31,8 +31,7 @@
 
 .text
 .align 2
-.global h2_handle_ping
-h2_handle_ping:
+FUNC h2_handle_ping
     str x30, [sp, #-16]!   // save the return address
     // exactly 8 payload octets (§6.7)
     ldr w3, [x0, #H2F_LENGTH]
@@ -82,3 +81,4 @@ h2_handle_ping:
     cmp xzr, xzr
     mov x0, #H2_ERR_FRAME_SIZE_ERROR
     ret
+ENDFUNC h2_handle_ping

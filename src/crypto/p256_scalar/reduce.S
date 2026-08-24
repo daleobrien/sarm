@@ -4,8 +4,7 @@
 
 .text
 .align 2
-.global p256_scalar_reduce
-p256_scalar_reduce:
+FUNC p256_scalar_reduce
     ldr     x2, [x1, #0]
     ldr     x3, [x1, #8]
     ldr     x4, [x1, #16]
@@ -34,3 +33,4 @@ p256_scalar_reduce:
     str     x4, [x0, #16]
     str     x5, [x0, #24]
     ret
+ENDFUNC p256_scalar_reduce

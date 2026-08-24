@@ -21,8 +21,7 @@
 //   672 bytes: saved x29/x30, saved x19/x20, 20 4-limb scratch slots
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_dbl
-p256_point_dbl:
+FUNC p256_point_dbl
     sub     sp, sp, #672
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -215,3 +214,4 @@ p256_point_dbl:
     ret
 
 #undef DSLOT
+ENDFUNC p256_point_dbl

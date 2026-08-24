@@ -23,8 +23,7 @@
 //   buffer, a 96-byte P buffer, a 96-byte cand buffer
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_mul
-p256_point_mul:
+FUNC p256_point_mul
     sub     sp, sp, #352
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -121,3 +120,4 @@ p256_point_mul:
     ldp     x29, x30, [sp]
     add     sp, sp, #352
     ret
+ENDFUNC p256_point_mul

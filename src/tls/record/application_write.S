@@ -44,8 +44,7 @@
 
 .text
 .align 2
-.global tls_app_data_write
-tls_app_data_write:
+FUNC tls_app_data_write
     sub     sp, sp, #48
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -72,3 +71,4 @@ tls_app_data_write:
     ldp     x19, x20, [sp]
     add     sp, sp, #48
     ret
+ENDFUNC tls_app_data_write

@@ -23,8 +23,7 @@
 
 .text
 .align 2
-.global memcpy
-memcpy:
+FUNC memcpy
     cbz x2, 1f
     cmp x2, #16
     b.lo 3f
@@ -42,3 +41,4 @@ memcpy:
     b 3b
 1:
     ret
+ENDFUNC memcpy

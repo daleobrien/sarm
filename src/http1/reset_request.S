@@ -49,8 +49,7 @@
 
 .text
 .align 2
-.global http1_reset_request
-http1_reset_request:
+FUNC http1_reset_request
     stp x29, x30, [sp, #-16]!
 
     adr_l x0, request
@@ -109,3 +108,4 @@ Lhrr_zero16:
     b.ne 1b
 2:
     ret
+ENDFUNC http1_reset_request

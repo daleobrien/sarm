@@ -49,17 +49,18 @@
 
 rodata
 .align 4
-.global rcv_timeout    // main.S arms the same timeout on the TLS path
-rcv_timeout:           // struct timeval for SO_RCVTIMEO
+OBJECT rcv_timeout
+                       // struct timeval for SO_RCVTIMEO
     .quad RECV_TIMEOUT // tv_sec
     .quad 0            // tv_usec
+ENDOBJ rcv_timeout
 
 .text
 .align 2
-.global child
-child:
+FUNC child
     mov x22, #0                 // fresh connection, nothing read yet
     b Lchild_common
+ENDFUNC child
 
 // Entry for a fresh connection whose first bytes were already read for
 // real by main.S's accept-time read (Plan.md Phase 2, Step 9 — replaces
@@ -69,8 +70,7 @@ child:
 //
 // Input: x0 = bytes already read (> 0; main.S handles the 0-byte/error
 // cases itself before ever branching here).
-.global child_with_data
-child_with_data:
+FUNC child_with_data
     mov x22, x0
 
 Lchild_common:
@@ -288,6 +288,7 @@ L501:
 // local trampoline: b.cond/cbz can't reach child_end across files
 Lchild_end:
     b child_end
+ENDFUNC child_with_data
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: http1_keepalive_continue
@@ -319,8 +320,7 @@ Lchild_end:
 // Stack Usage:
 //   none
 // ─────────────────────────────────────────────────────────────────────
-.global http1_keepalive_continue
-http1_keepalive_continue:
+FUNC http1_keepalive_continue
     ldr_l x0, keep_alive_decision
     cbz x0, Lchild_end
 
@@ -348,3 +348,4 @@ Lhkc_shift:
 Lhkc_resume:
     mov x25, #1 // protocol already decided for this connection
     b Lcheck_leftover
+ENDFUNC http1_keepalive_continue

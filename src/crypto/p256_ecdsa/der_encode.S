@@ -43,8 +43,7 @@
 
 .text
 .align 2
-.global p256_ecdsa_der_sig_encode
-p256_ecdsa_der_sig_encode:
+FUNC p256_ecdsa_der_sig_encode
     stp     x19, x20, [sp, #-48]!
     stp     x21, x22, [sp, #16]
     str     x30, [sp, #32]
@@ -126,3 +125,4 @@ p256_ecdsa_der_sig_encode:
 .Lder_copy_done:
     add     x0, x5, #2               // tag(1) + length(1) + content
     ret
+ENDFUNC p256_ecdsa_der_sig_encode

@@ -18,8 +18,7 @@
 //   x3-x14
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_add
-p256_fe_add:
+FUNC p256_fe_add
     ldr     x3, [x1, #0]
     ldr     x4, [x1, #8]
     ldr     x5, [x1, #16]
@@ -58,3 +57,4 @@ p256_fe_add:
     str     x5, [x0, #16]
     str     x6, [x0, #24]
     ret
+ENDFUNC p256_fe_add

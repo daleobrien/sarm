@@ -58,8 +58,7 @@ err_page_buf: .skip err_page_buf_size
 //
 // Serves error pages from the embedded table (www/err/<code>.html).
 // No filesystem access — all content is embedded at build time.
-.global reply_status
-reply_status:
+FUNC reply_status
     cbz x1, 1f // skip the stack pushing shit if we're just gonna b child_end
 
     stp x29, x30, [sp, #-96]!
@@ -200,3 +199,4 @@ sc_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #96
     ret
+ENDFUNC reply_status

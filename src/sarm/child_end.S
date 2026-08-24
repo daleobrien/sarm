@@ -24,8 +24,7 @@
 
 .text
 .align 2
-.global child_end
-child_end:
+FUNC child_end
     // close(clientfd)
     SCWINUM SYS_close
     ldr_l x0, clientfd
@@ -51,3 +50,4 @@ child_end:
     SCERR
 2:
     b loop
+ENDFUNC child_end

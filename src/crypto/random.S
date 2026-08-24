@@ -127,18 +127,17 @@
 
 .data
 .align 3
-.global crypto_random_fail_calls
-crypto_random_fail_calls:
+OBJECT crypto_random_fail_calls
     .quad   0
-.global crypto_random_fail_at
-crypto_random_fail_at:
+ENDOBJ crypto_random_fail_calls
+OBJECT crypto_random_fail_at
     .quad   SARM_RNG_FAIL_NTH
 #endif
+ENDOBJ crypto_random_fail_at
 
 .text
 .align 2
-.global crypto_random_bytes
-crypto_random_bytes:
+FUNC crypto_random_bytes
     stp     x19, x20, [sp, #-32]!
     str     x21, [sp, #16]
     mov     x19, x0                 // buf
@@ -217,3 +216,4 @@ crypto_random_bytes:
     ldr     x21, [sp, #16]
     ldp     x19, x20, [sp], #32
     ret
+ENDFUNC crypto_random_bytes

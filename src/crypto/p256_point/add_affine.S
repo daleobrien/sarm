@@ -63,8 +63,7 @@
 //   slots 11..13 and copied out at the very end, so out may alias P1.
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_point_add_affine
-p256_point_add_affine:
+FUNC p256_point_add_affine
     sub     sp, sp, #496
     stp     x29, x30, [sp]
     mov     x29, sp
@@ -185,3 +184,4 @@ p256_point_add_affine:
     ret
 
 #undef MSLOT
+ENDFUNC p256_point_add_affine

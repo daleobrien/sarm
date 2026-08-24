@@ -45,8 +45,7 @@
 //   x4 -- ct length in bytes
 //   x5 -- 16-byte output buffer
 // ─────────────────────────────────────────────────────────────────────
-.global bench_ghash_run_once
-bench_ghash_run_once:
+FUNC bench_ghash_run_once
     // x27/x28 are callee-saved under AAPCS64; this function uses them as
     // scratch to feed .Lgcm_ghash_run (matching its documented contract,
     // data.S:107-130), so -- like the real ghash.S:39-45 prologue this
@@ -103,6 +102,7 @@ bench_ghash_run_once:
     ldp     x29, x30, [sp]
     add     sp, sp, #80
     ret
+ENDFUNC bench_ghash_run_once
 
 // ─────────────────────────────────────────────────────────────────────
 // bench_ghash_run_timed -- the timed entry. Constants and H are loaded
@@ -118,8 +118,7 @@ bench_ghash_run_once:
 //   x0 -- data pointer, x1 -- byte length, x2 -- H pointer (16B, wire
 //   order), x3 -- iteration count
 // ─────────────────────────────────────────────────────────────────────
-.global bench_ghash_run_timed
-bench_ghash_run_timed:
+FUNC bench_ghash_run_timed
     // x27/x28 are callee-saved under AAPCS64 -- same reasoning as
     // bench_ghash_run_once above; both must be saved/restored here even
     // though .Lgcm_ghash_run itself treats x27 as clobbered scratch.
@@ -155,3 +154,4 @@ bench_ghash_run_timed:
     ldp     x19, x20, [sp, #16]
     ldp     x29, x30, [sp], #48
     ret
+ENDFUNC bench_ghash_run_timed

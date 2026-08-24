@@ -32,8 +32,7 @@
 
 .text
 .align 2
-.global h2_hpack_dyn_lookup
-h2_hpack_dyn_lookup:
+FUNC h2_hpack_dyn_lookup
     cbz x0, .Ldyn_lookup_bad
     ldr_l x9, h2_hpack_dyn_count, x10
     cmp x0, x9
@@ -75,3 +74,4 @@ h2_hpack_dyn_lookup:
     cmp xzr, xzr
     mov x0, #H2_ERR_COMPRESSION_ERROR
     ret
+ENDFUNC h2_hpack_dyn_lookup

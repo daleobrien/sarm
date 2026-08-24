@@ -42,8 +42,7 @@ host_match_str: .ascii "Host"
 
 .text
 .align 2
-.global parse_request
-parse_request:
+FUNC parse_request
     stp x29, x30, [sp, #-80]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -202,3 +201,4 @@ L400:
     mov x0, #400
     mov x1, #0
     b reply_status
+ENDFUNC parse_request

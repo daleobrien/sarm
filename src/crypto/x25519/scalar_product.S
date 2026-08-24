@@ -184,8 +184,7 @@
 
 .text
 
-.global x25519_fe_scalar_product
-x25519_fe_scalar_product:
+FUNC x25519_fe_scalar_product
     sub     sp, sp, #32
     stp     x19, x28, [sp]
 
@@ -249,6 +248,7 @@ x25519_fe_scalar_product:
     ldp     x19, x28, [sp]
     add     sp, sp, #32
     ret
+ENDFUNC x25519_fe_scalar_product
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: x25519_swap_conditional

@@ -93,8 +93,7 @@ header_tail_keep:
 // header_buf (the caller should reply 500).
 //
 // clobbers x0–x7, x9–x15
-.global http1_write_response
-http1_write_response:
+FUNC http1_write_response
     stp x29, x30, [sp, #-96]!
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
@@ -386,3 +385,4 @@ Lhw_epilogue:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #96
     ret
+ENDFUNC http1_write_response

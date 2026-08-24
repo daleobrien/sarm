@@ -33,8 +33,7 @@
 
 .text
 .align 2
-.global tls_build_server_hello
-tls_build_server_hello:
+FUNC tls_build_server_hello
     sub     sp, sp, #48
     str     x19, [sp]
     str     x30, [sp, #8]
@@ -85,3 +84,4 @@ tls_build_server_hello:
     ldr     x30, [sp, #8]
     add     sp, sp, #48
     ret
+ENDFUNC tls_build_server_hello

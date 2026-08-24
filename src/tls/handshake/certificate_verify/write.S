@@ -51,8 +51,7 @@
 
 .text
 .align 2
-.global tls_certificate_verify_write
-tls_certificate_verify_write:
+FUNC tls_certificate_verify_write
     sub     sp, sp, #128
     stp     x19, x20, [sp]
     str     x21, [sp, #16]
@@ -146,3 +145,4 @@ tls_certificate_verify_write:
     ldp     x19, x20, [sp]
     add     sp, sp, #128
     ret
+ENDFUNC tls_certificate_verify_write

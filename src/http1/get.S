@@ -30,8 +30,7 @@
 //
 // returns
 // nothing ! :)
-.global get
-get:
+FUNC get
     mov x20, x0
     mov x21, x1
 
@@ -159,3 +158,4 @@ L500:
     mov x0, #500
     mov x1, #0
     b reply_status
+ENDFUNC get

@@ -23,8 +23,8 @@
 
 .text
 .align 2
-.global h2_handle_continuation
-h2_handle_continuation:
+FUNC h2_handle_continuation
     cmn xzr, xzr // success — carry clear
     mov x0, #0
     ret
+ENDFUNC h2_handle_continuation

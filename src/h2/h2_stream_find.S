@@ -23,8 +23,7 @@
 
 .text
 .align 2
-.global h2_stream_find
-h2_stream_find:
+FUNC h2_stream_find
     adr_l x9, h2_streams
     mov x2, #H2_MAX_STREAMS
 .Lh2_find_loop:
@@ -41,3 +40,4 @@ h2_stream_find:
     mov x0, x9
     cmn xzr, xzr
     ret
+ENDFUNC h2_stream_find

@@ -26,8 +26,7 @@
 
 .text
 .align 4                        // 16-byte instruction alignment (2^4)
-.global atoi_n
-atoi_n:
+FUNC atoi_n
     // Protect against overflow: 19+ digits is an immediate error
     cmp x1, #19
     b.hs Latoi_n_error
@@ -102,3 +101,4 @@ Latoi_n_error:
     cmp xzr, xzr
     mov x0, #0
     ret
+ENDFUNC atoi_n

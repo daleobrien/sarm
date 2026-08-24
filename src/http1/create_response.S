@@ -51,8 +51,7 @@
 // x0 -> response struct ptr (unchanged)
 //
 // clobbers x0–x6, x9–x14
-.global create_response
-create_response:
+FUNC create_response
     stp x29, x30, [sp, #-32]!
     str x19, [sp, #16]
     mov x19, x0
@@ -83,3 +82,4 @@ create_response:
     ldr x19, [sp, #16]
     ldp x29, x30, [sp], #32
     ret
+ENDFUNC create_response

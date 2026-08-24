@@ -27,7 +27,7 @@
 
 .text
 .align 2
-.global tls_transcript_init
-tls_transcript_init:
+FUNC tls_transcript_init
     adr_l   x0, tls_transcript_ctx
     b       sha256_init                 // tail call: seed the context
+ENDFUNC tls_transcript_init

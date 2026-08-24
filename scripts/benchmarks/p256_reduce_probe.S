@@ -16,6 +16,6 @@
 .text
 .align 2
 .extern p256_reduce
-.global bench_p256_reduce_entry
-bench_p256_reduce_entry:
+FUNC bench_p256_reduce_entry
     b p256_reduce
+ENDFUNC bench_p256_reduce_entry

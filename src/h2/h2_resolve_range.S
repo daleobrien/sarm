@@ -26,8 +26,7 @@
 
 .text
 .align 2
-.global h2_resolve_range
-h2_resolve_range:
+FUNC h2_resolve_range
     cmn x0, #1
     b.ne 1f
     // ── suffix range — bytes=-N ──
@@ -80,3 +79,4 @@ h2_resolve_range:
 .Lh2rr_206:
     mov x2, #206
     ret
+ENDFUNC h2_resolve_range

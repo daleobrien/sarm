@@ -36,11 +36,11 @@
 
 .text
 .align 2
-.global h2_hpack_table_lookup
-h2_hpack_table_lookup:
+FUNC h2_hpack_table_lookup
     cmp x0, #H2_HPACK_STATIC_TABLE_SIZE
     b.hi .Lhtl_dynamic
     b h2_hpack_static_lookup
 .Lhtl_dynamic:
     sub x0, x0, #H2_HPACK_STATIC_TABLE_SIZE
     b h2_hpack_dyn_lookup
+ENDFUNC h2_hpack_table_lookup

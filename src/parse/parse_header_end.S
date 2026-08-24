@@ -28,8 +28,7 @@ header_end: .ascii "\r\n\r\n"
 
 .text
 .align 2
-.global parse_header_end
-parse_header_end:
+FUNC parse_header_end
     adr_l x2, header_end
     mov x5, #0
     mov x6, #0
@@ -70,3 +69,4 @@ Lend_found:
 Lno_end_found:
     mov x1, #0
     ret
+ENDFUNC parse_header_end

@@ -42,8 +42,7 @@
 
 .text
 .align 2
-.global tls_encrypted_extensions_write
-tls_encrypted_extensions_write:
+FUNC tls_encrypted_extensions_write
     adr_l   x12, tls_state
     mov     x9, x0                          // cursor
     ldr     x11, [x12, #TLS_ALPN_LEN]
@@ -102,3 +101,4 @@ tls_encrypted_extensions_write:
 
     add     x0, x10, #4                     // total message length
     ret
+ENDFUNC tls_encrypted_extensions_write

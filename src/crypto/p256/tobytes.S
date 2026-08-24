@@ -18,8 +18,7 @@
 //   x2-x5
 // ─────────────────────────────────────────────────────────────────────
 .align 2
-.global p256_fe_tobytes
-p256_fe_tobytes:
+FUNC p256_fe_tobytes
     ldr     x2, [x1, #0]            // limb0
     ldr     x3, [x1, #8]            // limb1
     ldr     x4, [x1, #16]           // limb2
@@ -33,3 +32,4 @@ p256_fe_tobytes:
     str     x3, [x0, #16]
     str     x2, [x0, #24]
     ret
+ENDFUNC p256_fe_tobytes

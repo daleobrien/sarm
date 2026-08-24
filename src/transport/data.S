@@ -47,22 +47,27 @@
 
 .data
 .align 4
-.global transport_mode
-transport_mode: .quad TRANSPORT_MODE
+OBJECT transport_mode
+                .quad TRANSPORT_MODE
+ENDOBJ transport_mode
 
 .align 4
-.global tls_read_stage_len
-.global tls_read_stage_pos
-tls_read_stage_len: .quad 0
-tls_read_stage_pos: .quad 0
+OBJECT tls_read_stage_len
+                    .quad 0
+ENDOBJ tls_read_stage_len
+OBJECT tls_read_stage_pos
+                    .quad 0
+ENDOBJ tls_read_stage_pos
 
 .align 4
-.global tls_read_raw_buf
-tls_read_raw_buf: .skip 16448   // header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded
+OBJECT tls_read_raw_buf
+                  .skip 16448   // header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded
+ENDOBJ tls_read_raw_buf
 
 .align 4
-.global tls_read_stage_buf
-tls_read_stage_buf: .skip 16384  // TLS_MAX_PLAINTEXT
+OBJECT tls_read_stage_buf
+                    .skip 16384  // TLS_MAX_PLAINTEXT
+ENDOBJ tls_read_stage_buf
 
 // tls_write_record_buf — TRANSPORT_TLS write-side scratch: each
 // transport_write call chunks its input into <= TLS_MAX_PLAINTEXT
@@ -70,20 +75,25 @@ tls_read_stage_buf: .skip 16384  // TLS_MAX_PLAINTEXT
 // output buffer distinct from its plaintext input), and sends it with
 // raw_write_all before sealing the next chunk.
 .align 4
-.global tls_write_record_buf
-tls_write_record_buf: .skip 16448  // header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded
+OBJECT tls_write_record_buf
+                      .skip 16448  // header(5) + TLS_MAX_PLAINTEXT + tag(16), rounded
+ENDOBJ tls_write_record_buf
 
 .align 4
-.global plain_read_stage_len
-.global plain_read_stage_pos
-plain_read_stage_len: .quad 0
-plain_read_stage_pos: .quad 0
+OBJECT plain_read_stage_len
+                      .quad 0
+ENDOBJ plain_read_stage_len
+OBJECT plain_read_stage_pos
+                      .quad 0
+ENDOBJ plain_read_stage_pos
 
 .align 4
-.global plain_read_stage_buf
-plain_read_stage_buf: .skip 16384
+OBJECT plain_read_stage_buf
+                      .skip 16384
+ENDOBJ plain_read_stage_buf
 
 .align 4
-.global transport_writev_scratch
-transport_writev_scratch: .skip 16672  // H2_HEADERS_STAGE_MAX(256) + header(9)
+OBJECT transport_writev_scratch
+                          .skip 16672  // H2_HEADERS_STAGE_MAX(256) + header(9)
                                        // + TLS_MAX_PLAINTEXT(16384), rounded
+ENDOBJ transport_writev_scratch

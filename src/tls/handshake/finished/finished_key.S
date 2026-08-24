@@ -49,8 +49,7 @@ fk_label_finished:
 
 .text
 .align 2
-.global tls_finished_key
-tls_finished_key:
+FUNC tls_finished_key
     str     x30, [sp, #-16]!
 
     mov     x9, x0                      // BaseKey
@@ -67,3 +66,4 @@ tls_finished_key:
 
     ldr     x30, [sp], #16
     ret
+ENDFUNC tls_finished_key

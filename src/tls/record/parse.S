@@ -40,8 +40,7 @@
 
 .text
 .align 2
-.global tls_record_parse
-tls_record_parse:
+FUNC tls_record_parse
     cmp     x1, #TLS_RECORD_HEADER_LEN
     b.lo    .Lrec_parse_short
     mov     x9, x0                  // buf — live across the header checks
@@ -102,3 +101,4 @@ tls_record_parse:
     mov     x0, #TLS_RECORD_ERR_BOUNDS
     cmp     xzr, xzr
     ret
+ENDFUNC tls_record_parse

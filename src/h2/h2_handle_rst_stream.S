@@ -25,8 +25,7 @@
 
 .text
 .align 2
-.global h2_handle_rst_stream
-h2_handle_rst_stream:
+FUNC h2_handle_rst_stream
     str x30, [sp, #-16]!   // save the return address
     // exactly 4 payload bytes — one 32-bit error code (§6.4)
     ldr w3, [x0, #H2F_LENGTH]
@@ -63,3 +62,4 @@ h2_handle_rst_stream:
 .Lh2_stream_error:
     ldr x30, [sp], #16
     ret
+ENDFUNC h2_handle_rst_stream

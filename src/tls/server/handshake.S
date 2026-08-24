@@ -97,8 +97,7 @@
 
 .text
 .align 2
-.global tls_server_handshake
-tls_server_handshake:
+FUNC tls_server_handshake
     sub     sp, sp, #192
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -510,3 +509,4 @@ tls_server_handshake:
 .Lhs_memcmp32_done:
     mov     x0, x9
     ret
+ENDFUNC tls_server_handshake

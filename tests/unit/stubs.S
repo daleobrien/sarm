@@ -37,18 +37,18 @@ stub_index_etag_end:
 // Pointer columns are offsets from embedded_files, matching what
 // embed_www.sh generates (docs/SECURITY.md Step 13) — lookup_embedded
 // adds the base back.
-embedded_files:
+OBJECT embedded_files
     .8byte (stub_index_path - embedded_files), (stub_index_path_end - stub_index_path - 1)
     .8byte (stub_index_content - embedded_files), (stub_index_content_end - stub_index_content)
     .8byte (stub_index_ct - embedded_files), (stub_index_ct_end - stub_index_ct - 1)
     .8byte 0                                      // gzip flag — raw content
     .8byte (stub_index_etag - embedded_files), (stub_index_etag_end - stub_index_etag - 1)
+ENDOBJ embedded_files
 
-embedded_count:
+OBJECT embedded_count
     .quad 1
+ENDOBJ embedded_count
 
-.global embedded_files
-.global embedded_count
 
 // ── stubs for header.S (L400/L403/L414/L500 in parse.S need this) ──
 
@@ -58,29 +58,29 @@ embedded_count:
 // reply_status is called by error paths in parse.S and file.S.
 // Our tests shouldn't hit error paths, but the linker needs the symbol.
 // We provide a stub that just returns (tests don't exercise error paths).
-reply_status:
+FUNC reply_status
     ret
+ENDFUNC reply_status
 
-.global reply_status
 
 // handle_fs_error — called by error paths in file/get code
-handle_fs_error:
+FUNC handle_fs_error
     ret
+ENDFUNC handle_fs_error
 
-.global handle_fs_error
 
 // build_header — called by get.S via reply_status
-build_header:
+FUNC build_header
     mov x0, #0
     ret
+ENDFUNC build_header
 
-.global build_header
 
 // header_buf — needed by build_header and reply_status.
 // Tests won't use it but linker needs it.
 .bss
 .align 3
-header_buf:
+OBJECT header_buf
     .skip 512
+ENDOBJ header_buf
 
-.global header_buf

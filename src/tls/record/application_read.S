@@ -45,8 +45,7 @@
 
 .text
 .align 2
-.global tls_app_data_read
-tls_app_data_read:
+FUNC tls_app_data_read
     sub     sp, sp, #48
     stp     x19, x20, [sp]
     stp     x21, x22, [sp, #16]
@@ -72,3 +71,4 @@ tls_app_data_read:
     ldp     x19, x20, [sp]
     add     sp, sp, #48
     ret
+ENDFUNC tls_app_data_read

@@ -32,8 +32,7 @@
 
 .text
 .align 2
-.global h2_connection_loop
-h2_connection_loop:
+FUNC h2_connection_loop
     stp x19, x20, [sp, #-64]!
     stp x21, x22, [sp, #16]
     stp x23, x30, [sp, #32]
@@ -264,3 +263,4 @@ h2_connection_loop:
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #64
     ret
+ENDFUNC h2_connection_loop
