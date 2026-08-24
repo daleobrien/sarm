@@ -184,7 +184,12 @@ info "applied /etc/security/limits.d/99-sarm.conf (takes effect on next login)"
 
 # ── 6. sarm ───────────────────────────────────────────────────────────
 say "Fetching sarm"
-if [ -d "$DEST/.git" ]; then
+if [ -d "$DEST" ] && [ ! -d "$DEST/.git" ] && [ -f "$DEST/Makefile" ]; then
+    # An uploaded working tree rather than a checkout — this is how
+    # quick_test_ec2.sh delivers the sources, local edits included. There
+    # is nothing to fetch; use what is there.
+    info "using the existing (non-git) tree at $DEST"
+elif [ -d "$DEST/.git" ]; then
     info "updating existing checkout at $DEST"
     git -C "$DEST" fetch --quiet origin
     git -C "$DEST" checkout --quiet "$BRANCH"
@@ -197,7 +202,7 @@ else
         SARM_REPO=git@github.com:daleobrien/sarm.git"
     fi
 fi
-info "HEAD: $(git -C "$DEST" log --oneline -1)"
+info "HEAD: $(git -C "$DEST" log --oneline -1 2>/dev/null || echo 'uploaded working tree, no git history')"
 
 # A fresh clone is missing two generated inputs, both gitignored: the TLS
 # test certificate (certs/*.pem, *.der — the Makefile's cert_data.S rule
