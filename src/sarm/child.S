@@ -99,6 +99,15 @@ Lchild_common:
     mov x0, #HTTP1_KEEPALIVE_BUDGET
     str_l x0, request_budget, x9
 
+    // Clear the path buffers for the new connection. http1_reset_request
+    // runs only between requests on one keep-alive connection, so without
+    // this nothing zeroes them at connection start -- and under `no_fork`
+    // the previous connection's path is still sitting in them, including a
+    // long one left by HTTP/2 (parse_h2_path writes the same globals and
+    // never calls that reset). It also gives the per-request reset the
+    // all-zero tail it uses to tell how much of the buffer was used.
+    bl http1_scrub_path_buffers
+
     mov x7, x22 // 0 for `child`; bytes already read for `child_with_data`
     mov x25, #0 // protocol not yet detected (0 = undetected, 1 = decided)
 

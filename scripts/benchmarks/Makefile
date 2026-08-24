@@ -197,7 +197,33 @@ _bench_bin/bench_h2_stream_find: bench_h2_stream_find.c _bench_obj/h2_h2_stream_
 	$(CC) $(CFLAGS) bench_h2_stream_find.c _bench_obj/h2_h2_stream_find.o \
 	    _bench_obj/h2_data.o $(LDFLAGS) -o $@
 
-.PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
+# ── http1_reset_request (docs/SCRIPTS.md) ──
+# Clears a dozen globals spread across parse/, http1/ and src/data.S, and
+# range_buf's own file drags in the range parser behind it, so this links
+# the whole-src archive rather than chasing each object.
+
+_bench_obj/http1_reset_request.o: ../../src/http1/reset_request.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/parse_data.o: ../../src/parse/data.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/http1_data.o: ../../src/http1/data.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/sarm_data.o: ../../src/data.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/http1_reset_stub.o: http1_reset_stub.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+bench_http1_reset_request: _bench_bin/bench_http1_reset_request
+_bench_bin/bench_http1_reset_request: bench_http1_reset_request.c _bench_obj/http1_reset_request.o _bench_obj/parse_data.o _bench_obj/http1_data.o _bench_obj/sarm_data.o _bench_obj/http1_reset_stub.o | _bench_bin
+	$(CC) $(CFLAGS) bench_http1_reset_request.c _bench_obj/http1_reset_request.o \
+	    _bench_obj/parse_data.o _bench_obj/http1_data.o _bench_obj/sarm_data.o \
+	    _bench_obj/http1_reset_stub.o $(LDFLAGS) -o $@
+
+.PHONY: clean bench_http1_reset_request bench_memcpy bench_primitives bench_aes128_encrypt \
     bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
     bench_p256_point_mul_base bench_p256_scalar_inv \
