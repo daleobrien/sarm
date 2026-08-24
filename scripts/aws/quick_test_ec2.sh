@@ -127,7 +127,7 @@ cleanup() {
             || warn "could not delete security group $SG_ID — delete it by hand"
     fi
     if [ -n "$KEY_NAME" ]; then
-        "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" 2>/dev/null \
+        "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 \
             && info "deleted key pair $KEY_NAME" || warn "could not delete key pair $KEY_NAME"
     fi
     rm -rf "$WORK"
@@ -168,11 +168,48 @@ KEY_NAME="$TAG"
     --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
 info "key pair $KEY_NAME (private key lives only in $WORK)"
 
+# Several independent sources, because a single one is a single point of
+# failure: DNS filtering, a split-tunnel VPN or a captive resolver can take
+# out one echo service while the AWS API itself still works. The 1.1.1.1
+# and OpenDNS probes need no working name resolution for the echo host.
+detect_public_ip() {
+    local raw ip
+    for src in \
+        "curl -fsS --max-time 8 https://checkip.amazonaws.com" \
+        "curl -fsS --max-time 8 https://api.ipify.org" \
+        "curl -fsS --max-time 8 https://icanhazip.com" \
+        "curl -fsS --max-time 8 --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/cdn-cgi/trace" \
+        "dig -4 +short +time=3 +tries=1 myip.opendns.com @208.67.222.222"
+    do
+        raw="$($src 2>/dev/null | tr -d '\r')" || true
+        [ -n "$raw" ] || continue
+        # cdn-cgi/trace answers key=value lines; everything else answers
+        # the bare address.
+        ip="$(printf '%s\n' "$raw" | sed -n 's/^ip=//p' | head -1)"
+        [ -n "$ip" ] || ip="$(printf '%s\n' "$raw" | head -1 | tr -d '[:space:]')"
+        if printf '%s' "$ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+            printf '%s' "$ip"; return 0
+        fi
+    done
+    return 1
+}
+
 if [ -z "$SSH_CIDR" ]; then
-    MYIP="$(curl -fsS --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')" || true
-    [ -n "${MYIP:-}" ] || die "could not determine your public IP — pass --ssh-cidr a.b.c.d/32"
+    MYIP="$(detect_public_ip || true)"
+    if [ -z "${MYIP:-}" ]; then
+        die "could not determine your public IPv4 address from any of five sources.
+        Nothing has been launched. Either pass the address explicitly:
+            $0 --ssh-cidr \$(curl -s https://checkip.amazonaws.com)/32
+        or, if this network has no stable IPv4 (IPv6-only, or a rotating
+        egress), open SSH wider — key-only auth, no password:
+            $0 --ssh-cidr 0.0.0.0/0"
+    fi
     SSH_CIDR="$MYIP/32"
 fi
+
+case "$SSH_CIDR" in
+    0.0.0.0/0) warn "port 22 will be open to the entire internet (key-only auth)" ;;
+esac
 VPC_ID="$("${AWSC[@]}" ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId')"
 [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || die "no default VPC in $REGION"
 SUBNET_ID="$("${AWSC[@]}" ec2 describe-subnets \
@@ -243,7 +280,15 @@ done
 # gets measured. Untracked build inputs (certs, error pages) are
 # regenerated on the box by setup_c6g_metal.sh.
 say "Uploading the working tree"
-git ls-files -z | tar --null -T - -czf "$WORK/sarm.tar.gz"
+# macOS bsdtar stores xattrs (com.apple.provenance and friends) as
+# LIBARCHIVE.* pax headers, and GNU tar on the instance then warns about
+# every one of them. Drop them at the source. The flags are probed rather
+# than assumed so this still works when driven from a Linux box.
+TAR_C=(tar)
+for opt in --no-xattrs --no-mac-metadata; do
+    tar "$opt" --help >/dev/null 2>&1 && TAR_C+=("$opt")
+done
+git ls-files -z | COPYFILE_DISABLE=1 "${TAR_C[@]}" --null -T - -czf "$WORK/sarm.tar.gz"
 info "$(du -h "$WORK/sarm.tar.gz" | cut -f1) of tracked files"
 scp "${SSH_OPTS[@]}" -q "$WORK/sarm.tar.gz" "$REMOTE:/tmp/sarm.tar.gz"
 rsh 'rm -rf ~/sarm && mkdir -p ~/sarm && tar -xzf /tmp/sarm.tar.gz -C ~/sarm && rm -f /tmp/sarm.tar.gz'
