@@ -424,6 +424,57 @@ static void test_h2_rst_stream(void) {
 	          h2_stream_find_wrapper(1)->state);
 }
 
+
+// h2_stream_ids (src/h2/data.S) mirrors the stream ids out of h2_streams,
+// and h2_stream_find / h2_stream_create's first pass read *only* it. If the
+// two ever drift, a live stream becomes invisible to every later lookup
+// while still occupying a slot — so pin the invariant directly rather than
+// relying on it being noticed downstream.
+static void check_id_index(const char *when) {
+	const h2_stream_t *entries = h2_streams_addr();
+	const uint32_t *ids = h2_stream_ids_addr();
+	for (int i = 0; i < H2_MAX_STREAMS; i++) {
+		if ((uint64_t)ids[i] != (uint64_t)entries[i].stream_id) {
+			_FAIL("%s: slot %d index=%u entry=%llu", when, i, ids[i],
+			      (unsigned long long)entries[i].stream_id);
+			return;
+		}
+	}
+}
+
+static void test_h2_stream_id_index(void) {
+	TEST_SUITE("h2_stream_ids mirrors h2_streams");
+	h2_conn_t conn;
+	reset_conn(&conn);
+	reset_streams();
+	check_id_index("after reset");
+
+	int64_t carry;
+
+	// filling the table forwards
+	for (int i = 0; i < H2_MAX_STREAMS; i++) {
+		h2_stream_create_wrapper(2 * i + 1, &conn, &carry);
+		check_id_index("while filling");
+	}
+	h2_stream_create_wrapper(1001, &conn, &carry);
+	ASSERT_EQ("table full of live streams → refused", 1, (int)carry);
+
+	// recycling: close two entries, then create over the older one
+	h2_streams_addr()[3].state = H2_STREAM_CLOSED;
+	h2_streams_addr()[7].state = H2_STREAM_CLOSED;
+	h2_stream_create_wrapper(2001, &conn, &carry);
+	ASSERT_EQ("recycle succeeds", 0, (int)carry);
+	check_id_index("after recycling a CLOSED slot");
+	ASSERT_EQ("recycled slot is findable", 2001,
+	          (int)h2_stream_find_wrapper(2001)->stream_id);
+	ASSERT_EQ("the recycled id stops answering", (void *)0,
+	          (void *)h2_stream_find_wrapper(7));
+
+	reset_streams();
+	check_id_index("after final reset");
+	_PASS("index tracks the table across fill, recycle and reset");
+}
+
 int main(void) {
 	test_h2_stream_table();
 	test_h2_validate_stream_id();
@@ -431,6 +482,7 @@ int main(void) {
 	test_h2_stream_transitions();
 	test_h2_end_stream_flags();
 	test_h2_rst_stream();
+	test_h2_stream_id_index();
 	test_summary();
 	return 0;
 }

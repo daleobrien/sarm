@@ -1,0 +1,11 @@
+{
+  "function": "h2_stream_find",
+  "noise_floor_pct": 1.9357,
+  "rounds": 20,
+  "median_ns": 6.3025,
+  "p10_ns": 6.284999999999999,
+  "p90_ns": 6.407000000000001,
+  "min_ns": 6.285,
+  "max_ns": 6.755,
+  "measured_on": "Apple M3 Pro, arm64, macOS"
+}

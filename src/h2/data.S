@@ -59,6 +59,33 @@ OBJECT h2_streams
     .skip H2_MAX_STREAMS * H2S_SIZE
 ENDOBJ h2_streams
 
+// h2_stream_ids — a packed lookup index over h2_streams: entry i's stream
+// id, as a u32, at h2_stream_ids + i*4. Slot i here and entry i there are
+// the same stream; a zero means the same free slot it means in the table.
+//
+// It exists because looking a stream up is the hottest thing the HTTP/2
+// path does and the table is the wrong shape for it. h2_stream_find and
+// h2_stream_create only ever compare the *id*, but an entry is H2S_SIZE
+// (32) bytes, so scanning ids in place strides across 16 cache lines to
+// read 32 useful quadwords — and on an h2c profile that scan was the top
+// two functions in the whole server (3.86% + 2.92% of cycles), nearly all
+// of it stalled on those loads rather than doing work. Packed as u32 the
+// same 32 ids are 128 bytes: two cache lines, one stride, and no entry
+// touched until a match is known.
+//
+// Wire ids are 31-bit (RFC 9113 §5.1.1, masked in h2_parse_frame_header),
+// so u32 holds every legal id with the top bit to spare.
+//
+// The duplication is the cost. Exactly two places write a stream id —
+// h2_stream_create's initialisation and h2_connection_loop's per-connection
+// reset — and both must write here too or a stream becomes invisible to
+// every later lookup. tests/unit/test_h2_streams.c asserts the two stay in
+// step; keep it that way if a third writer ever appears.
+.align 6                                  // 64 B — exactly two cache lines
+OBJECT h2_stream_ids
+    .skip H2_MAX_STREAMS * 4
+ENDOBJ h2_stream_ids
+
 // h2_frame_buf — one outgoing frame: a 9-byte frame header followed by
 // its payload (an HPACK header block or a DATA chunk). The response
 // encoders build the whole frame here and write it in one write_all, so

@@ -182,11 +182,26 @@ _bench_bin/bench_lookup_embedded: bench_lookup_embedded.c _bench_obj/file_lookup
 	$(CC) $(CFLAGS) bench_lookup_embedded.c _bench_obj/file_lookup_embedded.o \
 	    _bench_obj/util_streqn.o _bench_obj/embedded.o $(LDFLAGS) -o $@
 
+# ── h2_stream_find (docs/SCRIPTS.md) ──
+# Links h2/data.S for the real stream table and its packed id index, so
+# the scan measured is the one the server runs, over the real layout.
+
+_bench_obj/h2_h2_stream_find.o: ../../src/h2/h2_stream_find.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+_bench_obj/h2_data.o: ../../src/h2/data.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+bench_h2_stream_find: _bench_bin/bench_h2_stream_find
+_bench_bin/bench_h2_stream_find: bench_h2_stream_find.c _bench_obj/h2_h2_stream_find.o _bench_obj/h2_data.o | _bench_bin
+	$(CC) $(CFLAGS) bench_h2_stream_find.c _bench_obj/h2_h2_stream_find.o \
+	    _bench_obj/h2_data.o $(LDFLAGS) -o $@
+
 .PHONY: clean bench_memcpy bench_primitives bench_aes128_encrypt \
     bench_aes_gcm_encrypt bench_gcm_ghash_run bench_p256_reduce \
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
     bench_p256_point_mul_base bench_p256_scalar_inv \
     bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes \
-    bench_lookup_embedded
+    bench_lookup_embedded bench_h2_stream_find
 clean:
 	rm -rf _bench_obj _bench_bin

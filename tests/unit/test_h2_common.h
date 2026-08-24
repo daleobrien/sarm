@@ -418,9 +418,28 @@ static inline h2_stream_t *h2_streams_addr(void) {
 	return p;
 }
 
-// Zero the whole stream table — a fresh connection in tests.
+// h2_stream_ids — the packed u32 lookup index beside h2_streams. See the
+// h2_stream_ids block in src/h2/data.S: it is what h2_stream_find and
+// h2_stream_create's first pass actually scan, so anything that changes
+// the table out from under them has to change it too.
+static inline uint32_t *h2_stream_ids_addr(void) {
+	uint32_t *p;
+	asm volatile(
+		"adrp x0, h2_stream_ids@PAGE\n"
+		"add  x0, x0, h2_stream_ids@PAGEOFF\n"
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+// Zero the whole stream table — a fresh connection in tests. Clears the
+// lookup index with it, exactly as h2_connection_loop does per connection;
+// zeroing only the entries leaves stale ids answering lookups for streams
+// that no longer exist.
 static void reset_streams(void) {
 	memset(h2_streams_addr(), 0, H2_STREAMS_BYTES);
+	memset(h2_stream_ids_addr(), 0, H2_MAX_STREAMS * sizeof(uint32_t));
 }
 
 // h2_stream_find(id=x0) → pointer to the entry, or NULL

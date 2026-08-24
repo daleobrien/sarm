@@ -75,6 +75,15 @@ FUNC h2_connection_loop
     stp xzr, xzr, [x9], #16
     subs x10, x10, #1
     b.ne 1b
+    // h2_stream_ids mirrors the ids out of that table (see h2/data.S), so
+    // it has to be cleared with it — a stale id here would answer lookups
+    // for a stream this connection never opened.
+    adr_l x9, h2_stream_ids
+    mov x10, #(H2_MAX_STREAMS * 4) / 16
+1:
+    stp xzr, xzr, [x9], #16
+    subs x10, x10, #1
+    b.ne 1b
     // the HPACK dynamic table is also per-connection state — a previous
     // connection's entries must not leak into this one's decode
     bl h2_hpack_dyn_reset
