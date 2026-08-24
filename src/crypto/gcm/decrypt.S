@@ -40,9 +40,18 @@
 //   x0 — 1 if the tag verified (plaintext written), 0 otherwise
 //
 // Clobbered Registers:
-//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v11,
-//   v16-v25, NZCV (v22-v25 via aes128_encrypt, which holds four round
-//   keys there — this function's own live state stays in v16-v21)
+//   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
+//   v16-v28, NZCV
+//
+//   v8-v15 are deliberately untouched: AAPCS64 makes d8-d15 callee-saved,
+//   and this function has no prologue for them.
+//
+//   The GHASH stage holds its constants and subkey powers across
+//   v16-v28; the CTR section that follows it reloads the same range with
+//   the AES round-key schedule RK0..RK10 (v16-v26) and the counter-block
+//   template (v27). The two never overlap in time. The lone remaining
+//   `bl aes128_encrypt` (the tag mask, once per record) clobbers v22-v25,
+//   which is why the subkey-power load still has to come after it.
 //
 // Stack Usage:
 //   144 / 368 bytes — same layout as aes_gcm_encrypt
@@ -155,29 +164,70 @@ FUNC aes_gcm_decrypt_ctx
     cbnz    w9, .Lgcm_dec_fail
 
     // ── tag verified: P_i = C_i ⊕ E_K(J0+i), i = 1, 2, ... ──
-    gcm_inc32 x25                      // J0 -> J1
-    lsr     x28, x22, #4
-    and     x27, x22, #0xf
-    cbz     x28, .Lgcm_dec_tail
-.Lgcm_dec_blockloop:
-    mov     x0, x25
-    mov     x1, x26
-    add     x2, sp, #128               // keystream block
-    bl      aes128_encrypt
-    ld1     {v0.16b}, [x21], #16       // ciphertext block
-    add     x9, sp, #128
-    ld1     {v1.16b}, [x9]
-    eor     v0.16b, v0.16b, v1.16b
-    st1     {v0.16b}, [x24], #16       // plaintext block
-    gcm_inc32 x25
-    subs    x28, x28, #1
-    b.ne    .Lgcm_dec_blockloop
+    // Same four-way CTR schedule aes_gcm_encrypt_ctx uses, and for the
+    // same reason: this loop used to `bl aes128_encrypt` per 16-byte
+    // block, reloading all 176 bytes of round key and running a single
+    // serial AES chain each time. On a Neoverse-N1 HTTP/2-over-TLS
+    // profile that left aes128_encrypt at 4.76% of all cycles — nearly
+    // as much as the already-interleaved seal path at 7.52%, despite
+    // decrypt handling far fewer bytes per record, because a request
+    // record is a handful of blocks and every one of them was serial.
+    //
+    // Safe to reload v16-v28 here: GHASH is finished by this point (the
+    // tag comparison above was its last reader), which is exactly why
+    // the CTR section sits after the hashing in this direction and
+    // before it in the other one.
+    mov     x9, x26                    // walk the schedule, keep x26 = ctx
+    ld1     {v16.16b, v17.16b, v18.16b, v19.16b}, [x9], #64
+    ld1     {v20.16b, v21.16b, v22.16b, v23.16b}, [x9], #64
+    ld1     {v24.16b, v25.16b, v26.16b}, [x9]
+    ld1     {v27.16b}, [x25]           // counter template: J0, lane 3 spare
+    mov     w10, #2                    // inc32(J0) — first data block counter
+
+    lsr     x28, x22, #4               // full 16-byte blocks
+    and     x27, x22, #0xf             // trailing partial-block bytes
+    lsr     x11, x28, #2               // groups of four
+    cbz     x11, .Lgcm_dec_blocks1
+.Lgcm_dec_block4:
+    gcm_ctr_block v0, w10
+    add     w12, w10, #1               // 32-bit adds: wrap like inc32
+    gcm_ctr_block v1, w12
+    add     w12, w10, #2
+    gcm_ctr_block v2, w12
+    add     w12, w10, #3
+    gcm_ctr_block v3, w12
+    add     w10, w10, #4
+
+    aes_block4
+
+    ld1     {v4.16b, v5.16b, v6.16b, v7.16b}, [x21], #64
+    eor     v0.16b, v0.16b, v4.16b
+    eor     v1.16b, v1.16b, v5.16b
+    eor     v2.16b, v2.16b, v6.16b
+    eor     v3.16b, v3.16b, v7.16b
+    st1     {v0.16b, v1.16b, v2.16b, v3.16b}, [x24], #64
+    subs    x11, x11, #1
+    b.ne    .Lgcm_dec_block4
+.Lgcm_dec_blocks1:
+    ands    x11, x28, #3               // 0-3 full blocks left over
+    b.eq    .Lgcm_dec_tail
+.Lgcm_dec_block1:
+    gcm_ctr_block v0, w10
+    add     w10, w10, #1
+    aes_block1 v0
+    ld1     {v4.16b}, [x21], #16
+    eor     v0.16b, v0.16b, v4.16b
+    st1     {v0.16b}, [x24], #16
+    subs    x11, x11, #1
+    b.ne    .Lgcm_dec_block1
 .Lgcm_dec_tail:
     cbz     x27, .Lgcm_dec_ok
-    mov     x0, x25
-    mov     x1, x26
-    add     x2, sp, #128
-    bl      aes128_encrypt
+    // Partial trailing block: the keystream does go to the stack here,
+    // because the byte-wise XOR below indexes it.
+    gcm_ctr_block v0, w10
+    aes_block1 v0
+    add     x9, sp, #128
+    st1     {v0.16b}, [x9]
     mov     x28, #0
 .Lgcm_dec_tailloop:
     ldrb    w9, [x21, x28]

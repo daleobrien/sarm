@@ -67,87 +67,9 @@
 .text
 .align 2
 
-// ── inline AES-128 round scheduling for the CTR keystream ────────────
-// The round keys sit in v16-v26 (RK0..RK10) for the whole CTR section,
-// loaded once per record rather than once per block. `bl aes128_encrypt`
-// per block reloaded all 176 bytes every time: on a Neoverse-N1 profile
-// of an HTTP/2-over-TLS load that single `ld1` of the schedule was 77% of
-// aes128_encrypt's samples, and the pair was 12.3% of all cycles.
-//
-// AESE/AESMC are 2-cycle-latency, ~1-per-cycle-throughput on N1, so a
-// single serial block chain leaves most of the crypto unit idle. Four
-// independent chains fill it for very nearly the cost of one. Each
-// `aese vN` stays immediately in front of its `aesmc vN` so the
-// fused-pair optimisation in the pipeline still fires.
-
-.macro aes_round4 rk
-    aese    v0.16b, \rk\().16b
-    aesmc   v0.16b, v0.16b
-    aese    v1.16b, \rk\().16b
-    aesmc   v1.16b, v1.16b
-    aese    v2.16b, \rk\().16b
-    aesmc   v2.16b, v2.16b
-    aese    v3.16b, \rk\().16b
-    aesmc   v3.16b, v3.16b
-.endm
-
-// Nine full rounds (RK0..RK8), then round 10: AESE with RK9 and a plain
-// XOR of RK10, which is FIPS-197's final round without MixColumns.
-.macro aes_block4
-    aes_round4 v16
-    aes_round4 v17
-    aes_round4 v18
-    aes_round4 v19
-    aes_round4 v20
-    aes_round4 v21
-    aes_round4 v22
-    aes_round4 v23
-    aes_round4 v24
-    aese    v0.16b, v25.16b
-    eor     v0.16b, v0.16b, v26.16b
-    aese    v1.16b, v25.16b
-    eor     v1.16b, v1.16b, v26.16b
-    aese    v2.16b, v25.16b
-    eor     v2.16b, v2.16b, v26.16b
-    aese    v3.16b, v25.16b
-    eor     v3.16b, v3.16b, v26.16b
-.endm
-
-// One block, same schedule, for the 0-3 leftover blocks and the tail.
-.macro aes_block1 st
-    aese    \st\().16b, v16.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v17.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v18.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v19.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v20.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v21.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v22.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v23.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v24.16b
-    aesmc   \st\().16b, \st\().16b
-    aese    \st\().16b, v25.16b
-    eor     \st\().16b, \st\().16b, v26.16b
-.endm
-
-// Build one counter block: the 12-byte IV is invariant across the record
-// and stays in the template v27; only the big-endian 32-bit counter in
-// lane 3 changes. \ctr is a *w* register — the +1/+2/+3 offsets its
-// callers pass must be 32-bit adds so they wrap at 2^32 exactly like
-// SP 800-38D inc32 (and like the gcm_inc32 this replaces). A 64-bit add
-// would silently diverge on the wrapping record.
-.macro gcm_ctr_block dst, ctr
-    rev     w9, \ctr
-    mov     \dst\().16b, v27.16b
-    mov     \dst\().s[3], w9
-.endm
+// The CTR keystream macros (aes_round4 / aes_block4 / aes_block1 /
+// gcm_ctr_block) live in data.S so aes_gcm_decrypt_ctx can use the same
+// four-way schedule — see the commentary there.
 
 // ── key-pointer entry: build a one-shot context, then seal with it ──
 FUNC aes_gcm_encrypt

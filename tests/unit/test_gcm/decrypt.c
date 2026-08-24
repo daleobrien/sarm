@@ -580,11 +580,76 @@ static void test_gcm_auth_failures(void) {
     ASSERT_EQ("reference rejects modified ciphertext too", 0, fails);
 }
 
+// The four-way CTR sweep — src/crypto/gcm/decrypt.S generates the keystream
+// four blocks at a time, so correctness depends on two things the NIST
+// vectors barely exercise: how many leftover full blocks (0-3) follow the
+// last complete group of four, and how many bytes are in the partial
+// trailing block. Every ct_len in 0..300 covers that whole grid several
+// times over. Vectors come from ref_gcm_encrypt rather than a generated
+// table: test_gcm_reference_matches above already pins the reference to
+// NIST, so nothing here is a hand-transcribed expected value.
+static void test_gcm_decrypt_ctr_sweep(void) {
+    TEST_SUITE("aes_gcm_decrypt CTR length sweep (0-300 bytes)");
+    uint8_t key[16], iv[12], aad[37], pt[301], ct[301], tag[16], out[301];
+    int failures = 0, bad_len = -1;
+
+    for (int i = 0; i < 16; i++) key[i] = (uint8_t)(0x5a ^ (i * 31));
+    for (int i = 0; i < 12; i++) iv[i]  = (uint8_t)(0xc3 + i * 7);
+    for (int i = 0; i < 37; i++) aad[i] = (uint8_t)(i * 13 + 1);
+    for (int i = 0; i < 301; i++) pt[i] = (uint8_t)(i * 197 + 5);
+
+    for (uint64_t len = 0; len <= 300 && failures == 0; len++) {
+        // AAD length is varied alongside so the GHASH split moves too.
+        uint64_t aad_len = len % 38;
+        ref_gcm_encrypt(key, iv, aad, aad_len, pt, len, ct, tag);
+        memset(out, 0xa5, sizeof(out));
+        if (aes_gcm_decrypt(key, iv, aad, aad_len, ct, len, tag, out) != 1 ||
+            memcmp(out, pt, len) != 0) {
+            bad_len = (int)len;
+            failures++;
+        }
+    }
+    if (failures)
+        _FAIL("length %d: open failed or plaintext wrong", bad_len);
+    ASSERT_EQ("every length 0-300 opens to the reference plaintext", 0,
+              failures);
+}
+
+// The 4-way path loads 64 bytes of ciphertext and stores 64 bytes of
+// plaintext per iteration, so in-place operation (pt == ct) has to load
+// each group before it overwrites it. Lengths chosen to land on a group
+// boundary, a leftover block and a partial tail.
+static void test_gcm_decrypt_in_place(void) {
+    TEST_SUITE("aes_gcm_decrypt in-place (pt aliases ct)");
+    uint8_t key[16], iv[12], aad[16], pt[200], buf[200], tag[16];
+    static const uint64_t LENS[] = {64, 80, 128, 137, 192, 200};
+    int failures = 0;
+
+    for (int i = 0; i < 16; i++) key[i] = (uint8_t)(i * 17 + 3);
+    for (int i = 0; i < 12; i++) iv[i]  = (uint8_t)(i * 5 + 9);
+    for (int i = 0; i < 16; i++) aad[i] = (uint8_t)(i * 3);
+    for (int i = 0; i < 200; i++) pt[i] = (uint8_t)(i * 71 + 11);
+
+    for (size_t i = 0; i < sizeof(LENS) / sizeof(LENS[0]); i++) {
+        uint64_t len = LENS[i];
+        ref_gcm_encrypt(key, iv, aad, 16, pt, len, buf, tag);
+        if (aes_gcm_decrypt(key, iv, aad, 16, buf, len, tag, buf) != 1 ||
+            memcmp(buf, pt, len) != 0) {
+            _FAIL("in-place open wrong at length %llu",
+                  (unsigned long long)len);
+            failures++;
+        }
+    }
+    ASSERT_EQ("in-place open matches the reference plaintext", 0, failures);
+}
+
 int main(void) {
     test_gcm_decrypt_kat();
     test_gcm_independent_vectors();
     test_gcm_reference_matches();
     test_gcm_auth_failures();
+    test_gcm_decrypt_ctr_sweep();
+    test_gcm_decrypt_in_place();
     test_summary();
     return 0;
 }
