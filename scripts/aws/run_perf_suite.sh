@@ -443,8 +443,41 @@ if ! skipped micro; then
                 >>"$OUTDIR/micro.log" 2>&1 && [ -x "scripts/benchmarks/_bench_bin/bench_${bench}" ]; then
             out=$(taskset -c "${SERVER_CPUS%%-*}" "scripts/benchmarks/_bench_bin/bench_${bench}" 2>>"$OUTDIR/micro.log" || true)
             printf '%s\n' "$out" >> "$OUTDIR/micro.jsonl"
-            if command -v jq >/dev/null 2>&1 && printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
-                info "$(printf '%-26s %s ns' "$bench" "$(printf '%s' "$out" | jq -r '.runtime_ns // "?"')")"
+            # The drivers print one JSON object per measurement plus a
+            # trailing RESULT_NS= line for the optimizer. Most emit a single
+            # object; bench_primitives emits one per function/case pair. Keep
+            # only the JSON and slurp it, so a multi-object driver summarises
+            # as a table instead of one "?" per line.
+            json=$(printf '%s\n' "$out" | grep '^{' || true)
+            if command -v jq >/dev/null 2>&1 && [ -n "$json" ] &&
+               printf '%s\n' "$json" | jq -se . >/dev/null 2>&1; then
+                if [ "$(printf '%s\n' "$json" | jq -s 'length')" -eq 1 ]; then
+                    info "$(printf '%-26s %s ns' "$bench" \
+                        "$(printf '%s\n' "$json" | jq -r '.runtime_ns // "?"')")"
+                    # Breakdowns live under a per-driver key (sizes, shapes,
+                    # cases) and are either a scalar or a map of named
+                    # timings, so render whatever object-valued fields exist
+                    # rather than naming them.
+                    while IFS= read -r line; do
+                        [ -n "$line" ] && info "$line"
+                    done < <(printf '%s\n' "$json" | jq -r '
+                        to_entries[] | select(.value | type == "object")
+                        | .key as $k | .value | to_entries[]
+                        | "  \($k)/\(.key) = " +
+                          (if (.value | type) == "object"
+                           then (.value | to_entries
+                                 | map("\(.key)=\(.value)") | join("  "))
+                           else (.value | tostring) end)')
+                else
+                    info "$(printf '%-26s %s measurements' "$bench" \
+                        "$(printf '%s\n' "$json" | jq -s 'length')")"
+                    while IFS=$'\t' read -r label ns; do
+                        info "$(printf '  %-32s %12s ns' "$label" "$ns")"
+                    done < <(printf '%s\n' "$json" | jq -r '
+                        [ (.function // "?") + " " + (.case // ""),
+                          (.ns_per_call // .runtime_ns // "?" | tostring) ]
+                        | @tsv')
+                fi
             else
                 info "$(printf '%-26s %s' "$bench" "${out:-no output}")"
             fi

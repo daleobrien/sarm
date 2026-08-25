@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import statistics
 import subprocess
 import sys
@@ -49,6 +50,48 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # scripts/
 
 from benchmark import Benchmark  # noqa: E402
+
+# ARM part ids seen on the machines this repo is benchmarked on; /proc/
+# cpuinfo reports the id, not the marketing name, on aarch64 Linux.
+ARM_PARTS = {
+    0xD0C: "Neoverse-N1",
+    0xD40: "Neoverse-V1",
+    0xD49: "Neoverse-N2",
+    0xD4F: "Neoverse-V2",
+}
+
+
+def measured_on() -> str:
+    """Describe the machine taking the measurement.
+
+    This used to be the literal "Apple M3 Pro, arm64, macOS", which
+    mislabelled every noise floor recorded anywhere else — the number is
+    only meaningful next to the hardware it was measured on.
+    """
+    arch = platform.machine()
+    if sys.platform == "darwin":
+        cpu = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        return f"{cpu or 'unknown CPU'}, {arch}, macOS"
+    if sys.platform.startswith("linux"):
+        cpu, part = None, None
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, _, value = line.partition(":")
+                key, value = key.strip(), value.strip()
+                if key == "model name" and value:
+                    cpu = value
+                    break
+                if key == "CPU part" and value:
+                    part = int(value, 0)
+        except OSError:
+            pass
+        if cpu is None and part is not None:
+            cpu = ARM_PARTS.get(part, f"ARM part {part:#x}")
+        return f"{cpu or 'unknown CPU'}, {arch}, Linux"
+    return f"unknown CPU, {arch}, {sys.platform}"
 
 
 def measure(command, rounds: int) -> list[float]:
@@ -146,7 +189,7 @@ def main() -> None:
         "p90_ns": p90,
         "min_ns": lo,
         "max_ns": hi,
-        "measured_on": "Apple M3 Pro, arm64, macOS",
+        "measured_on": measured_on(),
     }
     out.write_text(json.dumps(payload, indent=2) + "\n")
     print(f"  written   : {out}")

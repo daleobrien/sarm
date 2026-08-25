@@ -34,8 +34,13 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 #include "asm_sym.h"
 
@@ -113,6 +118,55 @@ static void set_args(const uint64_t *v, size_t n) {
 // run slower, so the fastest run is the closest estimate of the real
 // cost. The spread against the slowest round is printed so a run that
 // was disturbed throughout is visible rather than silently believed.
+// The header used to name a fixed machine, which silently mislabelled
+// every run made anywhere else — the EC2 Graviton runs in perf-results/
+// are all stamped "Apple M3 Pro". Ask the machine instead.
+static void cpu_name(char *out, size_t n) {
+#if defined(__APPLE__)
+	size_t len = n;
+	if (sysctlbyname("machdep.cpu.brand_string", out, &len, NULL, 0) == 0)
+		return;
+#elif defined(__linux__)
+	// aarch64 /proc/cpuinfo has no "model name" — it reports the
+	// implementer/part ids that lscpu turns into a marketing name.
+	FILE *f = fopen("/proc/cpuinfo", "r");
+	if (f) {
+		char line[256];
+		unsigned part = 0;
+		while (fgets(line, sizeof line, f)) {
+			char *colon = strchr(line, ':');
+			if (!colon)
+				continue;
+			if (!strncmp(line, "model name", 10)) {
+				char *v = colon + 1;
+				while (*v == ' ' || *v == '\t')
+					v++;
+				v[strcspn(v, "\n")] = '\0';
+				snprintf(out, n, "%s", v);
+				fclose(f);
+				return;
+			}
+			if (!strncmp(line, "CPU part", 8))
+				part = (unsigned)strtoul(colon + 1, NULL, 0);
+		}
+		fclose(f);
+		if (part) {
+			const char *name = part == 0xd0c ? "Neoverse-N1"
+			                 : part == 0xd40 ? "Neoverse-V1"
+			                 : part == 0xd49 ? "Neoverse-N2"
+			                 : part == 0xd4f ? "Neoverse-V2"
+			                                 : NULL;
+			if (name)
+				snprintf(out, n, "%s", name);
+			else
+				snprintf(out, n, "ARM part %#x", part);
+			return;
+		}
+	}
+#endif
+	snprintf(out, n, "unknown CPU");
+}
+
 #define ROUNDS 9
 
 static int failures;
@@ -172,8 +226,10 @@ int main(void) {
 		if (per < best) best = per;
 	}
 	loop_overhead_ns = best;
-	fprintf(stderr, "\n  primitive costs (Apple M3 Pro, min of %d rounds, "
-	                "net of %.2f ns trampoline)\n\n", ROUNDS, best);
+	char cpu[128];
+	cpu_name(cpu, sizeof cpu);
+	fprintf(stderr, "\n  primitive costs (%s, min of %d rounds, "
+	                "net of %.2f ns trampoline)\n\n", cpu, ROUNDS, best);
 
 	// ── AES / GCM ────────────────────────────────────────────────
 	ARGS((uint64_t)key, (uint64_t)rk);
