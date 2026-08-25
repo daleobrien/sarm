@@ -6,7 +6,8 @@
 #
 #   1. environment    what machine, what binary, what kernel settings
 #   2. throughput     req/s, latency and concurrency over h1, h2c, h2+TLS
-#   3. worker scaling how req/s moves with --workers on a 64-core box
+#   3. worker scaling how req/s moves with --workers, swept to the host's
+#                     core count
 #   4. counters       IPC, stalls, misses, and which cpuset was busy
 #   5. profile        which functions burn the time, per protocol
 #   6. annotate       per-instruction attribution for the hottest functions
@@ -15,7 +16,7 @@
 #
 # Everything is pinned: the server on one core set, the load generator on
 # another, with the low cores left to the kernel and NIC interrupts. That
-# is what makes two runs comparable — an unpinned run on a 64-core box
+# is what makes two runs comparable — an unpinned run on a many-core box
 # measures the scheduler as much as the server.
 #
 # READ SECTIONS 2 AND 4 TOGETHER. This is a closed-loop benchmark over
@@ -99,14 +100,29 @@ CPUS=$(nproc)
 [ -z "$OUTDIR" ] && OUTDIR="$REPO/perf-results/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUTDIR"
 
-# Default pinning for a 64-core c6g.metal: leave 0-7 to the kernel and NIC
-# interrupts, give the server 8-23 and the load generator 32-47. On a
-# smaller box fall back to quarters.
+# Default pinning, derived from the core count rather than assuming a
+# 64-core c6g.metal: leave the first eighth of the machine to the kernel
+# and NIC interrupts, then give the server and the load generator a
+# quarter of the machine each, disjoint and far enough apart that they
+# do not share an L2 on any layout we run on. On a 64-core box that
+# reproduces the sets this script used to hardcode -- reserve 0-7,
+# server 8-23, load 32-47 -- and it keeps the same shape on 16, 96 or
+# 192 cores.
+RESERVED_CORES=$(( CPUS / 8 ))
+BLOCK=$(( CPUS / 4 ))
+[ "$BLOCK" -lt 1 ] && BLOCK=1
 if [ -z "$SERVER_CPUS" ]; then
-    if [ "$CPUS" -ge 64 ]; then SERVER_CPUS="8-23"; else SERVER_CPUS="$((CPUS/4))-$((CPUS/2-1))"; fi
+    s_lo=$RESERVED_CORES
+    s_hi=$(( s_lo + BLOCK - 1 ))
+    [ "$s_hi" -gt $(( CPUS - 1 )) ] && s_hi=$(( CPUS - 1 ))
+    SERVER_CPUS="$s_lo-$s_hi"
 fi
 if [ -z "$LOAD_CPUS" ]; then
-    if [ "$CPUS" -ge 64 ]; then LOAD_CPUS="32-47"; else LOAD_CPUS="$((CPUS/2))-$((CPUS-1))"; fi
+    l_lo=$(( CPUS / 2 ))
+    l_hi=$(( l_lo + BLOCK - 1 ))
+    [ "$l_hi" -gt $(( CPUS - 1 )) ] && l_hi=$(( CPUS - 1 ))
+    [ "$l_lo" -gt "$l_hi" ] && l_lo=$l_hi
+    LOAD_CPUS="$l_lo-$l_hi"
 fi
 SERVER_CORE_COUNT=$(taskset -c "$SERVER_CPUS" nproc 2>/dev/null || echo 1)
 LOAD_CORE_COUNT=$(taskset -c "$LOAD_CPUS" nproc 2>/dev/null || echo 1)
@@ -238,6 +254,13 @@ say "1. Environment"
 info "written to environment.txt"
 info "$(grep '^Model name' "$OUTDIR/environment.txt" | head -1 | sed 's/  */ /g')"
 info "server on CPUs $SERVER_CPUS, load on CPUs $LOAD_CPUS, $CPUS total"
+# Too few cores to keep the two apart: the load generator then competes
+# with the server for the cores it is measuring, so every figure below
+# is a lower bound rather than a measurement of the server.
+if [ "$SERVER_CPUS" = "$LOAD_CPUS" ]; then
+    warn "server and load share CPUs $SERVER_CPUS — only $CPUS core(s) on this host."
+    warn "Results measure the whole box, not the server. Use a larger instance."
+fi
 
 # ══ 2. throughput ═════════════════════════════════════════════════════
 # The repo's own benchmark, which is the number to quote and compare
@@ -281,14 +304,15 @@ if ! skipped throughput; then
 fi
 
 # ══ 3. worker scaling ═════════════════════════════════════════════════
-# A 64-core box is the only place this question can actually be answered.
+# A many-core box is the only place this question can actually be
+# answered; the sweep sizes itself to whatever the host reports.
 #
 # Two things this phase has to get right, and both differ from the pinned
 # phases below:
 #
 #   * rps_bench.sh starts its own server and does NOT pin it, so the
-#     ceiling here is the whole machine, not the 16 cores the profiling
-#     phases reserve. Capping the sweep at the pinned core count would
+#     ceiling here is the whole machine, not the quarter of it the
+#     profiling phases reserve. Capping the sweep at the pinned core count would
 #     stop it right where the interesting part begins.
 #   * The connection count is held FIXED across the sweep, and set high
 #     enough to keep the largest worker count busy. rps_bench.sh's own
@@ -304,9 +328,13 @@ if ! skipped scaling; then
     [ "$SCALING_CONNS" -lt 4 ] && SCALING_CONNS=4
     say "3. Worker scaling (${DURATION}s each, ${SCALING_CONNS} connections held fixed, unpinned)"
     printf 'workers\thttp1_rps\th2c_rps\th2tls_rps\th2c_sat%%\th2tls_sat%%\n' > "$OUTDIR/worker_scaling.tsv"
-    for w in 1 2 4 8 16 32 64; do
-        [ "$w" -gt "$SCALING_CONNS" ] && break
-        [ "$w" -gt "$CPUS" ] && break
+    # Powers of two up to the machine, not a fixed 1..64 list: on a box
+    # with more than 64 cores the sweep has to keep going to find the
+    # knee, and on a smaller one it has to stop early.
+    SCALING_MAX=$SCALING_CONNS
+    [ "$SCALING_MAX" -gt "$CPUS" ] && SCALING_MAX=$CPUS
+    w=1
+    while [ "$w" -le "$SCALING_MAX" ]; do
         stop_server
         out="$OUTDIR/scaling_w${w}.json"
         if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
@@ -327,6 +355,7 @@ if ! skipped scaling; then
         else
             warn "workers=$w failed"
         fi
+        w=$(( w * 2 ))
     done
     column -t "$OUTDIR/worker_scaling.tsv" 2>/dev/null | tee -a "$OUTDIR/summary.txt" || cat "$OUTDIR/worker_scaling.tsv"
 fi

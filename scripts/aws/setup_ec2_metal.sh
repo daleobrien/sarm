@@ -53,7 +53,8 @@ fi
 
 if [ "$(nproc)" -lt 32 ]; then
     warn "only $(nproc) CPUs. The measurement script pins the server and the load"
-    warn "generator to disjoint core sets and expects a 64-core c6g.metal."
+    warn "generator to disjoint core sets, so it wants room to work; a"
+    warn "c6g.metal (64 cores) is the reference box."
 fi
 
 # ── 1. apt ────────────────────────────────────────────────────────────
