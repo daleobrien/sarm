@@ -5,9 +5,9 @@
 # timestamped directory:
 #
 #   1. environment    what machine, what binary, what kernel settings
-#   2. throughput     req/s over HTTP/1.1, h2c, and HTTP/2+TLS
+#   2. throughput     req/s, latency and concurrency over h1, h2c, h2+TLS
 #   3. worker scaling how req/s moves with --workers on a 64-core box
-#   4. counters       cycles / IPC / stalls / branch and cache misses
+#   4. counters       IPC, stalls, misses, and which cpuset was busy
 #   5. profile        which functions burn the time, per protocol
 #   6. annotate       per-instruction attribution for the hottest functions
 #   7. micro          per-function benchmarks (crypto, memcpy, P-256)
@@ -18,10 +18,31 @@
 # is what makes two runs comparable — an unpinned run on a 64-core box
 # measures the scheduler as much as the server.
 #
+# READ SECTIONS 2 AND 4 TOGETHER. This is a closed-loop benchmark over
+# loopback, so it can only measure the server when the server is the
+# slowest part of the loop, and two separate things can stop that being
+# true:
+#
+#   * the concurrency ceiling (connections x max-streams). Below it,
+#     req/s is just concurrency/latency. Section 2 prints the in-flight
+#     count and its percentage of the ceiling next to every figure.
+#   * the load generator itself. h2load pays for TLS on the client side
+#     too. Section 4 counts cycles on the load cpuset over the same
+#     window as the server's and prints both as a percentage of their
+#     cycle budget, so "client-bound" is a reading rather than a guess.
+#
+# The 2026-08-25 run (perf-results/ec2-20260825-175523) was caught by
+# both at once: every protocol sat on the 160-request ceiling while
+# sarm's cores were ~85% idle, and its h2tls figure swung 607k-799k
+# between two passes of one binary. The defaults here (-m64, one client
+# thread per load core, a 3s settle) exist to keep that from recurring.
+#
 # Usage:
 #   ./scripts/aws/run_perf_suite.sh
 #   ./scripts/aws/run_perf_suite.sh --quick             # short durations
 #   ./scripts/aws/run_perf_suite.sh --duration 30 --repeat 7
+#   ./scripts/aws/run_perf_suite.sh --max-streams 128   # raise the ceiling
+#   ./scripts/aws/run_perf_suite.sh --warm-up 5         # longer settle
 #   ./scripts/aws/run_perf_suite.sh --server-cpus 8-15 --load-cpus 32-39
 #   ./scripts/aws/run_perf_suite.sh --skip micro,calls
 #
@@ -36,7 +57,14 @@ PORT=0
 DURATION=20
 REPEAT=5
 CONNECTIONS=16
-THREADS=8
+# 0 = derive from the load cpuset (one h2load thread per load core), so
+# the client is not the thing being measured. See MAX_STREAMS below.
+THREADS=0
+# Concurrency per connection. 10 x 16 conns = 160 outstanding requests
+# was the old default and it was the binding constraint on every
+# protocol -- see the header of scripts/benchmarks/rps_bench.sh.
+MAX_STREAMS=64
+WARMUP=3
 REQ_PATH=/
 SERVER_CPUS=""
 LOAD_CPUS=""
@@ -50,12 +78,14 @@ while [ $# -gt 0 ]; do
         --repeat)       REPEAT="$2"; shift ;;
         --connections)  CONNECTIONS="$2"; shift ;;
         --threads)      THREADS="$2"; shift ;;
+        --max-streams)  MAX_STREAMS="$2"; shift ;;
+        --warm-up)      WARMUP="$2"; shift ;;
         --path)         REQ_PATH="$2"; shift ;;
         --server-cpus)  SERVER_CPUS="$2"; shift ;;
         --load-cpus)    LOAD_CPUS="$2"; shift ;;
         --out)          OUTDIR="$2"; shift ;;
         --skip)         SKIP="$2"; shift ;;
-        --quick)        DURATION=5; REPEAT=2 ;;
+        --quick)        DURATION=5; REPEAT=2; WARMUP=1 ;;
         -h|--help)      sed -n '2,/^set -euo/p' "$0" | sed 's/^# \?//;$d'; exit 0 ;;
         *) echo "$0: unknown flag $1" >&2; exit 2 ;;
     esac
@@ -79,6 +109,17 @@ if [ -z "$LOAD_CPUS" ]; then
     if [ "$CPUS" -ge 64 ]; then LOAD_CPUS="32-47"; else LOAD_CPUS="$((CPUS/2))-$((CPUS-1))"; fi
 fi
 SERVER_CORE_COUNT=$(taskset -c "$SERVER_CPUS" nproc 2>/dev/null || echo 1)
+LOAD_CORE_COUNT=$(taskset -c "$LOAD_CPUS" nproc 2>/dev/null || echo 1)
+
+# One h2load thread per load core. h2load has no per-thread affinity of
+# its own, so the closest thing to pinning it 1:1 is to give it exactly
+# as many threads as the cpuset has cores and let the scheduler settle
+# one per core. With fewer threads than cores (the old hardcoded 8 on a
+# 16-core cpuset) the client had spare cores it could never use while
+# still being the bottleneck.
+[ "$THREADS" -eq 0 ] && THREADS=$LOAD_CORE_COUNT
+# h2load requires connections >= threads.
+[ "$CONNECTIONS" -lt "$THREADS" ] && THREADS=$CONNECTIONS
 
 say()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*" | tee -a "$OUTDIR/summary.txt"; }
 info() { printf '   %s\n' "$*" | tee -a "$OUTDIR/summary.txt"; }
@@ -151,14 +192,26 @@ start_load() {  # start_load <h1|h2c|h2tls> <seconds>
         h1)    taskset -c "$LOAD_CPUS" wrk -t"$THREADS" -c"$CONNECTIONS" -d"${secs}s" \
                    "http://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
         h2c)   taskset -c "$LOAD_CPUS" h2load --no-tls-proto=h2c -t"$THREADS" -c"$CONNECTIONS" \
-                   -m10 -D"$secs" "http://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
+                   -m"$MAX_STREAMS" -D"$secs" "http://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
         h2tls) taskset -c "$LOAD_CPUS" h2load -t"$THREADS" -c"$CONNECTIONS" \
-                   -m10 -D"$secs" "https://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
+                   -m"$MAX_STREAMS" -D"$secs" "https://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
     esac
     LOAD_PID=$!
-    sleep 1   # let the connections establish before measuring
+    # Let the connections establish AND the run reach steady state before
+    # measuring. The 2026-08-25 run settled for 1s against a ~2.7ms
+    # connect and a TLS handshake per connection, so setup transients
+    # landed inside the measurement window.
+    sleep "$SETTLE"
 }
 wait_load() { [ -n "$LOAD_PID" ] && wait "$LOAD_PID" 2>/dev/null || true; LOAD_PID=""; }
+
+# How long a load runs (DURATION) vs how much of it is measured: skip the
+# settle at the front and stop a second before the client does, so no
+# window ever contains connection setup or teardown.
+SETTLE=$WARMUP
+[ "$SETTLE" -lt 1 ] && SETTLE=1
+MEASURE_SECS=$(( DURATION - SETTLE - 1 ))
+[ "$MEASURE_SECS" -lt 1 ] && MEASURE_SECS=1
 
 # ══ 1. environment ════════════════════════════════════════════════════
 say "1. Environment"
@@ -190,16 +243,35 @@ info "server on CPUs $SERVER_CPUS, load on CPUs $LOAD_CPUS, $CPUS total"
 # The repo's own benchmark, which is the number to quote and compare
 # against the macOS baseline. It starts and stops its own server.
 if ! skipped throughput; then
-    say "2. Throughput (rps_bench.sh, median of $REPEAT)"
+    say "2. Throughput (rps_bench.sh, median of $REPEAT, -c$CONNECTIONS -m$MAX_STREAMS -t$THREADS)"
     stop_server
     if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
             --duration "$DURATION" --repeat "$REPEAT" \
             --connections "$CONNECTIONS" --threads "$THREADS" \
+            --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \
             --path "$REQ_PATH" --json > "$OUTDIR/throughput.json" 2> "$OUTDIR/throughput.log"; then
         if command -v jq >/dev/null 2>&1; then
-            info "HTTP/1.1     : $(jq -r '.http1_rps' "$OUTDIR/throughput.json") req/s (±$(jq -r '.http1_spread_pct' "$OUTDIR/throughput.json")%)"
-            info "HTTP/2 h2c   : $(jq -r '.http2_h2c_rps' "$OUTDIR/throughput.json") req/s (±$(jq -r '.http2_h2c_spread_pct' "$OUTDIR/throughput.json")%)"
-            info "HTTP/2 + TLS : $(jq -r '.http2_tls_rps' "$OUTDIR/throughput.json") req/s (±$(jq -r '.http2_tls_spread_pct' "$OUTDIR/throughput.json")%)"
+            # Latency and in-flight concurrency next to every req/s, so a
+            # concurrency-bound run is legible as one. See the header of
+            # rps_bench.sh for why the bare req/s number misleads.
+            jq -r '
+              [ ["HTTP/1.1    ", .http1_rps, .http1_spread_pct, .http1_latency_us,
+                 .http1_inflight, .http1_ceiling, .http1_saturation_pct],
+                ["HTTP/2 h2c  ", .http2_h2c_rps, .http2_h2c_spread_pct, .http2_h2c_latency_us,
+                 .http2_h2c_inflight, .http2_ceiling, .http2_h2c_saturation_pct],
+                ["HTTP/2 + TLS", .http2_tls_rps, .http2_tls_spread_pct, .http2_tls_latency_us,
+                 .http2_tls_inflight, .http2_ceiling, .http2_tls_saturation_pct] ][]
+              | "\(.[0]) : \(.[1]) req/s (±\(.[2])%)  \(.[3])us mean  \(.[4])/\(.[5]) in flight (\(.[6])% of ceiling)"
+            ' "$OUTDIR/throughput.json" | while IFS= read -r line; do info "$line"; done
+            # h2 only: wrk holds exactly --connections in flight always,
+            # so HTTP/1.1 reads ~100% on every run and --max-streams
+            # cannot move it. See rps_bench.sh for the full reasoning.
+            worst=$(jq -r '[.http2_h2c_saturation_pct,
+                            .http2_tls_saturation_pct] | max' "$OUTDIR/throughput.json")
+            if awk -v w="$worst" 'BEGIN{exit !(w >= 85)}' 2>/dev/null; then
+                warn "concurrency ceiling is binding (${worst}%) — raise --max-streams above $MAX_STREAMS"
+                warn "req/s at that saturation is concurrency/latency, not server capacity"
+            fi
         else
             info "$(cat "$OUTDIR/throughput.json")"
         fi
@@ -231,7 +303,7 @@ if ! skipped scaling; then
     SCALING_CONNS=$(( CPUS / 2 ))
     [ "$SCALING_CONNS" -lt 4 ] && SCALING_CONNS=4
     say "3. Worker scaling (${DURATION}s each, ${SCALING_CONNS} connections held fixed, unpinned)"
-    printf 'workers\thttp1_rps\th2c_rps\th2tls_rps\n' > "$OUTDIR/worker_scaling.tsv"
+    printf 'workers\thttp1_rps\th2c_rps\th2tls_rps\th2c_sat%%\th2tls_sat%%\n' > "$OUTDIR/worker_scaling.tsv"
     for w in 1 2 4 8 16 32 64; do
         [ "$w" -gt "$SCALING_CONNS" ] && break
         [ "$w" -gt "$CPUS" ] && break
@@ -240,12 +312,17 @@ if ! skipped scaling; then
         if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
                 --duration "$DURATION" --repeat 1 --workers "$w" \
                 --connections "$SCALING_CONNS" --threads "$THREADS" \
+                --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \
                 --path "$REQ_PATH" --json > "$out" 2>>"$OUTDIR/worker_scaling.log"; then
             if command -v jq >/dev/null 2>&1; then
-                printf '%s\t%s\t%s\t%s\n' "$w" \
+                # Saturation travels with each row: a flat rps column
+                # means nothing if every row sat on the same ceiling.
+                printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$w" \
                     "$(jq -r '.http1_rps' "$out")" \
                     "$(jq -r '.http2_h2c_rps' "$out")" \
-                    "$(jq -r '.http2_tls_rps' "$out")" >> "$OUTDIR/worker_scaling.tsv"
+                    "$(jq -r '.http2_tls_rps' "$out")" \
+                    "$(jq -r '.http2_h2c_saturation_pct' "$out")" \
+                    "$(jq -r '.http2_tls_saturation_pct' "$out")" >> "$OUTDIR/worker_scaling.tsv"
             fi
         else
             warn "workers=$w failed"
@@ -295,9 +372,34 @@ if [ -n "$PERF" ] && ! skipped counters; then
         printf '%s' "$out"
     }
 
+    # Cycles a single fully-busy core retires per second, measured rather
+    # than assumed: it is the denominator for every utilisation figure
+    # below, and neither /proc/cpuinfo (BogoMIPS is the arch timer, not
+    # the core clock) nor cpufreq (absent on Graviton) reports it.
+    CORE_HZ=""
+    calib=$($PERF stat -e cycles -x, -- \
+        taskset -c "${SERVER_CPUS%%-*}" timeout 1 \
+        bash -c 'while :; do :; done' 2>&1 | \
+        awk -F, '$1 ~ /^[0-9]+$/ && $3 ~ /^cycles/ {print $1; exit}' || true)
+    if [ -n "$calib" ] && [ "$calib" -gt 0 ] 2>/dev/null; then
+        CORE_HZ=$calib
+        info "$(printf 'core clock    : %.2f GHz (measured on a busy core)' \
+            "$(awk -v h="$CORE_HZ" 'BEGIN{print h/1e9}')")"
+    else
+        warn "could not measure core clock — utilisation percentages omitted"
+    fi
+
+    # busy_pct <cycles> <cores> — share of that cpuset's cycle budget used.
+    busy_pct() {
+        [ -z "$CORE_HZ" ] && { printf '?'; return; }
+        awk -v c="$1" -v n="$2" -v hz="$CORE_HZ" -v s="$MEASURE_SECS" \
+            'BEGIN { b = n * s * hz; printf "%.1f", (b > 0 ? c / b * 100 : 0) }'
+    }
+
     start_server auto
     for kind in h1 h2c h2tls; do
         : > "$OUTDIR/counters_${kind}.txt"
+        : > "$OUTDIR/counters_${kind}_load.txt"
         g=0
         for group in "${EVENT_GROUPS[@]}"; do
             g=$((g + 1))
@@ -307,9 +409,25 @@ if [ -n "$PERF" ] && ! skipped counters; then
             # System-wide over the server's cores only. Per-pid does not
             # work here: sarm forks a child per connection, and those
             # children are not followed by 'perf stat -p'.
+            #
+            # The load cores get their own counter over the SAME window,
+            # in parallel. Without it there is no way to tell a server at
+            # its limit from a saturated client feeding an idle server —
+            # which is exactly what the 2026-08-25 h2tls numbers turned
+            # out to be. Only the first group needs it; cycles is all the
+            # utilisation figure uses.
+            if [ "$g" -eq 1 ]; then
+                $PERF stat -a -C "$LOAD_CPUS" -e cycles,instructions \
+                    -o "$OUTDIR/counters_${kind}_load.txt" -- sleep "$MEASURE_SECS" \
+                    2>>"$OUTDIR/counters.log" &
+                load_stat_pid=$!
+            else
+                load_stat_pid=""
+            fi
             $PERF stat -a -C "$SERVER_CPUS" -e "$evs" \
-                -o "$OUTDIR/counters_${kind}_g${g}.txt" -- sleep "$((DURATION - 2))" \
+                -o "$OUTDIR/counters_${kind}_g${g}.txt" -- sleep "$MEASURE_SECS" \
                 2>>"$OUTDIR/counters.log" || warn "perf stat failed for ${kind} group ${g} — see counters.log"
+            [ -n "$load_stat_pid" ] && { wait "$load_stat_pid" 2>/dev/null || true; }
             wait_load
             if [ -f "$OUTDIR/counters_${kind}_g${g}.txt" ]; then
                 cat "$OUTDIR/counters_${kind}_g${g}.txt" >> "$OUTDIR/counters_${kind}.txt"
@@ -329,6 +447,24 @@ if [ -n "$PERF" ] && ! skipped counters; then
                 info "$(printf '%-6s IPC %.2f  (%s instructions / %s cycles)' \
                     "$kind" "$(echo "$ins $cyc" | awk '{print $1/$2}')" "$ins" "$cyc")"
             fi
+
+            # The verdict line: which side of the loopback was actually
+            # working. A server well below its budget while the load
+            # cores are near theirs means the number in section 2 is a
+            # measurement of the client, not of sarm.
+            lcyc=$(awk '/ cycles/ {gsub(/,/,"",$1); print $1; exit}' \
+                "$OUTDIR/counters_${kind}_load.txt" 2>/dev/null)
+            if [ -n "${cyc:-}" ] && [ -n "${lcyc:-}" ] && [ -n "$CORE_HZ" ]; then
+                sbusy=$(busy_pct "$cyc" "$SERVER_CORE_COUNT")
+                lbusy=$(busy_pct "$lcyc" "$LOAD_CORE_COUNT")
+                verdict=$(awk -v s="$sbusy" -v l="$lbusy" 'BEGIN {
+                    if (l >= 85 && s < 60) print "  <- CLIENT-BOUND: section 2 is not measuring sarm"
+                    else if (s >= 85)      print "  <- server saturated"
+                    else                   print "  <- neither side saturated: check the concurrency ceiling"
+                }')
+                info "$(printf '%-6s server cores %5s%% busy, load cores %5s%% busy%s' \
+                    "$kind" "$sbusy" "$lbusy" "$verdict")"
+            fi
             grep -E "frontend|backend|branch-misses|cache-misses|icache|dTLB" "$OUTDIR/counters_${kind}.txt" \
                 | sed "s/^/   ${kind}  /" | tee -a "$OUTDIR/summary.txt" || true
         fi
@@ -347,7 +483,7 @@ if [ -n "$PERF" ] && ! skipped profile; then
     for kind in h1 h2c h2tls; do
         start_load "$kind" "$DURATION"
         $PERF record -a -C "$SERVER_CPUS" -F 999 \
-            -o "$OUTDIR/perf_${kind}.data" -- sleep "$((DURATION - 2))" >/dev/null 2>&1 || true
+            -o "$OUTDIR/perf_${kind}.data" -- sleep "$MEASURE_SECS" >/dev/null 2>&1 || true
         wait_load
         [ -f "$OUTDIR/perf_${kind}.data" ] || continue
         [ "$PERF" = "sudo perf" ] && sudo chown "$(id -u):$(id -g)" "$OUTDIR/perf_${kind}.data"
@@ -578,7 +714,7 @@ if ! skipped calls && [ -n "$TOP_SYMS" ] && [ -n "$PERF" ]; then
             start_server auto
             start_load h2tls "$DURATION"
             $CALL_PERF stat -a -C "$SERVER_CPUS" -e "$EVENTS" \
-                -o "$OUTDIR/call_counts.txt" -- sleep "$((DURATION - 2))" \
+                -o "$OUTDIR/call_counts.txt" -- sleep "$MEASURE_SECS" \
                 2>>"$OUTDIR/call_counts.log" || warn "perf stat failed — see call_counts.log"
             wait_load
             stop_server
