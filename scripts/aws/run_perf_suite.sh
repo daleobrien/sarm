@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_perf_suite.sh — measure sarm on Linux/aarch64 (Graviton, c6g.metal).
+# run_perf_suite.sh — measure sarm on Linux/aarch64 (Graviton, ec2 metal).
 #
 # Runs the whole measurement stack in one pass and writes everything to a
 # timestamped directory:
@@ -127,7 +127,7 @@ warn() { printf '\033[1;33m   ! %s\033[0m\n' "$*" >&2; printf '   ! %s\n' "$*" >
 die()  { printf '\033[1;31m   FATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
 for cmd in curl taskset make nm; do
-    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found — run scripts/aws/setup_c6g_metal.sh first"
+    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' not found — run scripts/aws/setup_ec2_metal.sh first"
 done
 [ -x ./sarm ] || die "./sarm not built — run 'make production' first"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_c6g_metal.sh — provision an Ubuntu 26.04 LTS arm64 c6g.metal box
+# setup_ec2_metal.sh — provision an Ubuntu 26.04 LTS arm64 c6g.metal box
 # for measuring and optimising sarm.
 #
 # Installs the measurement toolchain, clones and builds sarm, tunes the
@@ -10,9 +10,9 @@
 # Standalone by design — it is the script you run *before* the repo
 # exists, so it can be fetched on its own:
 #
-#   curl -fsSLO https://raw.githubusercontent.com/daleobrien/sarm/main/scripts/aws/setup_c6g_metal.sh
-#   chmod +x setup_c6g_metal.sh
-#   ./setup_c6g_metal.sh
+#   curl -fsSLO https://raw.githubusercontent.com/daleobrien/sarm/main/scripts/aws/setup_ec2_metal.sh
+#   chmod +x setup_ec2_metal.sh
+#   ./setup_ec2_metal.sh
 #
 # Environment overrides:
 #   SARM_REPO=<git url>     default https://github.com/daleobrien/sarm.git
@@ -147,7 +147,7 @@ info "/opt/FlameGraph"
 # are low enough to become the bottleneck being measured.
 say "Tuning the kernel for the benchmark"
 sudo tee /etc/sysctl.d/99-sarm-bench.conf >/dev/null <<'SYSCTL'
-# Written by scripts/aws/setup_c6g_metal.sh — benchmark host tuning.
+# Written by scripts/aws/setup_ec2_metal.sh — benchmark host tuning.
 
 # Let perf read hardware events and kernel symbols without sudo on every
 # invocation. Appropriate for a dedicated benchmark box, not for a shared

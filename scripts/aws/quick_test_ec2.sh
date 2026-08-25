@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# quick_test_ec2.sh — rent a c6g.metal in Melbourne, run the quick perf
+# quick_test_ec2.sh — rent a ec2 (metal) in Melbourne, run the quick perf
 # suite on it, bring the results home, and give the machine back.
 #
 # The whole point of the exercise is the Neoverse N1 PMU, which only bare
@@ -12,9 +12,9 @@
 #
 # What it does:
 #   1. ephemeral SSH keypair + security group locked to your public IP
-#   2. launch c6g.metal on the latest Ubuntu arm64 (AMI resolved from SSM)
+#   2. launch ec2 (metal) on the latest Ubuntu arm64 (AMI resolved from SSM)
 #   3. upload this working tree (tracked files, as they are on disk)
-#   4. scripts/aws/setup_c6g_metal.sh   — toolchain, tuning, build, smoke
+#   4. scripts/aws/setup_ec2_metal.sh   — toolchain, tuning, build, smoke
 #   5. scripts/aws/run_perf_suite.sh --quick
 #   6. pull the results into ./perf-results/ec2-<timestamp>/ — this
 #      happens on the way out too, so a failed, interrupted or
@@ -421,7 +421,7 @@ done
 # ── 3. upload the working tree ────────────────────────────────────────
 # Tracked files as they are on disk, not HEAD — so a local edit is what
 # gets measured. Untracked build inputs (certs, error pages) are
-# regenerated on the box by setup_c6g_metal.sh.
+# regenerated on the box by setup_ec2_metal.sh.
 say "Uploading the working tree"
 # macOS bsdtar stores xattrs (com.apple.provenance and friends) as
 # LIBARCHIVE.* pax headers, and GNU tar on the instance then warns about
@@ -439,7 +439,7 @@ info "unpacked to ~/sarm"
 
 # ── 4. bootstrap ──────────────────────────────────────────────────────
 say "Bootstrapping (toolchain, kernel tuning, build, smoke test)"
-rsh 'chmod +x ~/sarm/scripts/aws/*.sh ~/sarm/certs/generate.sh 2>/dev/null; SARM_DIR=$HOME/sarm ~/sarm/scripts/aws/setup_c6g_metal.sh' \
+rsh 'chmod +x ~/sarm/scripts/aws/*.sh ~/sarm/certs/generate.sh 2>/dev/null; SARM_DIR=$HOME/sarm ~/sarm/scripts/aws/setup_ec2_metal.sh' \
     2>&1 | tee "$WORK/setup.log"
 
 if [ "$SKIP_SUITE" = 1 ]; then
