@@ -51,7 +51,8 @@ REPO="$PWD"
 
 # ── options ───────────────────────────────────────────────────────────
 REGION="${AWS_REGION_OVERRIDE:-ap-southeast-4}"     # Melbourne
-ITYPE="c6g.metal"  # c6g.metal (64 cores) / c8g.metal-48xl (192 cores)
+ITYPE="c6g.metal"  # 64 cores
+#ITYPE="c8g.metal-48xl"  # 192 cores
 AMI=""
 UBUNTU="26.04"          # latest release (Resolute, an LTS)
 VOLUME_GB=40
