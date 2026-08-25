@@ -19,6 +19,24 @@
 # is what makes two runs comparable — an unpinned run on a many-core box
 # measures the scheduler as much as the server.
 #
+# THE TWO SIDES ARE NOT GIVEN EQUAL CORES, and should not be. On loopback
+# the client pays for TLS, HPACK and frame handling exactly like the
+# server does, and it pays more: the 2026-08-26 run had h2load pegged at
+# 99.8% of its 16 cores while sarm sat at 24.5% of its 16 — i.e. ~16
+# client cores of work to drive ~3.9 cores of server work, a 4:1 cost
+# ratio. Splitting the box evenly therefore hands the bottleneck to the
+# client and measures h2load. The default below gives the server an
+# eighth of the machine and the client everything above it (on 64 cores:
+# reserve 0-7, server 8-15, load 16-63), which is 6:1 in cores and so
+# leaves the server the slower side by a comfortable margin.
+#
+# Because the two sides have different core counts, ABSOLUTE cycle counts
+# and busy percentages are not comparable across them. Section 4 reports
+# both sides in CORES BUSY (cycles / core clock / seconds — 3.92 of 16
+# rather than 24.5%), plus req/s per busy server core and cycles per
+# request, which are the figures that stay meaningful when the split
+# changes.
+#
 # READ SECTIONS 2 AND 4 TOGETHER. This is a closed-loop benchmark over
 # loopback, so it can only measure the server when the server is the
 # slowest part of the loop, and two separate things can stop that being
@@ -44,7 +62,8 @@
 #   ./scripts/aws/run_perf_suite.sh --duration 30 --repeat 7
 #   ./scripts/aws/run_perf_suite.sh --max-streams 128   # raise the ceiling
 #   ./scripts/aws/run_perf_suite.sh --warm-up 5         # longer settle
-#   ./scripts/aws/run_perf_suite.sh --server-cpus 8-15 --load-cpus 32-39
+#   ./scripts/aws/run_perf_suite.sh --server-cpus 8-15 --load-cpus 16-63
+#   ./scripts/aws/run_perf_suite.sh --connections 96   # more client load
 #   ./scripts/aws/run_perf_suite.sh --skip micro,calls
 #
 # Compare two builds by running it twice and diffing the summary.txt files.
@@ -57,7 +76,12 @@ REPO="$PWD"
 PORT=0
 DURATION=20
 REPEAT=5
-CONNECTIONS=16
+# 0 = derive from the load cpuset. h2load requires connections >= threads
+# and we want one client thread per load core, so a fixed 16 would cap the
+# client at 16 threads no matter how many cores it was given -- which is
+# exactly the bottleneck this layout exists to remove. See CONNECTIONS
+# below the cpuset derivation.
+CONNECTIONS=0
 # 0 = derive from the load cpuset (one h2load thread per load core), so
 # the client is not the thing being measured. See MAX_STREAMS below.
 THREADS=0
@@ -102,25 +126,32 @@ mkdir -p "$OUTDIR"
 
 # Default pinning, derived from the core count rather than assuming a
 # 64-core c6g.metal: leave the first eighth of the machine to the kernel
-# and NIC interrupts, then give the server and the load generator a
-# quarter of the machine each, disjoint and far enough apart that they
-# do not share an L2 on any layout we run on. On a 64-core box that
-# reproduces the sets this script used to hardcode -- reserve 0-7,
-# server 8-23, load 32-47 -- and it keeps the same shape on 16, 96 or
-# 192 cores.
+# and NIC interrupts, give the server the next eighth, and give the load
+# generator EVERYTHING ABOVE IT. On a 64-core box: reserve 0-7, server
+# 8-15, load 16-63, and it keeps that shape on 16, 96 or 192 cores.
+#
+# This used to be a quarter each (server 8-23, load 32-47) and that is
+# the split that produced the client-bound 2026-08-26 run: equal cores
+# for a client that costs ~4x what the server costs per request means the
+# client runs out first, and section 2 then reports h2load's ceiling
+# under sarm's name. Six load cores per server core turns that around
+# with room to spare; if the server still does not saturate, the fix is
+# fewer server cores (--server-cpus), not more.
 RESERVED_CORES=$(( CPUS / 8 ))
-BLOCK=$(( CPUS / 4 ))
-[ "$BLOCK" -lt 1 ] && BLOCK=1
+SERVER_BLOCK=$(( CPUS / 8 ))
+[ "$SERVER_BLOCK" -lt 1 ] && SERVER_BLOCK=1
 if [ -z "$SERVER_CPUS" ]; then
     s_lo=$RESERVED_CORES
-    s_hi=$(( s_lo + BLOCK - 1 ))
+    s_hi=$(( s_lo + SERVER_BLOCK - 1 ))
     [ "$s_hi" -gt $(( CPUS - 1 )) ] && s_hi=$(( CPUS - 1 ))
     SERVER_CPUS="$s_lo-$s_hi"
 fi
 if [ -z "$LOAD_CPUS" ]; then
-    l_lo=$(( CPUS / 2 ))
-    l_hi=$(( l_lo + BLOCK - 1 ))
-    [ "$l_hi" -gt $(( CPUS - 1 )) ] && l_hi=$(( CPUS - 1 ))
+    # Start after the default server block even when --server-cpus moved
+    # the server elsewhere: the two are checked for overlap below, and a
+    # list-form --server-cpus has no "last core" to read off.
+    l_lo=$(( RESERVED_CORES + SERVER_BLOCK ))
+    l_hi=$(( CPUS - 1 ))
     [ "$l_lo" -gt "$l_hi" ] && l_lo=$l_hi
     LOAD_CPUS="$l_lo-$l_hi"
 fi
@@ -134,7 +165,17 @@ LOAD_CORE_COUNT=$(taskset -c "$LOAD_CPUS" nproc 2>/dev/null || echo 1)
 # 16-core cpuset) the client had spare cores it could never use while
 # still being the bottleneck.
 [ "$THREADS" -eq 0 ] && THREADS=$LOAD_CORE_COUNT
-# h2load requires connections >= threads.
+# Connections follow the load cores for the same reason. h2load requires
+# connections >= threads, so a connection count below the thread count
+# silently throws load cores away -- and sarm serves one connection per
+# process, so this is also how many server processes the (smaller) server
+# cpuset has to multiplex, which is the point: the server is meant to be
+# the side that runs out.
+if [ "$CONNECTIONS" -eq 0 ]; then
+    CONNECTIONS=$LOAD_CORE_COUNT
+    [ "$CONNECTIONS" -lt 16 ] && CONNECTIONS=16
+fi
+# An explicit --connections below the thread count still has to be honoured.
 [ "$CONNECTIONS" -lt "$THREADS" ] && THREADS=$CONNECTIONS
 
 say()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*" | tee -a "$OUTDIR/summary.txt"; }
@@ -204,13 +245,17 @@ start_server() {  # start_server <workers>
 LOAD_PID=""
 start_load() {  # start_load <h1|h2c|h2tls> <seconds>
     local kind="$1" secs="$2"
+    # The client's own report is kept rather than discarded: it is the
+    # only req/s figure measured over the same run as the counters, and
+    # section 4 divides it by the server cores that were actually busy.
+    local log="$OUTDIR/load_${kind}.txt"
     case "$kind" in
         h1)    taskset -c "$LOAD_CPUS" wrk -t"$THREADS" -c"$CONNECTIONS" -d"${secs}s" \
-                   "http://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
+                   "http://127.0.0.1:${PORT}${REQ_PATH}" >"$log" 2>&1 & ;;
         h2c)   taskset -c "$LOAD_CPUS" h2load --no-tls-proto=h2c -t"$THREADS" -c"$CONNECTIONS" \
-                   -m"$MAX_STREAMS" -D"$secs" "http://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
+                   -m"$MAX_STREAMS" -D"$secs" "http://127.0.0.1:${PORT}${REQ_PATH}" >"$log" 2>&1 & ;;
         h2tls) taskset -c "$LOAD_CPUS" h2load -t"$THREADS" -c"$CONNECTIONS" \
-                   -m"$MAX_STREAMS" -D"$secs" "https://127.0.0.1:${PORT}${REQ_PATH}" >/dev/null 2>&1 & ;;
+                   -m"$MAX_STREAMS" -D"$secs" "https://127.0.0.1:${PORT}${REQ_PATH}" >"$log" 2>&1 & ;;
     esac
     LOAD_PID=$!
     # Let the connections establish AND the run reach steady state before
@@ -220,6 +265,17 @@ start_load() {  # start_load <h1|h2c|h2tls> <seconds>
     sleep "$SETTLE"
 }
 wait_load() { [ -n "$LOAD_PID" ] && wait "$LOAD_PID" 2>/dev/null || true; LOAD_PID=""; }
+
+# load_rps <kind> — req/s as the client reported it, or empty. wrk prints
+# "Requests/sec:  12345.67"; h2load prints "finished in 20.00s, 12345.67
+# req/s, ...". This is an average over the WHOLE run including the settle,
+# so it is a little below the steady-state rate the counters window saw.
+load_rps() {
+    awk '/Requests\/sec:/ { print $2; exit }
+         /req\/s/ { for (i = 2; i <= NF; i++)
+                        if ($i ~ /^req\/s,?$/) { r = $(i-1); gsub(/,/, "", r); print r; exit } }' \
+        "$OUTDIR/load_${1}.txt" 2>/dev/null | head -1
+}
 
 # How long a load runs (DURATION) vs how much of it is measured: skip the
 # settle at the front and stop a second before the client does, so no
@@ -242,7 +298,10 @@ say "1. Environment"
     echo "binary symbols: $(nm ./sarm 2>/dev/null | grep -c ' T ' || echo 0) global text"
     echo "stripped      : $(file ./sarm | grep -o 'not stripped\|stripped')"
     echo "server cpus   : $SERVER_CPUS ($SERVER_CORE_COUNT cores)"
-    echo "load cpus     : $LOAD_CPUS"
+    echo "load cpus     : $LOAD_CPUS ($LOAD_CORE_COUNT cores)"
+    echo "load:server   : $(awk -v l="$LOAD_CORE_COUNT" -v s="$SERVER_CORE_COUNT" \
+                              'BEGIN{printf "%.1f:1 cores", (s>0?l/s:0)}')"
+    echo "connections   : $CONNECTIONS ($THREADS client threads, -m$MAX_STREAMS)"
     echo "port          : $PORT"
     echo
     echo "── sysctl ──"
@@ -253,7 +312,9 @@ say "1. Environment"
 } > "$OUTDIR/environment.txt" 2>&1
 info "written to environment.txt"
 info "$(grep '^Model name' "$OUTDIR/environment.txt" | head -1 | sed 's/  */ /g')"
-info "server on CPUs $SERVER_CPUS, load on CPUs $LOAD_CPUS, $CPUS total"
+info "$(printf 'server on CPUs %s (%d cores), load on CPUs %s (%d cores), %d total — %.1f load cores per server core' \
+    "$SERVER_CPUS" "$SERVER_CORE_COUNT" "$LOAD_CPUS" "$LOAD_CORE_COUNT" "$CPUS" \
+    "$(awk -v l="$LOAD_CORE_COUNT" -v s="$SERVER_CORE_COUNT" 'BEGIN{print (s>0?l/s:0)}')")"
 # Too few cores to keep the two apart: the load generator then competes
 # with the server for the cores it is measuring, so every figure below
 # is a lower bound rather than a measurement of the server.
@@ -333,13 +394,18 @@ if ! skipped scaling; then
     # knee, and on a smaller one it has to stop early.
     SCALING_MAX=$SCALING_CONNS
     [ "$SCALING_MAX" -gt "$CPUS" ] && SCALING_MAX=$CPUS
+    # h2load requires connections >= threads, and this phase holds its own
+    # (smaller) connection count fixed, so the client thread count has to
+    # be clamped to it rather than inherited from the load cpuset.
+    SCALING_THREADS=$THREADS
+    [ "$SCALING_THREADS" -gt "$SCALING_CONNS" ] && SCALING_THREADS=$SCALING_CONNS
     w=1
     while [ "$w" -le "$SCALING_MAX" ]; do
         stop_server
         out="$OUTDIR/scaling_w${w}.json"
         if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
                 --duration "$DURATION" --repeat 1 --workers "$w" \
-                --connections "$SCALING_CONNS" --threads "$THREADS" \
+                --connections "$SCALING_CONNS" --threads "$SCALING_THREADS" \
                 --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \
                 --path "$REQ_PATH" --json > "$out" 2>>"$OUTDIR/worker_scaling.log"; then
             if command -v jq >/dev/null 2>&1; then
@@ -425,6 +491,16 @@ if [ -n "$PERF" ] && ! skipped counters; then
             'BEGIN { b = n * s * hz; printf "%.1f", (b > 0 ? c / b * 100 : 0) }'
     }
 
+    # cores_busy <cycles> — the same measurement expressed as whole cores
+    # of work, which is the only form comparable across two cpusets of
+    # different sizes. "24.5% of 16" and "99.8% of 16" describe a 4:1 gap
+    # that neither percentage states; 3.92 cores against 15.97 does.
+    cores_busy() {
+        [ -z "$CORE_HZ" ] && { printf '?'; return; }
+        awk -v c="$1" -v hz="$CORE_HZ" -v s="$MEASURE_SECS" \
+            'BEGIN { b = s * hz; printf "%.2f", (b > 0 ? c / b : 0) }'
+    }
+
     start_server auto
     for kind in h1 h2c h2tls; do
         : > "$OUTDIR/counters_${kind}.txt"
@@ -478,21 +554,48 @@ if [ -n "$PERF" ] && ! skipped counters; then
             fi
 
             # The verdict line: which side of the loopback was actually
-            # working. A server well below its budget while the load
-            # cores are near theirs means the number in section 2 is a
-            # measurement of the client, not of sarm.
+            # working. Load cores near their budget mean the number in
+            # section 2 is a measurement of the client, not of sarm;
+            # server headroom is reported separately and does not gate
+            # the verdict.
+            #
+            # Reported per core throughout, because the two cpusets are
+            # deliberately different sizes: cores of work on each side,
+            # the client's cost as a multiple of the server's, req/s per
+            # busy server core, and cycles per request. Only the last two
+            # survive a change of core split or instance size, so they are
+            # the figures to quote and to compare between builds.
             lcyc=$(awk '/ cycles/ {gsub(/,/,"",$1); print $1; exit}' \
                 "$OUTDIR/counters_${kind}_load.txt" 2>/dev/null)
             if [ -n "${cyc:-}" ] && [ -n "${lcyc:-}" ] && [ -n "$CORE_HZ" ]; then
                 sbusy=$(busy_pct "$cyc" "$SERVER_CORE_COUNT")
                 lbusy=$(busy_pct "$lcyc" "$LOAD_CORE_COUNT")
+                scores=$(cores_busy "$cyc")
+                lcores=$(cores_busy "$lcyc")
                 verdict=$(awk -v s="$sbusy" -v l="$lbusy" 'BEGIN {
-                    if (l >= 85 && s < 60) print "  <- CLIENT-BOUND: section 2 is not measuring sarm"
-                    else if (s >= 85)      print "  <- server saturated"
-                    else                   print "  <- neither side saturated: check the concurrency ceiling"
+                    if (l >= 85)      print "  <- CLIENT-BOUND: section 2 is not measuring sarm (give the client more cores: --load-cpus, or run it on a second instance)"
+                    else if (s >= 85) print "  <- server saturated"
+                    else              print "  <- neither side saturated: check the concurrency ceiling"
                 }')
-                info "$(printf '%-6s server cores %5s%% busy, load cores %5s%% busy%s' \
-                    "$kind" "$sbusy" "$lbusy" "$verdict")"
+                info "$(printf '%-6s sarm %s of %s cores busy (%s%%), client %s of %s cores busy (%s%%)%s' \
+                    "$kind" "$scores" "$SERVER_CORE_COUNT" "$sbusy" \
+                    "$lcores" "$LOAD_CORE_COUNT" "$lbusy" "$verdict")"
+                info "$(awk -v k="$kind" -v s="$scores" -v l="$lcores" 'BEGIN {
+                    if (s > 0) printf "%-6s cost ratio: the client burns %.2f cores per busy sarm core", k, l / s
+                    else       printf "%-6s cost ratio: server cycles too low to divide by", k
+                }')"
+                # Per-core efficiency, from the client's own req/s over the
+                # same run. Divided by cores actually busy rather than cores
+                # allocated: allocation is a knob, occupancy is the result.
+                rps=$(load_rps "$kind")
+                if [ -n "$rps" ]; then
+                    info "$(awk -v k="$kind" -v r="$rps" -v s="$scores" -v l="$lcores" \
+                             -v sc="$cyc" -v lc="$lcyc" -v secs="$MEASURE_SECS" 'BEGIN {
+                        n = r * secs
+                        printf "%-6s per core: %.0f req/s per busy sarm core", k, (s > 0 ? r / s : 0)
+                        if (n > 0) printf "  |  cycles/request: sarm %.0f, client %.0f", sc / n, lc / n
+                    }')"
+                fi
             fi
             grep -E "frontend|backend|branch-misses|cache-misses|icache|dTLB" "$OUTDIR/counters_${kind}.txt" \
                 | sed "s/^/   ${kind}  /" | tee -a "$OUTDIR/summary.txt" || true
