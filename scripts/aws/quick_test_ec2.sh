@@ -502,6 +502,26 @@ scp "${SSH_OPTS[@]}" -q "$WORK/sarm.tar.gz" "$REMOTE:/tmp/sarm.tar.gz"
 rsh 'rm -rf ~/sarm && mkdir -p ~/sarm && tar -xzf /tmp/sarm.tar.gz -C ~/sarm && rm -f /tmp/sarm.tar.gz'
 info "unpacked to ~/sarm"
 
+# ── provenance ────────────────────────────────────────────────────────
+# The tarball is `git ls-files` output, so ~/sarm has no .git and every
+# `git` call on the instance fails. run_perf_suite.sh's environment
+# section noticed that only for the commit line, which it degraded to
+# "not a checkout"; the dirty count next to it silently became `git
+# status | wc -l` over a failed command, which is 0. So EVERY run in
+# perf-results/ claims a clean tree, whatever was actually measured —
+# false where it matters most, because the whole point of uploading the
+# working tree rather than HEAD is that a local edit is what gets
+# measured. Stamp both facts here, where the .git still exists, and let
+# the suite read them back.
+{
+    echo "commit    : $(git log --oneline -1 2>/dev/null || echo 'unknown')"
+    echo "dirty     : $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') modified files"
+    git status --porcelain 2>/dev/null | sed 's/^/modified  : /'
+} > "$WORK/provenance"
+scp "${SSH_OPTS[@]}" -q "$WORK/provenance" "$REMOTE:sarm/.perf-provenance"
+info "stamped $(git log --oneline -1 2>/dev/null | cut -c1-9)$(
+    [ -n "$(git status --porcelain 2>/dev/null)" ] && echo ' (dirty)')"
+
 # ── 4. bootstrap ──────────────────────────────────────────────────────
 say "Bootstrapping (toolchain, kernel tuning, build, smoke test)"
 rsh 'chmod +x ~/sarm/scripts/aws/*.sh ~/sarm/certs/generate.sh 2>/dev/null; SARM_DIR=$HOME/sarm ~/sarm/scripts/aws/setup_ec2_metal.sh' \

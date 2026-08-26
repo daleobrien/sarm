@@ -292,8 +292,20 @@ say "1. Environment"
     echo "host          : $(uname -a)"
     echo "cpus          : $CPUS"
     echo "virt          : $(systemd-detect-virt 2>/dev/null || echo unknown)"
-    echo "git           : $(git -C "$REPO" log --oneline -1 2>/dev/null || echo 'not a checkout')"
-    echo "git dirty     : $(git -C "$REPO" status --porcelain 2>/dev/null | wc -l) modified files"
+    # A tree uploaded by quick_test_ec2.sh has no .git — it is a tarball of
+    # `git ls-files`, not a clone — so both git calls below fail there and
+    # the dirty count degrades to a confident, wrong 0. Prefer the
+    # .perf-provenance file that script stamps before uploading; fall back
+    # to real git when the suite is run inside an actual checkout.
+    if [ -r "$REPO/.perf-provenance" ]; then
+        sed 's/^/git /' "$REPO/.perf-provenance"
+    elif git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "git commit    : $(git -C "$REPO" log --oneline -1)"
+        echo "git dirty     : $(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') modified files"
+    else
+        echo "git commit    : UNKNOWN — no .git and no .perf-provenance"
+        echo "git dirty     : unknown"
+    fi
     echo "binary        : $(sha256sum ./sarm)"
     echo "binary symbols: $(nm ./sarm 2>/dev/null | grep -c ' T ' || true) global text"
     echo "stripped      : $(file ./sarm | grep -o 'not stripped\|stripped')"
