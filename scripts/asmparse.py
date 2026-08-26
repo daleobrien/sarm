@@ -74,6 +74,30 @@ DATA_DIRECTIVE_RE = re.compile(
 
 GLOBAL_RE = re.compile(r"^\.globa?l\s+([A-Za-z0-9_.$]+)")
 
+# Almost nothing in this repo declares a symbol with a bare label. ``src/defs.S``
+# wraps that in a macro -- ``FUNC h2_stream_find`` expands to ``.global
+# h2_stream_find`` followed by ``h2_stream_find:``, and ``OBJECT`` does the same
+# for data -- and src/ uses those 176 and 124 times respectively.
+#
+# Macro expansion alone does not cover it. Expansion feeds the *instruction*
+# stream, but region discovery runs over the raw lines and must: every extent,
+# doc-comment block and reported line number is a raw line index, so expanding
+# first would silently shift all of them. The two halves therefore disagreed --
+# ``bl`` targets were found in expanded text, symbols in raw text -- and the
+# index ended up holding only the 23 ``.L`` labels that some ``bl`` names
+# directly. Every ``.global`` symbol in the repo was invisible, so ``abi.py``
+# could not find a single function to check, ``regpressure.py`` reported
+# "region not found" for all of them, and ``validate_clobbers.py`` saw 12 of
+# the 200+ ``// Clobbered Registers:`` headers. The gates passed because they
+# were checking nothing.
+SYMBOL_MACRO_RE = re.compile(r"^(?:FUNC|OBJECT)\s+([A-Za-z0-9_.$]+)\s*$")
+
+
+def symbol_macro(line: str) -> str | None:
+    """Return the symbol a comment-stripped ``FUNC``/``OBJECT`` line declares."""
+    match = SYMBOL_MACRO_RE.match(line)
+    return match.group(1) if match else None
+
 # Lines that belong to a region's *header* rather than to the previous
 # region's body: the doc comment block, blank lines, and the alignment /
 # visibility directives that immediately precede the label.
@@ -492,6 +516,12 @@ def _classify_lines(text: str) -> tuple[list[tuple[int, str, bool]], set[str],
         if match:
             globals_.add(match.group(1))
             continue
+        declared = symbol_macro(line)
+        if declared:
+            # FUNC/OBJECT are both halves at once: the .global and the label.
+            globals_.add(declared)
+            labels.append((i, declared, False))
+            continue
         found = is_label(line)
         if found:
             labels.append((i, found[0], False))
@@ -513,6 +543,11 @@ def _classify_lines(text: str) -> tuple[list[tuple[int, str, bool]], set[str],
                     break
                 line = found[1]
             if not line:
+                continue
+            # The FUNC/OBJECT line is the declaration, not the content that
+            # decides code-vs-data; what follows it is. Skipping it is what
+            # lets `OBJECT h2_streams` + `.skip ...` read as data.
+            if symbol_macro(line):
                 continue
             if HEADER_DIRECTIVE_RE.match(line):
                 continue
@@ -870,3 +905,76 @@ def index_source(root: Path | None = None, *,
                 if pattern.search(line):
                     index.references.setdefault(name, set()).add(str(path))
     return index
+
+
+# ----------------------------------------------------------------------
+# Self-test
+# ----------------------------------------------------------------------
+
+def self_test() -> int:
+    """Assert the index actually sees the repository.
+
+    This exists because the failure it guards against was *silent*. Region
+    discovery ran over raw lines and did not understand ``FUNC``/``OBJECT``,
+    the macro form src/ declares every symbol with, so the index held only
+    the couple of dozen ``.L`` labels that some ``bl`` names directly. Nothing
+    crashed. ``abi.py`` answered "function not found" one function at a time,
+    ``regpressure.py`` ranked the same handful, and ``validate_clobbers.py``
+    reported "headers checked: 12" as though twelve were all there were --
+    three green gates checking almost nothing, for as long as nobody counted.
+
+    So the assertions here are about *coverage*, not correctness: a parser
+    that silently sees less than the repository contains is the specific way
+    this tooling fails.
+    """
+    index = index_source()
+    failures: list[str] = []
+
+    exported = sorted(n for n in index.all_by_name if not n.startswith("."))
+    sources = [p for p in sorted((ROOT / "src").rglob("*.S"))
+               if p.name not in SKIP_FILES]
+    declared = 0
+    for path in sources:
+        for raw in path.read_text(errors="replace").splitlines():
+            if symbol_macro(strip_comment(raw)):
+                declared += 1
+    # OBJECT declares data, which is correctly not a region, so the index is
+    # expected to hold fewer symbols than the macros declare -- but not an
+    # order of magnitude fewer.
+    if len(exported) < declared // 2:
+        failures.append(
+            f"only {len(exported)} exported regions for {declared} "
+            f"FUNC/OBJECT declarations -- region discovery is not seeing "
+            f"the tree")
+
+    # A spread across subsystems, each declared with FUNC and each reached
+    # differently, so a regression in one path does not hide behind another.
+    for name in ("h2_stream_find", "h2_process_request", "p256_reduce",
+                 "memcpy", "aes_gcm_encrypt"):
+        if name not in index.all_by_name:
+            failures.append(f"{name} missing from the index")
+
+    # OBJECT symbols are data and must stay out of the callable regions.
+    for name in ("h2_streams", "h2_stream_ids"):
+        if name in index.all_by_name:
+            failures.append(f"{name} is data but was indexed as a region")
+
+    for line in failures:
+        print(f"FAIL: {line}")
+    if failures:
+        return 1
+    print(f"OK: {len(exported)} exported regions from {declared} "
+          f"FUNC/OBJECT declarations")
+    return 0
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true",
+                        help="assert the index sees the repository")
+    args = parser.parse_args()
+    if args.self_test:
+        raise SystemExit(self_test())
+    parser.print_help()
