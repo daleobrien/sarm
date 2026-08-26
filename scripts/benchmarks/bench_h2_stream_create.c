@@ -104,7 +104,8 @@ static inline uint64_t asm_stream_create(uint64_t id, void *conn) {
         : "=r"(out)
         : "r"(id), "r"(conn)
         : "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
-          "x30", "cc", "memory");
+          "x30", "cc",
+          "v0","v1","v2","v3","v4","v5","v6","v7","v16", "memory");
     return out;
 }
 

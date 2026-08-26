@@ -16,10 +16,20 @@
 //   state, flags, window), so the old id stops answering immediately;
 //   the new id always exceeds it (§5.1.1).
 //
-//   NO PASS OVER h2_streams. The only scan left walks h2_stream_ids — the
-//   packed u32 index described in data.S — looking for the id, out of two
-//   cache lines and without touching an entry. Everything else comes from
-//   the two bitmaps beside it:
+//   NO PASS OVER h2_streams, AND NO BRANCH PER SLOT. The only scan left
+//   walks h2_stream_ids — the packed u32 index described in data.S —
+//   looking for the id, out of two cache lines and without touching an
+//   entry, and it walks it in one branchless NEON pass: eight 128-bit
+//   loads, cmeq per lane, uzp1 down to 32 bytes in slot order, orn
+//   against a slot-index table so a match contributes index+1 and a miss
+//   contributes 0xff, and uminv for the lowest match. That is the same
+//   pass h2_stream_find runs, and the reason for it here is stronger:
+//   this scan's hot case is a NEW stream, so it is a full 32-slot MISS on
+//   every request — it never exited early and never will. Lowest-match-
+//   wins preserves the old loop's first-match exit, which only shows on a
+//   zero id, where every free slot matches at once.
+//
+//   Everything else comes from the two bitmaps beside the index:
 //
 //     * the lowest free slot is the lowest clear bit of h2_stream_used,
 //       which is rbit+clz rather than a loop;
@@ -47,7 +57,15 @@
 //     idle streams
 //
 // Clobbered Registers:
-//   x0, x2-x9
+//   x0, x2-x9, v0-v7, v16
+//
+//   The vector registers come with the NEON pass. Every one of them is
+//   caller-saved under AAPCS64 (v0-v7, v16-v31); v8-v15 are avoided
+//   because only their low 64 bits are, which is a trap rather than a
+//   rule you can half-follow. h2_handle_headers is the sole caller and
+//   already declares v0-v7 and v16-v18 clobbered — it reaches
+//   h2_stream_find's identical pass through h2_validate_stream_id, and
+//   runs the HPACK decode after both — so this adds nothing to its list.
 //
 // Stack Usage:
 //   none
@@ -64,6 +82,25 @@
 .error "h2_stream_create: H2_MAX_STREAMS must fit the u64 slot bitmaps"
 .endif
 
+// Pass 1 is exactly eight 128-bit loads wide, and the slot-index table it
+// reduces against is exactly 32 bytes.
+.if H2_MAX_STREAMS != 32
+.error "h2_stream_create: the NEON id scan is hard-wired to 32 slots"
+.endif
+
+// Slot index PLUS ONE, one byte per slot — the same table h2_stream_find
+// carries, duplicated because a .L local cannot be referenced across
+// files. Plus one because the reduction is a minimum and needs a sentinel
+// above every real index: a lane that does not match contributes 0xff, so
+// slot 0 cannot contribute 0 or a miss would be indistinguishable from a
+// hit on the first slot.
+.align 4
+.Lh2_create_slot_ids:
+    .byte  1,  2,  3,  4,  5,  6,  7,  8
+    .byte  9, 10, 11, 12, 13, 14, 15, 16
+    .byte 17, 18, 19, 20, 21, 22, 23, 24
+    .byte 25, 26, 27, 28, 29, 30, 31, 32
+
 .text
 .align 2
 FUNC h2_stream_create
@@ -71,15 +108,44 @@ FUNC h2_stream_create
     mov x3, x1             // conn
 
     // ── pass 1: the packed id index — is this stream already here? ──
+    // One branchless pass over both cache lines of h2_stream_ids, the
+    // same shape h2_stream_find uses; see the comment there for why the
+    // reduction is a minimum over index+1. x4 survives it and is still
+    // h2_stream_ids for both exits below.
     adr_l x4, h2_stream_ids
-    mov x5, #0             // slot index
-.Lh2_create_scan:
-    ldr w7, [x4, x5, lsl #2]
-    cmp w7, w2
-    b.eq .Lh2_create_exists
-    add x5, x5, #1
+    dup v0.4s, w2                     // wanted id in all four lanes
+    // h2_stream_ids is .align 6, so every one of these is 16-B aligned
+    ldp q1, q2, [x4]                  // slots 0-7
+    ldp q3, q4, [x4, #32]             // slots 8-15
+    ldp q5, q6, [x4, #64]             // slots 16-23
+    ldp q7, q16, [x4, #96]            // slots 24-31
+    cmeq v1.4s, v1.4s, v0.4s
+    cmeq v2.4s, v2.4s, v0.4s
+    cmeq v3.4s, v3.4s, v0.4s
+    cmeq v4.4s, v4.4s, v0.4s
+    cmeq v5.4s, v5.4s, v0.4s
+    cmeq v6.4s, v6.4s, v0.4s
+    cmeq v7.4s, v7.4s, v0.4s
+    cmeq v16.4s, v16.4s, v0.4s
+    // Narrow 32 all-ones-or-zero lanes down to 32 bytes, in slot order.
+    // Each source lane is uniform, so taking its even half is lossless.
+    uzp1 v1.8h, v1.8h, v2.8h          // slots 0-7   as u16
+    uzp1 v3.8h, v3.8h, v4.8h          // slots 8-15  as u16
+    uzp1 v5.8h, v5.8h, v6.8h          // slots 16-23 as u16
+    uzp1 v7.8h, v7.8h, v16.8h         // slots 24-31 as u16
+    uzp1 v1.16b, v1.16b, v3.16b       // slots 0-15  as u8
+    uzp1 v5.16b, v5.16b, v7.16b       // slots 16-31 as u8
+    // Matching lane -> its slot index+1; non-matching lane -> 0xff.
+    adr_l x6, .Lh2_create_slot_ids
+    ldp q2, q4, [x6]
+    orn v1.16b, v2.16b, v1.16b
+    orn v5.16b, v4.16b, v5.16b
+    umin v1.16b, v1.16b, v5.16b       // fold the halves, still lane-wise
+    uminv b1, v1.16b                  // lowest match over all 32 slots
+    fmov w5, s1
+    sub x5, x5, #1                    // slot index, or 0xfe on no match
     cmp x5, #H2_MAX_STREAMS
-    b.lo .Lh2_create_scan
+    b.lo .Lh2_create_exists
 
     // ── not present: the lowest free slot, straight out of the bitmap ──
     // The lowest CLEAR bit of h2_stream_used: complement, reverse, count
