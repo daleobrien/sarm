@@ -426,13 +426,59 @@ static inline uint32_t *h2_stream_ids_addr(void) {
 	return p;
 }
 
+// h2_stream_used / h2_stream_closed — the slot bitmaps beside the table.
+// See the h2_stream_used block in src/h2/data.S: h2_stream_create reads
+// both instead of walking h2_streams, so a test that resets the table
+// without resetting these gets a table the allocator believes is full.
+static inline uint64_t *h2_stream_used_addr(void) {
+	uint64_t *p;
+	asm volatile(
+		ASM_ADDR_ASM("x0", "h2_stream_used")
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
+static inline uint64_t *h2_stream_closed_addr(void) {
+	uint64_t *p;
+	asm volatile(
+		ASM_ADDR_ASM("x0", "h2_stream_closed")
+		"mov  %0, x0\n"
+		: "=r"(p)
+		:: "x0");
+	return p;
+}
+
 // Zero the whole stream table — a fresh connection in tests. Clears the
-// lookup index with it, exactly as h2_connection_loop does per connection;
-// zeroing only the entries leaves stale ids answering lookups for streams
-// that no longer exist.
+// lookup index and both slot bitmaps with it, exactly as
+// h2_connection_loop does per connection; zeroing only the entries leaves
+// stale ids answering lookups for streams that no longer exist, and
+// stale bitmaps telling h2_stream_create the table is still full.
 static void reset_streams(void) {
 	memset(h2_streams_addr(), 0, H2_STREAMS_BYTES);
 	memset(h2_stream_ids_addr(), 0, H2_MAX_STREAMS * sizeof(uint32_t));
+	*h2_stream_used_addr() = 0;
+	*h2_stream_closed_addr() = 0;
+}
+
+// The invariants the bitmaps must satisfy against the table itself, for
+// tests to assert after any sequence of creates and transitions.
+static int h2_stream_bitmaps_agree(void) {
+	const h2_stream_t *entries = h2_streams_addr();
+	const uint32_t *ids = h2_stream_ids_addr();
+	uint64_t used = *h2_stream_used_addr();
+	uint64_t closed = *h2_stream_closed_addr();
+	for (int i = 0; i < H2_MAX_STREAMS; i++) {
+		uint64_t bit = 1ULL << i;
+		if (((ids[i] != 0) ? bit : 0) != (used & bit))
+			return 0;
+		int is_closed = (ids[i] != 0) &&
+		                (entries[i].state == H2_STREAM_CLOSED);
+		if ((is_closed ? bit : 0) != (closed & bit))
+			return 0;
+	}
+	return 1;
 }
 
 // h2_stream_find(id=x0) → pointer to the entry, or NULL
@@ -1032,6 +1078,22 @@ static void reset_fields(void) {
 
 // ── stream state helpers ───────────────────────────────────────
 
+// Force a stream into a state, the way the server's own writers do: the
+// entry's state field AND the h2_stream_closed bitmap beside it, which is
+// what h2_stream_create consults when it needs a slot to recycle (see the
+// h2_stream_used block in src/h2/data.S). Assigning s->state on its own
+// leaves a closed stream that nothing will ever recycle — the table then
+// refuses new streams while sitting full of finished ones, which is
+// exactly the failure this helper exists to keep out of the tests.
+static void set_stream_state(h2_stream_t *s, int64_t state) {
+	s->state = state;
+	uint64_t bit = 1ULL << (s - h2_streams_addr());
+	if (state == H2_STREAM_CLOSED)
+		*h2_stream_closed_addr() |= bit;
+	else
+		*h2_stream_closed_addr() &= ~bit;
+}
+
 static h2_stream_t *stream_in_state(h2_conn_t *conn, int64_t id,
                                     int64_t state) {
 	reset_streams();
@@ -1040,7 +1102,7 @@ static h2_stream_t *stream_in_state(h2_conn_t *conn, int64_t id,
 	h2_stream_t *s = h2_stream_create_wrapper(id, conn, &carry);
 	if (s == NULL)
 		return NULL;
-	s->state = state;
+	set_stream_state(s, state);
 	return s;
 }
 

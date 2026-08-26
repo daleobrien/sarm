@@ -440,6 +440,16 @@ static void check_id_index(const char *when) {
 			return;
 		}
 	}
+	// The slot bitmaps are the third copy of the same truth and drift the
+	// same way: h2_stream_create reads them instead of walking the table,
+	// so a stale bit either hides a free slot or offers a live stream up
+	// for recycling. Same reasoning as the index above — pin it here.
+	if (!h2_stream_bitmaps_agree()) {
+		_FAIL("%s: h2_stream_used/h2_stream_closed disagree with the table "
+		      "(used=%llx closed=%llx)", when,
+		      (unsigned long long)*h2_stream_used_addr(),
+		      (unsigned long long)*h2_stream_closed_addr());
+	}
 }
 
 static void test_h2_stream_id_index(void) {
@@ -460,8 +470,8 @@ static void test_h2_stream_id_index(void) {
 	ASSERT_EQ("table full of live streams → refused", 1, (int)carry);
 
 	// recycling: close two entries, then create over the older one
-	h2_streams_addr()[3].state = H2_STREAM_CLOSED;
-	h2_streams_addr()[7].state = H2_STREAM_CLOSED;
+	set_stream_state(&h2_streams_addr()[3], H2_STREAM_CLOSED);
+	set_stream_state(&h2_streams_addr()[7], H2_STREAM_CLOSED);
 	h2_stream_create_wrapper(2001, &conn, &carry);
 	ASSERT_EQ("recycle succeeds", 0, (int)carry);
 	check_id_index("after recycling a CLOSED slot");
@@ -475,6 +485,81 @@ static void test_h2_stream_id_index(void) {
 	_PASS("index tracks the table across fill, recycle and reset");
 }
 
+// The bitmaps are only as good as the writers that maintain them, and the
+// one that matters most is h2_stream_event: every RST_STREAM and every
+// END_STREAM runs through it, so if it stopped following transitions the
+// table would fill with closed streams that h2_stream_create refuses to
+// recycle — a connection that serves 32 requests and then rejects every
+// one after. Drive the real state machine and check the bitmaps track it.
+static void test_h2_stream_bitmaps(void) {
+	TEST_SUITE("h2_stream_used / h2_stream_closed track the table");
+
+	h2_conn_t conn;
+	reset_conn(&conn);
+	reset_streams();
+	int64_t carry;
+
+	ASSERT_EQ("empty table → no slots used", 0,
+	          (int)*h2_stream_used_addr());
+	ASSERT_EQ("empty table → nothing closed", 0,
+	          (int)*h2_stream_closed_addr());
+
+	h2_stream_create_wrapper(1, &conn, &carry);
+	ASSERT_EQ("creating stream 1 marks slot 0 used", 1,
+	          (int)*h2_stream_used_addr());
+	ASSERT_EQ("a fresh stream is not a recycle candidate", 0,
+	          (int)*h2_stream_closed_addr());
+
+	h2_stream_create_wrapper(3, &conn, &carry);
+	ASSERT_EQ("creating stream 3 marks slot 1 used", 3,
+	          (int)*h2_stream_used_addr());
+
+	// the real state machine: HEADERS+END_STREAM then RST_STREAM closes it
+	h2_stream_t *s1 = h2_stream_find_wrapper(1);
+	h2_stream_event_wrapper(s1, H2_EVENT_RECV_HEADERS, &carry);
+	ASSERT_EQ("OPEN is not closed", 0, (int)*h2_stream_closed_addr());
+	h2_stream_event_wrapper(s1, H2_EVENT_RECV_RST_STREAM, &carry);
+	ASSERT_EQ("stream 1 is CLOSED", H2_STREAM_CLOSED, s1->state);
+	ASSERT_EQ("h2_stream_event set slot 0's closed bit", 1,
+	          (int)*h2_stream_closed_addr());
+	ASSERT_EQ("bitmaps agree with the table", 1, h2_stream_bitmaps_agree());
+
+	// filling the table and then closing everything must leave every slot
+	// recyclable — this is the case that regressed into REFUSED_STREAM
+	reset_streams();
+	reset_conn(&conn);
+	for (int64_t id = 1; id < 2 * H2_MAX_STREAMS; id += 2)
+		h2_stream_create_wrapper(id, &conn, &carry);
+	ASSERT_EQ("full table → every slot used", -1,
+	          (int)(int32_t)*h2_stream_used_addr());
+	h2_stream_create_wrapper(1001, &conn, &carry);
+	ASSERT_EQ("full table of live streams refuses", 1, (int)carry);
+
+	for (int64_t id = 1; id < 2 * H2_MAX_STREAMS; id += 2) {
+		h2_stream_t *s = h2_stream_find_wrapper(id);
+		h2_stream_event_wrapper(s, H2_EVENT_RECV_HEADERS, &carry);
+		h2_stream_event_wrapper(s, H2_EVENT_RECV_RST_STREAM, &carry);
+	}
+	ASSERT_EQ("all closed via the state machine", -1,
+	          (int)(int32_t)*h2_stream_closed_addr());
+	ASSERT_EQ("bitmaps agree with the table", 1, h2_stream_bitmaps_agree());
+
+	// recycling now takes the OLDEST closed stream — smallest id, slot 0
+	h2_stream_t *recycled = h2_stream_create_wrapper(1001, &conn, &carry);
+	ASSERT_EQ("recycle succeeds once slots are closed", 0, (int)carry);
+	ASSERT_EQ("the oldest closed stream (id 1, slot 0) was taken",
+	          (int64_t)h2_streams_addr(), (int64_t)recycled);
+	ASSERT_EQ("the recycled slot is no longer a candidate", -2,
+	          (int)(int32_t)*h2_stream_closed_addr());
+	ASSERT_EQ("id 1 stops answering", 0,
+	          (int64_t)h2_stream_find_wrapper(1));
+	ASSERT_EQ("bitmaps agree with the table", 1, h2_stream_bitmaps_agree());
+
+	reset_streams();
+	ASSERT_EQ("reset clears used", 0, (int)*h2_stream_used_addr());
+	ASSERT_EQ("reset clears closed", 0, (int)*h2_stream_closed_addr());
+}
+
 int main(void) {
 	test_h2_stream_table();
 	test_h2_validate_stream_id();
@@ -483,6 +568,7 @@ int main(void) {
 	test_h2_end_stream_flags();
 	test_h2_rst_stream();
 	test_h2_stream_id_index();
+	test_h2_stream_bitmaps();
 	test_summary();
 	return 0;
 }

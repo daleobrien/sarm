@@ -160,7 +160,7 @@ static void test_h2_stream_recycle(void) {
 	for (int64_t id = 1; id <= 63; id += 2) {
 		h2_stream_t *s = h2_stream_find_wrapper(id);
 		if (s != NULL)
-			s->state = H2_STREAM_CLOSED;
+			set_stream_state(s, H2_STREAM_CLOSED);
 	}
 	h2_stream_t *s = h2_stream_create_wrapper(65, &conn, &carry);
 	ASSERT_EQ("recycled create succeeds", 0, carry);

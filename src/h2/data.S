@@ -14,6 +14,8 @@
 //   h2_conn        — per-connection state (RFC 9113 §6.5.2 defaults)
 //   h2_frame_header — scratch for the parsed 9-byte frame header
 //   h2_streams     — the fixed stream table (§5.1)
+//   h2_stream_used   — occupancy bitmap over h2_streams
+//   h2_stream_closed — CLOSED-state bitmap over h2_streams
 //   h2_frame_buf   — one outgoing frame (header + payload)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -85,6 +87,46 @@ ENDOBJ h2_streams
 OBJECT h2_stream_ids
     .skip H2_MAX_STREAMS * 4
 ENDOBJ h2_stream_ids
+
+// h2_stream_used / h2_stream_closed — two bitmaps over h2_streams, bit i
+// describing entry i. `used` is set while the entry holds a stream at all
+// (equivalently, while h2_stream_ids[i] != 0); `closed` is set while that
+// stream's state is H2_STREAM_CLOSED.
+//
+// They exist because h2_stream_create's two questions — "where is the
+// lowest free slot" and "which CLOSED entry is oldest" — were both answered
+// by walking the table, and under a client that keeps the table full (any
+// client whose SETTINGS_MAX_CONCURRENT_STREAMS request meets our
+// MAX_CONCURRENT_STREAMS of 32) the second walk ran on EVERY request. It
+// read two fields per entry at a 32-byte stride, so 32 iterations touched
+// all 16 cache lines of h2_streams to collect 32 useful quadwords, and on
+// a Graviton h2c profile h2_stream_create was the hottest function in the
+// server at 5.93% of cycles — ~59% of its own samples inside that second
+// walk (perf-results/ec2-20260826-203401).
+//
+// With the bitmaps neither walk happens. The free slot is the lowest clear
+// bit of `used` — rbit+clz, no loop. The recycle pass visits only the
+// entries that are actually CLOSED, one per iteration via the classic
+// x & (x-1), and reads their ids from the packed h2_stream_ids index (two
+// cache lines) rather than from the entries themselves.
+//
+// A u64 holds a bit per entry with room to spare; h2_stream_create asserts
+// H2_MAX_STREAMS fits. THE COST IS THE SAME AS h2_stream_ids': a writer
+// that updates an entry without updating these makes a slot invisible to
+// allocation or unrecyclable forever. The writers are:
+//   h2_stream_create     — sets `used`, clears `closed`, on init
+//   h2_stream_event      — follows every state transition
+//   h2_process_request   — sets `closed` when a response is fully sent
+//   h2_connection_loop   — clears both, per connection, with the table
+// tests/unit/test_h2_streams.c asserts they stay in step with the table.
+.align 3
+OBJECT h2_stream_used
+    .quad 0
+ENDOBJ h2_stream_used
+
+OBJECT h2_stream_closed
+    .quad 0
+ENDOBJ h2_stream_closed
 
 // h2_frame_buf — one outgoing frame: a 9-byte frame header followed by
 // its payload (an HPACK header block or a DATA chunk). The response

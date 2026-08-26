@@ -84,6 +84,11 @@ FUNC h2_connection_loop
     stp xzr, xzr, [x9], #16
     subs x10, x10, #1
     b.ne 1b
+    // The slot bitmaps describe the same table and go the same way: left
+    // set, they would tell the next connection its table was already full
+    // of this one's streams, and hand it their entries to recycle.
+    str_l xzr, h2_stream_used, x9
+    str_l xzr, h2_stream_closed, x9
     // the HPACK dynamic table is also per-connection state — a previous
     // connection's entries must not leak into this one's decode
     bl h2_hpack_dyn_reset

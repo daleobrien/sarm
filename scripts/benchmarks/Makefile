@@ -189,12 +189,24 @@ _bench_bin/bench_lookup_embedded: bench_lookup_embedded.c _bench_obj/file_lookup
 _bench_obj/h2_h2_stream_find.o: ../../src/h2/h2_stream_find.S | _bench_obj
 	$(AS) $(ASFLAGS) -c $< -o $@
 
+_bench_obj/h2_h2_stream_create.o: ../../src/h2/h2_stream_create.S | _bench_obj
+	$(AS) $(ASFLAGS) -c $< -o $@
+
 _bench_obj/h2_data.o: ../../src/h2/data.S | _bench_obj
 	$(AS) $(ASFLAGS) -c $< -o $@
 
 bench_h2_stream_find: _bench_bin/bench_h2_stream_find
 _bench_bin/bench_h2_stream_find: bench_h2_stream_find.c _bench_obj/h2_h2_stream_find.o _bench_obj/h2_data.o | _bench_bin
 	$(CC) $(CFLAGS) bench_h2_stream_find.c _bench_obj/h2_h2_stream_find.o \
+	    _bench_obj/h2_data.o $(LDFLAGS) -o $@
+
+# ── h2_stream_create (docs/SCRIPTS.md) ──
+# Links only the function and the data it walks: h2_stream_create touches
+# h2_streams, h2_stream_ids and the two slot bitmaps, all of which live in
+# h2/data.S, and calls nothing.
+bench_h2_stream_create: _bench_bin/bench_h2_stream_create
+_bench_bin/bench_h2_stream_create: bench_h2_stream_create.c _bench_obj/h2_h2_stream_create.o _bench_obj/h2_data.o | _bench_bin
+	$(CC) $(CFLAGS) bench_h2_stream_create.c _bench_obj/h2_h2_stream_create.o \
 	    _bench_obj/h2_data.o $(LDFLAGS) -o $@
 
 # ── http1_reset_request (docs/SCRIPTS.md) ──
@@ -228,6 +240,6 @@ _bench_bin/bench_http1_reset_request: bench_http1_reset_request.c _bench_obj/htt
     bench_p256_fe_mul bench_p256_bn_mul bench_p256_point_mul \
     bench_p256_point_mul_base bench_p256_scalar_inv \
     bench_p256_ecdsa_sign_with_k bench_crypto_random_bytes \
-    bench_lookup_embedded bench_h2_stream_find
+    bench_lookup_embedded bench_h2_stream_find bench_h2_stream_create
 clean:
 	rm -rf _bench_obj _bench_bin

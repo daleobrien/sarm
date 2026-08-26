@@ -28,6 +28,11 @@
 //   none
 // ─────────────────────────────────────────────────────────────────────
 
+// The bitmap update below turns an entry pointer back into a slot index.
+.if H2S_SIZE != 32
+.error "h2_stream_event: H2S_SIZE must be 32 for the lsr #5 index recovery"
+.endif
+
 rodata
 // receive-side stream transitions (§5.1) — rows are states, columns are
 // H2_EVENT_* in order [RECV_HEADERS, RECV_DATA, RECV_END_STREAM,
@@ -59,6 +64,25 @@ FUNC h2_stream_event
     cmp w4, #0xff
     b.eq .Lh2_stream_invalid
     str x4, [x0, #H2S_STATE]
+    // h2_stream_closed mirrors this field (see the h2_stream_used block in
+    // h2/data.S): a transition that left it stale would either hide a
+    // finished stream from h2_stream_create's recycle pass — eventually
+    // refusing streams on a table full of closed ones — or offer a LIVE
+    // stream up for recycling, which would answer a later frame with
+    // someone else's entry. The slot index is the entry's offset into
+    // h2_streams; the update is branchless so the common non-CLOSED
+    // transition costs no misprediction.
+    adr_l x2, h2_streams
+    sub x2, x0, x2
+    lsr x2, x2, #5                    // offset / H2S_SIZE
+    mov x3, #1
+    lsl x3, x3, x2
+    ldr_l x2, h2_stream_closed, x9
+    cmp x4, #H2_STREAM_CLOSED
+    orr x4, x2, x3                    // ... if it closed
+    bic x2, x2, x3                    // ... if it did not
+    csel x2, x4, x2, eq
+    str_l x2, h2_stream_closed, x9
     cmn xzr, xzr
     mov x0, #0
     ret

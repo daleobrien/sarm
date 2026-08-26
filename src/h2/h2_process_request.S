@@ -245,6 +245,17 @@ FUNC h2_process_request
     cbz x0, 1f
     mov x1, #H2_STREAM_CLOSED
     str x1, [x0, #H2S_STATE]
+    // and the CLOSED bitmap with it — this is the transition that makes
+    // the slot recyclable, so h2_stream_create never sees it otherwise.
+    // See the h2_stream_used block in h2/data.S.
+    adr_l x2, h2_streams
+    sub x2, x0, x2
+    lsr x2, x2, #5                    // offset / H2S_SIZE
+    mov x3, #1
+    lsl x3, x3, x2
+    ldr_l x2, h2_stream_closed, x9
+    orr x2, x2, x3
+    str_l x2, h2_stream_closed, x9
     ldr x1, [x0, #H2S_FLAGS]
     and x1, x1, #~H2S_FLAG_SERVING
     str x1, [x0, #H2S_FLAGS]
