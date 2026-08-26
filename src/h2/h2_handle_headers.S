@@ -41,8 +41,13 @@
 //   x0 — 0 on success, error code on failure; carry set on error
 //
 // Clobbered Registers:
-//   x0-x12, x14-x16, v0-v5, v16-v18, x19-x22 (saved/restored),
+//   x0-x12, x14-x16, v0-v7, v16-v18, x19-x22 (saved/restored),
 //   x30 (saved/restored)
+//
+//   v6-v7 join the list with h2_stream_find's NEON scan, reached here
+//   through h2_validate_stream_id. This header is one of the few in h2/
+//   that enumerates vector registers at all, so it is claiming to be
+//   complete and has to stay that way.
 //
 // Stack Usage:
 //   48 bytes: stp x19, x20, [sp, #-48]!; stp x21, x22, [sp, #16];

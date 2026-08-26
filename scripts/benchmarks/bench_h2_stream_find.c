@@ -55,7 +55,8 @@ static inline uint64_t asm_stream_find(uint64_t id) {
         "mov %0, x0\n"
         : "=r"(out)
         : "r"(id)
-        : "x0", "x2", "x3", "x9", "x30", "cc", "memory");
+        : "x0", "x2", "x3", "x9", "x30", "cc",
+          "v0","v1","v2","v3","v4","v5","v6","v7","v16", "memory");
     return out;
 }
 
@@ -107,6 +108,34 @@ static double bench_id(uint64_t id, int iterations, int cold) {
     return best;
 }
 
+// A lookup whose target rotates across all 32 slots. Under a client that
+// keeps the table full, h2_stream_create recycles the oldest CLOSED slot,
+// so a hit lands at a different depth every request rather than sitting
+// at one — hit_first and hit_last are the two extremes of that, and this
+// is the middle.
+//
+// RESULT_NS stays on `miss`, which is not laziness: of the two
+// h2_stream_find calls a request still makes, the one inside
+// h2_validate_stream_id is a miss every single time, because a brand-new
+// stream id is by definition not in the table yet. A miss is a full
+// 32-slot scan, so it is both the worst case and the common one, and the
+// paired .noise.json was measured against it.
+static double bench_rotating(int iterations) {
+    double best = 1e18;
+    for (int r = 0; r < 7; r++) {
+        uint64_t t0 = now_ns();
+        uint64_t sink = 0;
+        for (int i = 0; i < iterations; i++)
+            sink += asm_stream_find((uint64_t)(2 * (i & (H2_MAX_STREAMS - 1)) + 1));
+        uint64_t t1 = now_ns();
+        __asm__ volatile("" :: "r"(sink));
+        double ns = (double)(t1 - t0) / (double)iterations;
+        if (ns < best)
+            best = ns;
+    }
+    return best;
+}
+
 int main(void) {
     fill_table();
     const int iters = 200000;
@@ -115,12 +144,13 @@ int main(void) {
     double last = bench_id(2 * H2_MAX_STREAMS - 1, iters, 0);  // slot 31
     double miss = bench_id(999999, iters, 0);              // full scan
     double miss_cold = bench_id(999999, iters / 20, 1);    // full scan, cold
+    double rotating = bench_rotating(iters);               // the real shape
 
     printf("{\"function\":\"h2_stream_find\",\"cases\":{"
            "\"hit_first\":%.3f,\"hit_last\":%.3f,"
-           "\"miss\":%.3f,\"miss_cold\":%.3f},"
+           "\"miss\":%.3f,\"miss_cold\":%.3f,\"rotating\":%.3f},"
            "\"runtime_ns\":%.3f}\n",
-           first, last, miss, miss_cold, miss);
+           first, last, miss, miss_cold, rotating, miss);
     printf("RESULT_NS=%.3f\n", miss);
     return 0;
 }
