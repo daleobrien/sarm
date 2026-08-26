@@ -210,6 +210,23 @@ extern int64_t embedded_gzip     __asm__("embedded_gzip");
 extern int64_t embedded_etag     __asm__("embedded_etag");
 extern int64_t embedded_etag_len __asm__("embedded_etag_len");
 
+// ── vector clobbers ────────────────────────────────────────────────
+// Every AAPCS64 caller-saved vector register. v8-v15 are absent because
+// only their low 64 bits are callee-saved, which is a trap rather than a
+// rule a clobber list can half-state; nothing here uses them.
+//
+// Wrappers below reach assembly that uses NEON — memcpy, the HPACK
+// decode, and h2_stream_find's 32-lane scan — so leaving these out tells
+// the compiler a lie it is entitled to act on. It stayed invisible only
+// while the register allocator happened never to keep a vector live
+// across one of these calls; when h2_stream_find became NEON it stopped
+// happening to, and test_h2_mux took a SIGSEGV with no output at all.
+// Spend the codegen and state the truth.
+#define H2_VCLOBBER \
+	"v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", \
+	"v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", \
+	"v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31",
+
 static inline const request_t *request_addr(void) {
 	request_t *p;
 	asm volatile(
@@ -285,7 +302,7 @@ static inline void h2_parse_wrapper(const uint8_t *wire, h2_frame_header_t *hdr)
 		"mov x1, %1\n"
 		"bl h2_parse_frame_header\n"
 		:: "r"(wire), "r"(hdr)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", H2_VCLOBBER "memory");
 }
 
 // h2_validate_frame(hdr=x0, conn=x1) → (rc=x0, carry)
@@ -301,7 +318,7 @@ static inline int64_t h2_validate_wrapper(h2_frame_header_t *hdr,
 		"cset %1, cs\n"
 		: "=r"(rc), "=r"(carry)
 		: "r"(hdr), "r"(conn)
-		: "x0", "x1", "x2", "x3", "x4", "memory");
+		: "x0", "x1", "x2", "x3", "x4", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -323,7 +340,7 @@ static inline int64_t h2_dispatch_wrapper(h2_frame_header_t *hdr,
 		: "r"(hdr), "r"(payload), "r"(conn)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
 		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
-		  "x30", "memory");
+		  "x30", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -368,7 +385,7 @@ static inline int64_t connection_mode_value(void) {
 		ASM_ADDR_ASM("x0", "connection_mode")
 		"ldr  %0, [x0]\n"
 		: "=r"(v)
-		:: "x0", "memory");
+		:: "x0", H2_VCLOBBER "memory");
 	return v;
 }
 
@@ -377,7 +394,7 @@ static inline void set_connection_mode(int64_t mode) {
 		ASM_ADDR_ASM("x0", "connection_mode")
 		"str  %0, [x0]\n"
 		:: "r"(mode)
-		: "x0", "memory");
+		: "x0", H2_VCLOBBER "memory");
 }
 
 static inline const uint8_t *h2_preface_addr(void) {
@@ -490,7 +507,10 @@ static inline h2_stream_t *h2_stream_find_wrapper(int64_t id) {
 		"mov %0, x0\n"
 		: "=r"(p)
 		: "r"(id)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+		// v-regs and x30: h2_stream_find's scan is NEON now, and the bl
+		// itself has always eaten x30 — see src/h2/h2_stream_find.S.
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "x30", "cc",
+		  H2_VCLOBBER "memory");
 	return p;
 }
 
@@ -509,7 +529,7 @@ static inline h2_stream_t *h2_stream_create_wrapper(int64_t id, h2_conn_t *conn,
 		: "=r"(p), "=r"(carry)
 		: "r"(id), "r"(conn)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-		  "x8", "x9", "memory");
+		  "x8", "x9", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return p;
 }
@@ -528,7 +548,7 @@ static inline int64_t h2_validate_stream_id_wrapper(h2_frame_header_t *hdr,
 		"cset %1, cs\n"
 		: "=r"(rc), "=r"(carry)
 		: "r"(hdr), "r"(conn)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -546,7 +566,7 @@ static inline int64_t h2_stream_event_wrapper(h2_stream_t *s, int64_t event,
 		"cset %1, cs\n"
 		: "=r"(rc), "=r"(carry)
 		: "r"(s), "r"(event)
-		: "x0", "x1", "x2", "x3", "x4", "x9", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x9", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -570,7 +590,7 @@ static inline int64_t h2_verify_preface_wrapper(int64_t fd, uint8_t *buf,
 		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
 		  "x16", "x17",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
-		  "memory");
+		  H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -590,7 +610,7 @@ static inline int64_t h2_send_settings_wrapper(int64_t fd, int64_t *carry_out) {
 		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
 		  "x16", "x17",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
-		  "memory");
+		  H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -623,7 +643,7 @@ static inline int64_t h2_hpack_decode_int_end_wrapper(const uint8_t *p, int64_t 
 		"cset %2, cs\n"
 		: "=r"(value), "=r"(consumed), "=r"(carry)
 		: "r"(p), "r"(n), "r"(end)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", H2_VCLOBBER "memory");
 	*consumed_out = consumed;
 	*carry_out = carry;
 	return value;
@@ -656,7 +676,7 @@ static inline const uint8_t *h2_hpack_decode_string_end_wrapper(const uint8_t *p
 		: "=r"(s), "=r"(len), "=r"(consumed), "=r"(carry)
 		: "r"(p), "r"(end)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
-		  "x19", "x20", "x21", "x22", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x30", H2_VCLOBBER "memory");
 	*len_out = len;
 	*consumed_out = consumed;
 	*carry_out = carry;
@@ -692,7 +712,7 @@ static inline const uint8_t *h2_hpack_static_lookup_wrapper(int64_t idx,
 		: "=r"(name), "=r"(name_len), "=r"(value), "=r"(value_len),
 		  "=r"(carry)
 		: "r"(idx)
-		: "x0", "x1", "x2", "x3", "x4", "x9", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x9", H2_VCLOBBER "memory");
 	*name_len_out = name_len;
 	*value_out = value;
 	*value_len_out = value_len;
@@ -727,7 +747,7 @@ static inline const uint8_t *h2_hpack_decode_field_end_wrapper(const uint8_t *p,
 		: "r"(p), "r"(end)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
-		  "x30", "memory");
+		  "x30", H2_VCLOBBER "memory");
 	*name_out = name;
 	*name_len_out = name_len;
 	*value_out = value;
@@ -751,7 +771,7 @@ static inline const uint8_t *h2_hpack_decode_field_wrapper(const uint8_t *p,
 // to H2_HPACK_HEADER_TABLE_SIZE. Tests call this for a deterministic
 // starting state, mirroring what h2_connection_loop does per connection.
 static inline void h2_hpack_dyn_reset_wrapper(void) {
-	asm volatile("bl h2_hpack_dyn_reset" ::: "x9", "x10", "memory");
+	asm volatile("bl h2_hpack_dyn_reset" ::: "x9", "x10", H2_VCLOBBER "memory");
 }
 
 // h2_hpack_table_lookup(idx=x0) → (name=x0, name_len=x1, value=x2,
@@ -776,7 +796,7 @@ static inline const uint8_t *h2_hpack_table_lookup_wrapper(int64_t idx,
 		  "=r"(carry)
 		: "r"(idx)
 		: "x0", "x1", "x2", "x3", "x4", "x9", "x10", "x11", "x12", "x13",
-		  "x14", "x15", "x16", "memory");
+		  "x14", "x15", "x16", H2_VCLOBBER "memory");
 	*name_len_out = name_len;
 	*value_out = value;
 	*value_len_out = value_len;
@@ -798,7 +818,7 @@ static inline void h2_hpack_dyn_insert_wrapper(const uint8_t *name,
 		:
 		: "r"(name), "r"(name_len), "r"(value), "r"(value_len)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
-		  "x10", "x11", "x12", "x13", "x14", "x30", "memory");
+		  "x10", "x11", "x12", "x13", "x14", "x30", H2_VCLOBBER "memory");
 }
 
 // h2_hpack_dyn_resize(new_max=x0)
@@ -809,7 +829,7 @@ static inline void h2_hpack_dyn_resize_wrapper(int64_t new_max) {
 		:
 		: "r"(new_max)
 		: "x0", "x1", "x2", "x3", "x4", "x9", "x10", "x11", "x12", "x13",
-		  "x30", "memory");
+		  "x30", H2_VCLOBBER "memory");
 }
 
 // h2_hpack_decode_block(ptr=x0, len=x1) → (count=x0, carry)
@@ -826,7 +846,7 @@ static inline int64_t h2_hpack_decode_block_wrapper(const uint8_t *p, int64_t le
 		: "=r"(count), "=r"(carry)
 		: "r"(p), "r"(len)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
-		  "x19", "x20", "x21", "x22", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x30", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return count;
 }
@@ -857,7 +877,7 @@ static inline const uint8_t *h2_huffman_decode_bounded(const uint8_t *p, int64_t
 		: "r"(p), "r"(n), "r"(end)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
 		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x30", "memory");
+		  "x30", H2_VCLOBBER "memory");
 	*len_out = len;
 	*consumed_out = consumed;
 	*carry_out = carry;
@@ -891,7 +911,7 @@ static inline int64_t h2_build_request_wrapper(int64_t stream_id, int64_t count,
 		: "r"(stream_id), "r"(count)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
 		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -911,7 +931,7 @@ static inline int64_t parse_request_wrapper(const char *buf, int64_t len) {
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
 		  "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
-		  "memory");
+		  H2_VCLOBBER "memory");
 	return carry;
 }
 
@@ -927,7 +947,7 @@ static inline int64_t h2_probe_wrapper(const uint8_t *buf, int64_t n) {
 		"mov %0, x0\n"
 		: "=r"(rc)
 		: "r"(buf), "r"(n)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "x30", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x9", "x30", H2_VCLOBBER "memory");
 	return rc;
 }
 
@@ -947,7 +967,7 @@ static inline int64_t h2_write_headers_wrapper(int64_t fd, const response_t *res
 		: "r"(fd), "r"(resp), "r"(stream_id), "r"(flags)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
 		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x30", H2_VCLOBBER "memory");
 	return carry;
 }
 
@@ -969,7 +989,7 @@ static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
 		: "r"(fd), "r"(resp), "r"(stream_id)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
 		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x30", H2_VCLOBBER "memory");
 	return carry;
 }
 
@@ -991,7 +1011,7 @@ static inline int64_t h2_process_request_wrapper(int64_t stream_id, int64_t fd,
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
 		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x30",
-		  "memory");
+		  H2_VCLOBBER "memory");
 	*carry_out = carry;
 	return rc;
 }
@@ -1012,7 +1032,7 @@ static inline int64_t h2_parse_range_wrapper(const char *v, int64_t len,
 		: "r"(v), "r"(len)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8",
 		  "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x30", "memory");
+		  "x30", H2_VCLOBBER "memory");
 	*end_out = end;
 	*carry_out = carry;
 	return start;
@@ -1034,7 +1054,7 @@ static inline int64_t h2_resolve_range_wrapper(int64_t start, int64_t end,
 		"mov %2, x2\n"
 		: "=r"(s), "=r"(e), "=r"(st)
 		: "r"(start), "r"(end), "r"(size)
-		: "x0", "x1", "x2", "x3", "x4", "x5", "memory");
+		: "x0", "x1", "x2", "x3", "x4", "x5", H2_VCLOBBER "memory");
 	*end_out = e;
 	*status_out = st;
 	return s;
@@ -1057,7 +1077,7 @@ static inline int64_t h2_connection_loop_wrapper(int64_t fd, uint8_t *buf,
 		: "r"(fd), "r"(buf), "r"(n)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
 		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x19", "x20", "x21", "x22", "x23", "x30", "memory");
+		  "x19", "x20", "x21", "x22", "x23", "x30", H2_VCLOBBER "memory");
 	return carry;
 }
 
@@ -1212,7 +1232,7 @@ static inline void get_filetype_wrapper(const char *filename, int64_t len,
 		: "r"(filename), "r"(len)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
 		  "x19", "x20", "x21", "x22", "x23",
-		  "memory");
+		  H2_VCLOBBER "memory");
 	*out_ct = ct;
 	*out_ct_len = ct_len;
 }
