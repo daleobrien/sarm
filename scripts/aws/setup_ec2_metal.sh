@@ -244,15 +244,22 @@ make -C "$DEST" clean >/dev/null 2>&1 || true
 make -C "$DEST" production 2>&1 | tail -20
 [ -x "$DEST/sarm" ] || die "build produced no ./sarm binary"
 
-SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || echo 0)
+# `|| true`, not `|| echo 0`: grep -c PRINTS 0 on no match and ALSO
+# exits 1, so the echo appends a second line and the test below sees
+# "0\n0" -- "integer expected", and the rebuild this guard exists to
+# trigger is then silently skipped. grep -c always prints exactly one
+# number, including on empty input, so nothing needs to supply a default.
+SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 if [ "$SYMS" -lt 50 ]; then
     warn "the production build left only ${SYMS} global symbols — perf could not"
     warn "attribute samples. Rebuilding unstripped instead."
     make -C "$DEST" clean >/dev/null 2>&1 || true
     make -C "$DEST" 2>&1 | tail -5
-    SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || echo 0)
+    SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 fi
-LOCALS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' t ' || echo 0)
+# Zero is the EXPECTED answer here -- a clean `strip -x` leaves no local
+# labels at all -- so this is the one that actually fired.
+LOCALS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' t ' || true)
 info "binary: $DEST/sarm ($(stat -c %s "$DEST/sarm") bytes)"
 info "symbols: ${SYMS} global text, ${LOCALS} local"
 if [ "$LOCALS" -gt 0 ]; then
@@ -295,7 +302,7 @@ if perf --version >/dev/null 2>&1; then
     else
         PMU_OK=1
         info "cycles + instructions readable"
-        info "$(perf list 2>/dev/null | grep -ci 'armv8\|cpu-cycles' || echo 0) PMU event names visible to perf"
+        info "$(perf list 2>/dev/null | grep -ci 'armv8\|cpu-cycles' || true) PMU event names visible to perf"
     fi
 fi
 

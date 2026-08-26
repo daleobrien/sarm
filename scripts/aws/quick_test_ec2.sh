@@ -15,7 +15,8 @@
 #   2. launch ec2 (metal) on the latest Ubuntu arm64 (AMI resolved from SSM)
 #   3. upload this working tree (tracked files, as they are on disk)
 #   4. scripts/aws/setup_ec2_metal.sh   — toolchain, tuning, build, smoke
-#   5. scripts/aws/run_perf_suite.sh --quick
+#   5. scripts/aws/run_perf_suite.sh --quick, sized to SATURATE sarm
+#      (see "Saturation layout" below)
 #   6. pull the results into ./perf-results/ec2-<timestamp>/ — this
 #      happens on the way out too, so a failed, interrupted or
 #      timed-out run still brings home whatever perf managed to write
@@ -30,9 +31,40 @@
 # to delete whatever is on that list, dropping the ones that succeed (or
 # that no longer exist) and leaving the rest for next time.
 #
+# SATURATION LAYOUT — the point of this script is finding what LIMITS
+# sarm, and a measurement can only do that while sarm is the slowest part
+# of the loop. Bare-metal Graviton does not come smaller than 64 vCPUs
+# (c6g.metal is the floor for a machine that exposes the Neoverse N1 PMU
+# at all), so "fewer cores" here means giving sarm fewer, not renting
+# fewer: by default the server gets --server-cores 2 and the load
+# generator gets every core above it, roughly 27 client cores per server
+# core. h2load costs ~4x what sarm costs per request, so anything near an
+# even split hands the bottleneck to the client and section 2 then
+# reports h2load's ceiling under sarm's name — which is exactly what the
+# 2026-08-25 and 2026-08-26 runs did.
+#
+# The connection count follows the server, not the client: 16 per server
+# core, with --max-streams 128 on top, so h2 carries thousands of
+# outstanding requests against two cores while keeping the number of
+# forked server processes low enough that the figure is not measuring the
+# scheduler. Worker scaling (suite section 3) is skipped, because that
+# phase deliberately runs UNPINNED across the whole box and answers a
+# different question.
+#
+# Read section 4's verdict line first. "server saturated" means sections
+# 4-6 are describing sarm's real limits; "CLIENT-BOUND" or "neither side
+# saturated" means they are not, and the run needs fewer server cores or
+# a higher ceiling before anything else in it is worth reading. The tail
+# of this script prints those lines for you.
+#
 # Usage:
 #   ./scripts/aws/quick_test_ec2.sh
 #   ./scripts/aws/quick_test_ec2.sh --yes                  # no confirmation
+#   ./scripts/aws/quick_test_ec2.sh --server-cores 1       # squeeze harder
+#   ./scripts/aws/quick_test_ec2.sh --server-cores 4       # more headroom
+#   ./scripts/aws/quick_test_ec2.sh --conns-per-core 32 --max-streams 256
+#   ./scripts/aws/quick_test_ec2.sh --no-saturate          # old whole-box
+#                                                          # defaults
 #   ./scripts/aws/quick_test_ec2.sh --suite-args '--duration 30 --repeat 7'
 #   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
@@ -57,6 +89,19 @@ AMI=""
 UBUNTU="26.04"          # latest release (Resolute, an LTS)
 VOLUME_GB=40
 SUITE_ARGS="--quick"
+# ── saturation sizing (see the header) ────────────────────────────────
+# These are turned into --server-cpus/--load-cpus/--connections/--threads
+# /--max-streams once the instance is up and its core count is known;
+# nothing here is computed locally, because the core count belongs to the
+# machine we are about to rent, not to this laptop.
+SATURATE=1
+SERVER_CORES=2          # cores sarm is pinned to — the smaller, the
+                        #   sooner it saturates and the cleaner the PMU
+                        #   attribution (one core = no migration at all)
+RESERVE_CORES=0         # cores left to the kernel and NIC; 0 = nproc/8
+CONNS_PER_CORE=16       # concurrent connections per server core
+MAX_STREAMS=128         # h2 streams per connection — the other half of
+                        #   the concurrency ceiling
 TIMEOUT=3600            # local watchdog, seconds
 DEADMAN=90              # in-instance self-destruct, minutes
 SSH_CIDR=""
@@ -76,6 +121,11 @@ while [ $# -gt 0 ]; do
         --ubuntu)      UBUNTU="$2"; shift ;;
         --volume-gb)   VOLUME_GB="$2"; shift ;;
         --suite-args)  SUITE_ARGS="$2"; shift ;;
+        --server-cores)   SERVER_CORES="$2"; shift ;;
+        --reserve-cores)  RESERVE_CORES="$2"; shift ;;
+        --conns-per-core) CONNS_PER_CORE="$2"; shift ;;
+        --max-streams)    MAX_STREAMS="$2"; shift ;;
+        --no-saturate)    SATURATE=0 ;;
         --timeout)     TIMEOUT="$2"; shift ;;
         --deadman)     DEADMAN="$2"; shift ;;
         --ssh-cidr)    SSH_CIDR="$2"; shift ;;
@@ -88,6 +138,13 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+for opt in SERVER_CORES RESERVE_CORES CONNS_PER_CORE MAX_STREAMS; do
+    case "${!opt}" in
+        ''|*[!0-9]*) echo "$0: --$(echo "$opt" | tr 'A-Z_' 'a-z-') must be a non-negative integer" >&2; exit 2 ;;
+    esac
+done
+[ "$SERVER_CORES" -ge 1 ] || { echo "$0: --server-cores must be at least 1" >&2; exit 2; }
 
 say()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -297,6 +354,13 @@ printf '   %-14s %s\n' region "$REGION" type "$ITYPE" az "$AZ" \
     ubuntu "$UBUNTU" ami "$AMI" \
     suite "run_perf_suite.sh $SUITE_ARGS" timeout "${TIMEOUT}s (deadman ${DEADMAN}m)" \
     results "$LOCAL_OUT"
+if [ "$SATURATE" = 1 ]; then
+    printf '   %-14s %s\n' layout \
+        "sarm on $SERVER_CORES core(s), load on the rest, $(( SERVER_CORES * CONNS_PER_CORE )) conns x $MAX_STREAMS streams"
+    printf '   %-14s %s\n' '' "(exact CPU ranges are derived on the box, from its own nproc)"
+else
+    printf '   %-14s %s\n' layout "--no-saturate: whatever run_perf_suite.sh defaults to"
+fi
 
 if [ "$ASSUME_YES" != 1 ]; then
     printf '\n   Bare metal is billed per second from boot. Launch? [y/N] '
@@ -446,9 +510,73 @@ rsh 'chmod +x ~/sarm/scripts/aws/*.sh ~/sarm/certs/generate.sh 2>/dev/null; SARM
 if [ "$SKIP_SUITE" = 1 ]; then
     say "--setup-only: stopping before the suite"
 else
+    # ── 4b. size the run so that sarm is what runs out ────────────────
+    # Done here rather than in the options block because it needs the
+    # instance's own core count: this script is pointed at c6g.metal (64)
+    # today and c8g.metal-48xl (192) by uncommenting one line, and the
+    # split has to follow.
+    #
+    # Anything the caller already put in --suite-args wins — the flags
+    # below are defaults being supplied late, not an override.
+    SAT_ARGS=""
+    if [ "$SATURATE" = 1 ]; then
+        suite_has() { case " $SUITE_ARGS " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; }
+
+        RCPUS="$(rsh nproc 2>/dev/null | tr -d '\r' | head -1)"
+        case "${RCPUS:-}" in ''|*[!0-9]*) RCPUS=0 ;; esac
+
+        if [ "$RCPUS" -lt 4 ]; then
+            warn "instance reports ${RCPUS:-no} usable CPUs — leaving the layout to run_perf_suite.sh"
+        else
+            reserve=$RESERVE_CORES
+            [ "$reserve" -eq 0 ] && reserve=$(( RCPUS / 8 ))
+            [ "$reserve" -lt 1 ] && reserve=1
+
+            s_lo=$reserve
+            s_hi=$(( s_lo + SERVER_CORES - 1 ))
+            l_lo=$(( s_hi + 1 ))
+            l_hi=$(( RCPUS - 1 ))
+
+            # Refuse to produce a layout where the client shares cores
+            # with the server: that measures the box, not sarm, and it is
+            # better to fall back to the suite's own defaults (which warn
+            # about it) than to hand back a plausible-looking number.
+            if [ "$l_lo" -gt "$l_hi" ]; then
+                warn "$SERVER_CORES server cores + $reserve reserved leaves nothing for the load"
+                warn "generator on $RCPUS CPUs — falling back to run_perf_suite.sh's own split"
+            else
+                load_cores=$(( l_hi - l_lo + 1 ))
+                conns=$(( SERVER_CORES * CONNS_PER_CORE ))
+                [ "$conns" -lt 16 ] && conns=16
+                # h2load requires connections >= threads, and one client
+                # thread per connection is as close to pinned as it gets
+                # without h2load having affinity of its own.
+                threads=$conns
+                [ "$threads" -gt "$load_cores" ] && threads=$load_cores
+
+                suite_has --server-cpus  || SAT_ARGS="$SAT_ARGS --server-cpus $s_lo-$s_hi"
+                suite_has --load-cpus    || SAT_ARGS="$SAT_ARGS --load-cpus $l_lo-$l_hi"
+                suite_has --connections  || SAT_ARGS="$SAT_ARGS --connections $conns"
+                suite_has --threads      || SAT_ARGS="$SAT_ARGS --threads $threads"
+                suite_has --max-streams  || SAT_ARGS="$SAT_ARGS --max-streams $MAX_STREAMS"
+                # Section 3 runs UNPINNED across the whole machine on
+                # purpose, so it neither respects this layout nor tells us
+                # anything about what limits a saturated server. It is also
+                # the single most expensive phase in the suite.
+                suite_has --skip         || SAT_ARGS="$SAT_ARGS --skip scaling"
+
+                info "sarm on CPUs $s_lo-$s_hi ($SERVER_CORES core(s)), load on $l_lo-$l_hi ($load_cores cores)"
+                info "$(awk -v l="$load_cores" -v sv="$SERVER_CORES" \
+                        'BEGIN{printf "%.0f load cores per server core", l/sv}')"
+                info "$conns connections x $MAX_STREAMS streams = $(( conns * MAX_STREAMS )) requests in flight (h2)"
+                info "reserved for kernel/NIC: CPUs 0-$(( reserve - 1 ))"
+            fi
+        fi
+    fi
+
     # ── 5. the quick test ─────────────────────────────────────────────
-    say "Running run_perf_suite.sh $SUITE_ARGS"
-    rsh "cd ~/sarm && ./scripts/aws/run_perf_suite.sh $SUITE_ARGS --out \$HOME/sarm/perf-results/$RUNID" \
+    say "Running run_perf_suite.sh $SUITE_ARGS$SAT_ARGS"
+    rsh "cd ~/sarm && ./scripts/aws/run_perf_suite.sh $SUITE_ARGS$SAT_ARGS --out \$HOME/sarm/perf-results/$RUNID" \
         2>&1 | tee "$WORK/suite.log"
 
     # ── 6. bring the results home ─────────────────────────────────────
@@ -456,9 +584,40 @@ else
 
     say "Results in $LOCAL_OUT"
     ls -1 "$LOCAL_OUT" | sed 's/^/   /'
+
+    # ── 7. the limiting-factor readout ────────────────────────────────
+    # Ordered by what has to be true before the next line means anything:
+    # was sarm the bottleneck at all (section 4's verdict), what did it
+    # cost per request, and only then which functions burned it. Quoting
+    # req/s first is how the earlier runs got misread.
     if [ -f "$LOCAL_OUT/summary.txt" ]; then
-        printf '\n'
-        grep -E 'req/s|IPC|cycles|^━━' "$LOCAL_OUT/summary.txt" 2>/dev/null | head -30 | sed 's/^/   /' || true
+        say "Was sarm the bottleneck?"
+        if grep -qE 'cores busy' "$LOCAL_OUT/summary.txt" 2>/dev/null; then
+            grep -E 'cores busy|cost ratio' "$LOCAL_OUT/summary.txt" | sed 's/^ *//;s/^/   /'
+            if ! grep -q 'server saturated' "$LOCAL_OUT/summary.txt"; then
+                warn "sarm never saturated, so sections 4-6 do not describe its limits."
+                if grep -q 'CLIENT-BOUND' "$LOCAL_OUT/summary.txt"; then
+                    warn "The client ran out first. Re-run with fewer server cores:"
+                    warn "  $0 --server-cores 1"
+                else
+                    warn "Neither side ran out — the concurrency ceiling was binding. Re-run with:"
+                    warn "  $0 --max-streams $(( MAX_STREAMS * 2 ))"
+                fi
+            fi
+        else
+            warn "no counter data — perf could not run system-wide on the instance."
+            warn "Everything below is throughput only; there are no limiting factors in it."
+        fi
+
+        say "Cost per request"
+        grep -E 'per core:|IPC ' "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' || true
+
+        say "Where the cycles went"
+        grep -E 'totals: sarm|frontend|backend|branch-misses|cache-misses' \
+            "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' | head -20 || true
+
+        say "Throughput (read this LAST, and only if sarm saturated)"
+        grep -E 'req/s' "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' | head -6 || true
     fi
 fi
 
