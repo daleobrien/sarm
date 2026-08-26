@@ -329,7 +329,12 @@ fi
 if ! skipped throughput; then
     say "2. Throughput (rps_bench.sh, median of $REPEAT, -c$CONNECTIONS -m$MAX_STREAMS -t$THREADS)"
     stop_server
+    # The cpusets travel with it. Without them rps_bench.sh starts an
+    # UNPINNED server on the whole machine, so section 2 measured 64
+    # cores while sections 4-6 measured the 2 they were given -- the
+    # 2026-08-26 run read 9.5M req/s here and 909k there for one binary.
     if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
+            --server-cpus "$SERVER_CPUS" --load-cpus "$LOAD_CPUS" \
             --duration "$DURATION" --repeat "$REPEAT" \
             --connections "$CONNECTIONS" --threads "$THREADS" \
             --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \

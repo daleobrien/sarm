@@ -22,6 +22,7 @@
 #   ./scripts/benchmarks/rps_bench.sh --duration 15 --connections 100 --threads 4
 #   ./scripts/benchmarks/rps_bench.sh --path /pretty/index.html
 #   ./scripts/benchmarks/rps_bench.sh --workers 4   # pre-forked accept workers
+#   ./scripts/benchmarks/rps_bench.sh --server-cpus 8-9 --load-cpus 10-63
 #   ./scripts/benchmarks/rps_bench.sh --repeat 5    # median of 5, with the spread
 #   ./scripts/benchmarks/rps_bench.sh --max-streams 64  # h2 concurrency per conn
 #   ./scripts/benchmarks/rps_bench.sh --warm-up 3   # discard the first 3s
@@ -68,6 +69,16 @@ CONNECTIONS=50
 THREADS=4
 REQ_PATH=/
 WORKERS=1
+# CPU pinning for the server this script starts, and for the load
+# generators it runs against it. Empty means "no taskset", which is the
+# standalone default: on a laptop there is nothing sensible to pin to.
+# run_perf_suite.sh passes both, because an UNPINNED server here while
+# its own phases pin theirs makes section 2 and section 4 describe two
+# different machines -- the 2026-08-26 run reported 9.5M req/s h2c in
+# section 2 while section 4 measured the same binary at 909k, a 10x gap
+# that was entirely 64 cores versus 2.
+SERVER_CPUS=""
+LOAD_CPUS=""
 REPEAT=1
 JSON=0
 MAX_STREAMS=10
@@ -84,6 +95,8 @@ while [ $# -gt 0 ]; do
         --warm-up)       WARMUP="$2"; shift ;;
         --path)          REQ_PATH="$2"; shift ;;
         --workers)       WORKERS="$2"; shift ;;
+        --server-cpus)   SERVER_CPUS="$2"; shift ;;
+        --load-cpus)     LOAD_CPUS="$2"; shift ;;
         --repeat)        REPEAT="$2"; shift ;;
         --json)          JSON=1 ;;
         -h|--help)
@@ -102,6 +115,24 @@ done
 
 if [ "$HOST_PORT" -eq 0 ]; then
     HOST_PORT=$(( 8080 + ($$ % 200) ))
+fi
+
+# taskset is Linux-only and absent on macOS, where this script also runs.
+# A requested pinning that cannot be honoured is an error rather than a
+# warning: silently measuring the whole box under a flag that says
+# otherwise is the failure this exists to prevent.
+# Expanded below as ${ARR[@]+"${ARR[@]}"}, not "${ARR[@]}": macOS ships
+# bash 3.2, where an empty array under `set -u` is an unbound variable
+# rather than zero words. This script runs there.
+SERVER_PIN=()
+LOAD_PIN=()
+if [ -n "$SERVER_CPUS" ] || [ -n "$LOAD_CPUS" ]; then
+    if ! command -v taskset >/dev/null 2>&1; then
+        echo "$0: --server-cpus/--load-cpus need taskset, which this host lacks" >&2
+        exit 2
+    fi
+    [ -n "$SERVER_CPUS" ] && SERVER_PIN=(taskset -c "$SERVER_CPUS")
+    [ -n "$LOAD_CPUS" ]   && LOAD_PIN=(taskset -c "$LOAD_CPUS")
 fi
 
 # logical CPUs, for the oversubscription warning in the summary
@@ -143,7 +174,9 @@ trap cleanup EXIT INT TERM
 
 # --workers 1 is the pre-Phase-3 single accepting process; the flag is
 # passed either way so the two cases differ only in the count.
-./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 &
+# --workers auto reads the affinity mask, so SERVER_PIN also decides how
+# many workers 'auto' would spawn.
+${SERVER_PIN[@]+"${SERVER_PIN[@]}"} ./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 &
 SERVER_PID=$!
 
 echo -n "waiting for server (pid ${SERVER_PID}) on port ${HOST_PORT} …" >&2
@@ -258,7 +291,7 @@ for pass in $(seq 1 "$REPEAT"); do
     # wrk has no warm-up flag; it is given the extra seconds instead and
     # its own steady-state averaging absorbs them.
     echo "━━━ HTTP/1.1 (wrk, ${THREADS} threads, ${CONNECTIONS} conns, $((DURATION + WARMUP))s) ━━━" >&2
-    WRK_OUT=$(wrk -t"$THREADS" -c"$CONNECTIONS" -d"$((DURATION + WARMUP))s" --latency "$URL")
+    WRK_OUT=$(${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNECTIONS" -d"$((DURATION + WARMUP))s" --latency "$URL")
     echo "$WRK_OUT" >&2
     H1_SAMPLES="$H1_SAMPLES$(echo "$WRK_OUT" | awk '/^Requests\/sec:/ {print $2}')
 "
@@ -268,7 +301,7 @@ for pass in $(seq 1 "$REPEAT"); do
 
     # ── HTTP/2 (h2c, prior knowledge) via h2load ─────────────────────
     echo "━━━ HTTP/2 (h2load, h2c prior-knowledge, ${THREADS} threads, ${CONNECTIONS} conns, -m${MAX_STREAMS}, ${DURATION}s) ━━━" >&2
-    H2LOAD_OUT=$(h2load --no-tls-proto=h2c "${H2LOAD_COMMON[@]}" "$URL")
+    H2LOAD_OUT=$(${LOAD_PIN[@]+"${LOAD_PIN[@]}"} h2load --no-tls-proto=h2c "${H2LOAD_COMMON[@]}" "$URL")
     echo "$H2LOAD_OUT" >&2
     H2_SAMPLES="$H2_SAMPLES$(echo "$H2LOAD_OUT" | extract_h2_rps)
 "
@@ -277,7 +310,7 @@ for pass in $(seq 1 "$REPEAT"); do
 
     # ── HTTP/2 over TLS (TLS 1.3, ALPN h2) via h2load ────────────────
     echo "━━━ HTTP/2 + TLS (h2load, TLS 1.3, ${THREADS} threads, ${CONNECTIONS} conns, -m${MAX_STREAMS}, ${DURATION}s) ━━━" >&2
-    H2LOAD_TLS_OUT=$(h2load "${H2LOAD_COMMON[@]}" "$TLS_URL")
+    H2LOAD_TLS_OUT=$(${LOAD_PIN[@]+"${LOAD_PIN[@]}"} h2load "${H2LOAD_COMMON[@]}" "$TLS_URL")
     echo "$H2LOAD_TLS_OUT" >&2
     H2TLS_SAMPLES="$H2TLS_SAMPLES$(echo "$H2LOAD_TLS_OUT" | extract_h2_rps)
 "
