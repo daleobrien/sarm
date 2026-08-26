@@ -18,8 +18,20 @@
 //   x1 — connection state
 //
 // Output/Returns:
-//   x0 — 0 on success (carry clear)
-//   x0 = H2_ERR_PROTOCOL_ERROR on failure (carry set)
+//   carry clear — accepted; x0 is the stream's existing table entry, or
+//     0 if this id is not in the table yet (a brand-new stream)
+//   carry set — rejected; x0 = H2_ERR_PROTOCOL_ERROR
+//
+//   The entry falls out of the lookup this already has to do, and its
+//   one caller wanted exactly it: h2_handle_headers used to call
+//   h2_stream_find again on the very next instruction, with nothing in
+//   between that could touch the table. Handing the pointer back cost
+//   deleting a `mov x0, #0` — on the accepted path x0 already held
+//   either the entry (the cbnz below took it) or 0 (find missed).
+//
+//   Carry is what separates the two returns, so a caller must test it
+//   before reading x0: H2_ERR_PROTOCOL_ERROR is a small integer and
+//   would otherwise be indistinguishable from an entry pointer.
 //
 // Clobbered Registers:
 //   x0, x2-x5, x9, x30 (saved/restored)
@@ -43,9 +55,10 @@ FUNC h2_validate_stream_id
     cmp w4, w5                   // new stream must increase (§5.1.1)
     b.ls .Lh2_bad_stream_id
 .Lh2_ok_stream_id:
+    // x0 is already the answer: the entry if the cbnz above brought us
+    // here, or 0 from find's miss if we fell through the ordering check.
     ldr x30, [sp], #16    // restore the return address
     cmn xzr, xzr
-    mov x0, #0
     ret
 .Lh2_bad_stream_id:
     ldr x30, [sp], #16    // restore the return address

@@ -67,8 +67,10 @@ FUNC h2_handle_headers
     // Only a brand-new stream consumes a slot: an existing stream keeps
     // its entry, so trailers are never counted twice. Open means OPEN or
     // HALF_CLOSED_* — IDLE and CLOSED streams don't count (§5.1.2).
-    ldr w0, [x20, #H2F_STREAM_ID]
-    bl h2_stream_find
+    //
+    // x0 is validate's lookup of this same id — it had to do it to apply
+    // the §5.1.1 ordering rule, and nothing since could have changed the
+    // table. A second h2_stream_find here was one of six per request.
     cbnz x0, .Lh2_headers_count_done
     // ── Stage 13 — GOAWAY received: no brand-new streams (§6.8) ──
     // The connection is winding down; a HEADERS that would open a stream

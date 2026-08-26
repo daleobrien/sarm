@@ -363,6 +363,67 @@ static void test_h2_process_request(void) {
 	ASSERT_STR_EQ("body", "<h1>hello h2</h1>", got + 51, 17);
 }
 
+static void test_h2_process_request_stale_entry(void) {
+	TEST_SUITE("9.1b h2_process_request — an entry whose slot was recycled");
+
+	// h2_process_request is handed the stream's table entry by whichever
+	// dispatch site decided the stream was ready, and holds it across the
+	// whole response so it can stamp CLOSED at the end without a second
+	// lookup. The pointer can go stale in exactly one way: the
+	// flow-control wait dispatches frames, a RST_STREAM moves this stream
+	// to CLOSED, and a following HEADERS recycles its slot to a different
+	// stream. The old code re-found by id and got 0; this checks the id
+	// guard that replaced it, by handing the function an entry that
+	// belongs to somebody else.
+	reset_streams();
+	reset_fields();
+	reset_conn(h2_conn_addr());
+
+	int64_t carry;
+	h2_stream_t *mine = h2_stream_create_wrapper(1, h2_conn_addr(), &carry);
+	ASSERT_NOT_NULL("stream 1 created", mine);
+	h2_stream_event_wrapper(mine, H2_EVENT_RECV_HEADERS, &carry);
+	h2_stream_event_wrapper(mine, H2_EVENT_RECV_END_STREAM, &carry);
+
+	// the slot as it looks after being recycled to another stream
+	h2_stream_t *other = h2_stream_create_wrapper(3, h2_conn_addr(), &carry);
+	ASSERT_NOT_NULL("stream 3 created", other);
+	h2_stream_event_wrapper(other, H2_EVENT_RECV_HEADERS, &carry);
+	h2_stream_event_wrapper(other, H2_EVENT_RECV_END_STREAM, &carry);
+	ASSERT_EQ("stream 3 HALF_CLOSED_REMOTE", H2_STREAM_HALF_CLOSED_REMOTE,
+	          other->state);
+
+	h2_hpack_field_t f[2];
+	f[0] = field(":method", "GET");
+	f[1] = field(":path", "/index.html");
+	set_fields(f, 2);
+	ASSERT_EQ("request built", 0, h2_build_request_wrapper(1, 2, &carry));
+
+	int fds[2];
+	if (pipe(fds) != 0) {
+		printf("  ✗ pipe() failed\n");
+		exit(2);
+	}
+	resource_type = 0;
+	embedded_gzip = 0;
+	embedded_etag = 0;
+	embedded_etag_len = 0;
+
+	// serve stream 1, but hand over stream 3's entry
+	ASSERT_EQ("process still succeeds", 0,
+	          h2_process_request_entry_wrapper(1, fds[1], other, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// the guard must have fired: stream 3 is untouched, not stamped
+	// CLOSED and not left carrying stream 1's SERVING flag
+	ASSERT_EQ("other stream not closed", H2_STREAM_HALF_CLOSED_REMOTE,
+	          other->state);
+	ASSERT_EQ("bitmaps still agree", 1, h2_stream_bitmaps_agree());
+
+	close(fds[1]);
+	close(fds[0]);
+}
+
 static void test_h2_connection_loop(void) {
 	TEST_SUITE("9.4 h2_connection_loop — preface + SETTINGS + HEADERS + DATA");
 
@@ -554,6 +615,7 @@ int main(void) {
 	test_h2_write_body();
 	test_h2_write_body_chunked();
 	test_h2_process_request();
+	test_h2_process_request_stale_entry();
 	test_h2_connection_loop();
 	test_h2_connection_loop_partial_preface();
 	test_summary();

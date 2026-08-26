@@ -112,13 +112,24 @@ static void test_h2_validate_stream_id(void) {
 	ASSERT_EQ("new id > last accepted", 0,
 	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
 
-	// an existing stream may keep its id — no increase check for it
+	// a brand-new id is accepted and reports no entry yet
 	reset_streams();
 	reset_conn(&conn);
-	h2_stream_create_wrapper(5, &conn, &carry); // last becomes 5
+	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 13);
+	h2_parse_wrapper(wire, &hdr);
+	ASSERT_EQ("new id reports no entry", 0,
+	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
+	ASSERT_EQ("carry clear", 0, carry);
+
+	// an existing stream may keep its id — no increase check for it — and
+	// on the accepted path x0 is that stream's entry, which is the whole
+	// reason h2_handle_headers no longer looks it up a second time.
+	reset_streams();
+	reset_conn(&conn);
+	h2_stream_t *five = h2_stream_create_wrapper(5, &conn, &carry); // last becomes 5
 	put_wire_header(wire, 0, H2_FRAME_HEADERS, 0, 5);
 	h2_parse_wrapper(wire, &hdr);
-	ASSERT_EQ("existing id accepted", 0,
+	ASSERT_EQ("existing id returns its entry", (int64_t)five,
 	          h2_validate_stream_id_wrapper(&hdr, &conn, &carry));
 	ASSERT_EQ("carry clear", 0, carry);
 }

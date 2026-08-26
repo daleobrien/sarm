@@ -232,6 +232,8 @@ FUNC h2_connection_loop
     ldr x1, [x0, #H2S_FLAGS]
     tst x1, #H2S_FLAG_SERVING
     b.ne .Lh2cl_frame_loop
+    mov x2, x0              // the entry we just found — process_request
+                            // used to look this same stream up again
     adr_l x0, h2_frame_header
     ldr w0, [x0, #H2F_STREAM_ID]
     mov x1, x19

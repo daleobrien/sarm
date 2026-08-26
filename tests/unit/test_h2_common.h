@@ -977,7 +977,14 @@ static inline int64_t h2_write_headers_wrapper(int64_t fd, const response_t *res
 static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
                                            int64_t stream_id) {
 	int64_t carry;
+	// h2_write_body takes the stream's entry in x4 rather than looking it
+	// up; in the server, h2_process_request hands it down. Standing in for
+	// that here keeps every caller of this wrapper unchanged and keeps
+	// stream-level flow control under test — test_h2_flow depends on it.
 	asm volatile(
+		"mov x0, %3\n"
+		"bl h2_stream_find\n"
+		"mov x4, x0\n"
 		"cmp xzr, xzr\n"
 		"mov x0, %1\n"
 		"mov x1, %2\n"
@@ -993,13 +1000,18 @@ static inline int64_t h2_write_body_wrapper(int64_t fd, const response_t *resp,
 	return carry;
 }
 
-// h2_process_request(stream_id=x0, fd=x1) → (rc=x0, carry). Runs
+// h2_process_request(stream_id=x0, fd=x1, entry=x2) → (rc=x0, carry).
+// The entry comes from a lookup here for the same reason as above: in the
+// server the dispatch site has already found it. Runs
 // lookup_embedded (file.S), create_response (get.S) and the encoder,
 // so the clobber list covers every register those touch.
 static inline int64_t h2_process_request_wrapper(int64_t stream_id, int64_t fd,
                                                 int64_t *carry_out) {
 	int64_t rc, carry;
 	asm volatile(
+		"mov x0, %2\n"
+		"bl h2_stream_find\n"
+		"mov x2, x0\n"
 		"cmp xzr, xzr\n"
 		"mov x0, %2\n"
 		"mov x1, %3\n"
@@ -1008,6 +1020,38 @@ static inline int64_t h2_process_request_wrapper(int64_t stream_id, int64_t fd,
 		"cset %1, cs\n"
 		: "=r"(rc), "=r"(carry)
 		: "r"(stream_id), "r"(fd)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x30",
+		  H2_VCLOBBER "memory");
+	*carry_out = carry;
+	return rc;
+}
+
+// The same call with the entry supplied by the caller rather than looked
+// up. This is the real server signature — both dispatch sites pass the
+// entry they already found — and it is the only way to hand the function
+// an entry that does NOT belong to the id, which is what the guard at
+// .Lh2pr_done exists to reject.
+static inline int64_t h2_process_request_entry_wrapper(int64_t stream_id,
+                                                       int64_t fd,
+                                                       h2_stream_t *entry,
+                                                       int64_t *carry_out) {
+	int64_t rc, carry;
+	// The three arguments go through memory, not three operands: this
+	// clobber list leaves the allocator almost nothing, and five operands
+	// on top of it does not fit ("inline assembly requires more registers
+	// than available").
+	int64_t args[3] = { stream_id, fd, (int64_t)(intptr_t)entry };
+	asm volatile(
+		"ldp x0, x1, [%2]\n"
+		"ldr x2, [%2, #16]\n"
+		"cmp xzr, xzr\n"
+		"bl h2_process_request\n"
+		"mov %0, x0\n"
+		"cset %1, cs\n"
+		: "=r"(rc), "=r"(carry)
+		: "r"(args)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
 		  "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
 		  "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x30",

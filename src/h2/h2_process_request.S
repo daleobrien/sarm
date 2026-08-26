@@ -24,6 +24,17 @@
 // Input/Arguments:
 //   x0 — stream id
 //   x1 — client fd
+//   x2 — the stream's table entry, or 0 if it has none
+//
+//   The entry is passed in rather than looked up because both dispatch
+//   sites already hold it: each one calls h2_stream_find, checks the
+//   state is HALF_CLOSED_REMOTE and the SERVING flag is clear, and then
+//   used to throw the pointer away and hand over the bare id, which this
+//   function looked up again on its first instruction. It is kept at
+//   [sp, #96] for the length of the response and reused twice more — for
+//   h2_write_body's stream-level credit and for the CLOSED transition at
+//   the end — which between them retired four of the six
+//   h2_stream_find calls a request used to make.
 //
 // Output/Returns:
 //   x0 — 0 on success (carry clear); errno on failure (carry set)
@@ -32,15 +43,16 @@
 //   x0-x6, x9-x10, x19-x26 (saved/restored)
 //
 // Stack Usage:
-//   96 bytes: stp x19, x20, [sp, #-96]!; ...; str x30, [sp, #64]
+//   112 bytes: stp x19, x20, [sp, #-112]!; ...; str x30, [sp, #64]
 //   ([sp, #72]/[sp, #80] hold the response range window; [sp, #88] holds
-//   the staged HEADERS length across the h2_write_body call)
+//   the staged HEADERS length across the h2_write_body call; [sp, #96]
+//   holds the stream entry for the whole response)
 // ─────────────────────────────────────────────────────────────────────
 
 .text
 .align 2
 FUNC h2_process_request
-    stp x19, x20, [sp, #-96]!
+    stp x19, x20, [sp, #-112]!
     stp x21, x22, [sp, #16]
     stp x23, x24, [sp, #32]
     stp x25, x26, [sp, #48]
@@ -50,6 +62,7 @@ FUNC h2_process_request
     // create_response / h2_write_headers calls
     mov x19, x0             // stream id
     mov x20, x1             // fd
+    str x2, [sp, #96]       // stream entry — reused at the write and the close
     // ── mark the stream as being served, for the whole response ──
     // The stream stays HALF_CLOSED_REMOTE while we write (that is the
     // truth on the wire — we have not sent END_STREAM yet, and a
@@ -57,11 +70,10 @@ FUNC h2_process_request
     // test alone cannot distinguish it from a request still waiting. The
     // flag makes that distinction; see H2S_FLAG_SERVING in defs.S for why
     // it matters.
-    bl h2_stream_find
-    cbz x0, 1f
-    ldr x1, [x0, #H2S_FLAGS]
+    cbz x2, 1f
+    ldr x1, [x2, #H2S_FLAGS]
     orr x1, x1, #H2S_FLAG_SERVING
-    str x1, [x0, #H2S_FLAGS]
+    str x1, [x2, #H2S_FLAGS]
 1:
     adr_l x9, request
     // ── Stage 10 — a path the server refuses to serve is a 403 ──
@@ -208,6 +220,7 @@ FUNC h2_process_request
     adr_l x1, response
     mov x2, x19
     ldr x3, [sp, #88]
+    ldr x4, [sp, #96]       // stream entry — write_body's flow-control credit
     bl h2_write_body
     b.cs .Lh2pr_500
     b .Lh2pr_done
@@ -240,9 +253,20 @@ FUNC h2_process_request
 .Lh2pr_done:
     // the response is fully sent — the stream is closed on our side, and
     // is no longer being served
-    mov x0, x19
-    bl h2_stream_find
+    // The entry we were handed, not a fresh lookup — but re-checked
+    // against the id first. Between here and the top of the function the
+    // flow-control wait dispatched frames, and a RST_STREAM for this
+    // stream would have moved it to CLOSED and made its slot recyclable;
+    // a HEADERS arriving after that could have handed the slot to a
+    // different stream. Re-finding by id used to catch that and return 0.
+    // Comparing the id catches exactly the same case for three
+    // instructions, and if the slot came back to this same id it is the
+    // same entry h2_stream_create would have returned anyway.
+    ldr x0, [sp, #96]
     cbz x0, 1f
+    ldr x1, [x0, #H2S_STREAM_ID]
+    cmp x1, x19
+    b.ne 1f
     mov x1, #H2_STREAM_CLOSED
     str x1, [x0, #H2S_STATE]
     // and the CLOSED bitmap with it — this is the transition that makes
@@ -266,6 +290,6 @@ FUNC h2_process_request
     ldp x25, x26, [sp, #48]
     ldp x23, x24, [sp, #32]
     ldp x21, x22, [sp, #16]
-    ldp x19, x20, [sp], #96
+    ldp x19, x20, [sp], #112
     ret
 ENDFUNC h2_process_request

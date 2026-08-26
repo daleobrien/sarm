@@ -47,6 +47,14 @@
 //   x2 — stream id
 //   x3 — bytes of a staged HEADERS frame at the front of h2_frame_buf to
 //        send ahead of the first DATA frame, or 0 for none
+//   x4 — the stream's table entry, or 0 if it has none (no stream-level
+//     credit applies). The caller has it: h2_process_request was handed
+//     it in turn by whichever dispatch site decided this stream was ready
+//     to serve, so the lookup this used to do here was the fifth of six
+//     h2_stream_find calls per request that all returned the same
+//     pointer. Holding the entry across the write loop is not new — x27
+//     did that before and still does, including across the flow-control
+//     wait's re-entrant dispatch; only the lookup moved.
 //
 // Output/Returns:
 //   x0 — 0 on success (carry clear); errno on failure (carry set), or
@@ -73,13 +81,11 @@ FUNC h2_write_body
     mov x19, x0             // fd
     mov x20, x1             // response
     mov x21, x2             // stream id
+    mov x27, x4             // stream entry, or 0 (no stream-level credit)
     str x3, [sp, #88]       // staged HEADERS bytes at h2_frame_buf[0]
     ldr x22, [x20, #RESP_BODY]
     ldr x23, [x20, #RESP_BODY_LENGTH]
     adr_l x26, h2_conn
-    mov x0, x21
-    bl h2_stream_find
-    mov x27, x0             // stream entry, or 0 (no stream-level credit)
 .Lh2wb_loop:
     // this chunk = min(max frame size, connection window, stream window,
     //                  remaining) — §5.2
@@ -247,6 +253,8 @@ FUNC h2_write_body
     ldr x1, [x0, #H2S_FLAGS]
     tst x1, #H2S_FLAG_SERVING
     b.ne .Lh2wb_loop
+    mov x2, x0              // the entry we just found — process_request
+                            // used to look this same stream up again
     adr_l x0, h2_frame_header
     ldr w0, [x0, #H2F_STREAM_ID]
     mov x1, x19
