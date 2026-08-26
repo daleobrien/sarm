@@ -37,7 +37,16 @@
 //     (propagated verbatim from tls_record_decrypt)
 //
 // Clobbered Registers:
-//   x0-x12, v0-v11, v16-v21, NZCV (x19-x22, x30 saved/restored)
+//   x0-x12, v0-v7, v16-v30, NZCV (x19-x22, x30 saved/restored)
+//
+//   v22-v30 are the GHASH working set, not just v16-v21: v22-v28 hold
+//   the H^2..H^4 subkey powers and their rolled cross terms
+//   (.Lgcm_ghash_powers), and v29-v30 the Karatsuba accumulators inside
+//   .Lgcm_ghash_run. Both leaves have always declared them; this header
+//   said v16-v21 because it predates the 4-block Karatsuba GHASH and was
+//   never widened with it. v8-v15 are untouched -- AAPCS64 makes d8-d15
+//   callee-saved -- so the v8-v11 this used to claim was wrong in the
+//   other direction.
 //
 // Stack Usage:
 //   48 bytes: x19-x22, x30 (padded)

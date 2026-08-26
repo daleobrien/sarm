@@ -34,10 +34,17 @@
 //   x0 — errno / TLS_RECORD_ERR_* on failure (carry set); 0 on EOF
 //
 // Clobbered Registers:
-//   x0-x14, x16, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v11,
-//   v16-v21, NZCV — a superset covering both paths (the PLAIN path
+//   x0-x14, x16, x19-x24, x30 (x19-x24, x30 saved/restored), v0-v7,
+//   v16-v30, NZCV — a superset covering both paths (the PLAIN path
 //   only touches x0-x2/x9-x14/x16/x19-x22; the TLS path additionally
 //   uses everything tls_read_record/tls_app_data_read clobber)
+//
+//   The vector half reaches v30, not v21: v22-v28 are the H^2..H^4 GHASH
+//   subkey powers and their rolled cross terms, v29-v30 the Karatsuba
+//   accumulators in .Lgcm_ghash_run. This said v16-v21 because it was
+//   written before the 4-block GHASH and never widened with it; v8-v11
+//   was wrong the other way, since AAPCS64 makes d8-d15 callee-saved and
+//   nothing on either path touches them.
 //
 // Stack Usage:
 //   48 bytes: x19-x22, x30 (padded) — shared by both paths

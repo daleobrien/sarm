@@ -39,10 +39,15 @@
 //
 // Clobbered Registers:
 //   x0-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
-//   v16-v28, NZCV
+//   v16-v30, NZCV
 //
 //   v8-v15 are deliberately untouched: AAPCS64 makes d8-d15 callee-saved,
 //   and this function has no prologue for them.
+//
+//   v29-v30 belong to .Lgcm_ghash_run, which accumulates the four
+//   unreduced Karatsuba products there before the single reduction.
+//   That leaf declares them; this header did not, because it was
+//   written against the one-block GHASH that preceded it.
 //
 //   The CTR section holds the AES-128 round-key schedule RK0..RK10 across
 //   v16-v26 and the counter-block template in v27, so all of v16-v28 is

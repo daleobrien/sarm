@@ -74,12 +74,19 @@
 //     socket cleanup — the caller closes the fd either way.
 //
 // Clobbered Registers:
-//   x0-x17, x19-x26, x30 (x19-x26, x30 saved/restored), v0-v11,
-//   v16-v21, NZCV — everything every callee above clobbers. x19-x26
+//   x0-x17, x19-x26, x30 (x19-x26, x30 saved/restored), v0-v7,
+//   v16-v30, NZCV — everything every callee above clobbers. x19-x26
 //   are safe to use as this function's own long-lived scratch across
 //   every call it makes: none of the above either touch them without
 //   saving/restoring, or (client_hello.S, server_hello/write.S,
 //   certificate.S, encrypted_extensions.S) don't touch them at all.
+//
+//   The vector half reaches v30, not v21: v22-v28 are the H^2..H^4 GHASH
+//   subkey powers and their rolled cross terms, v29-v30 the Karatsuba
+//   accumulators in .Lgcm_ghash_run. This said v16-v21 because it was
+//   written before the 4-block GHASH and never widened with it; v8-v11
+//   was wrong the other way, since AAPCS64 makes d8-d15 callee-saved and
+//   nothing on either path touches them.
 //
 // Stack Usage:
 //   192 bytes: x19-x26 (64, four stp) + x30 (padded to 16) = 80, then

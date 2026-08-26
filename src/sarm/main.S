@@ -21,7 +21,12 @@
 //   (never returns — exits via fatal_exit)
 //
 // Clobbered Registers:
-//   x0, x1, x2, x3, x4, x5, x9, x16, x21, x28, x30, sp (transient syscall/stack use)
+//   x0-x2, x9, x19-x22, x28, x30, sp (transient syscall/stack use)
+//
+//   Academic -- _main never returns, so no caller is owed anything. It
+//   is listed for the analyzers' sake, and x19-x20 and x22 were missing
+//   from it: the argv scan runs on into skip_argv, which holds the port
+//   and the worker count across its own calls.
 //
 // Stack Usage:
 //   none (sp scratch only for the sigaction struct blocks)
@@ -259,6 +264,7 @@ FUNC install_sigchld
     add sp, sp, #32
 #endif
     ret
+ENDFUNC install_sigchld
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: detect_cpus
@@ -380,7 +386,6 @@ Ldc_fallback:
     add sp, sp, #32
     ret
 #endif
-ENDFUNC install_sigchld
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: worker_shutdown
@@ -406,11 +411,11 @@ ENDFUNC install_sigchld
 //   allocation, no shared state written. It never returns, so the
 //   trampoline's sigreturn tail below is unreachable in practice.
 //
-//   Neither this routine nor sig_tramp ends in `ret`, so abi.py and
-//   validate_clobbers.py cannot see where they stop and read on into
-//   the code that follows; their "x30 never saved" warning and the
-//   extra registers they attribute here belong to that overrun, not to
-//   these ten instructions.
+//   Neither this routine nor sig_tramp ends in `ret`; they end in the
+//   exit syscall, which scripts/asmparse.py now reads as a terminator
+//   the same way it reads `ret`. Before it did, both were chained into
+//   _main below and charged with its x19-x22/x28/x30 -- registers these
+//   ten instructions never touch. abi.py still warns "x30 never saved".
 //
 // Input/Arguments:
 //   x0 — signal number (ignored; both signals mean the same thing here)

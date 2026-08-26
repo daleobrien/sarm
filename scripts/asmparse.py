@@ -98,6 +98,18 @@ def symbol_macro(line: str) -> str | None:
     match = SYMBOL_MACRO_RE.match(line)
     return match.group(1) if match else None
 
+
+# The four symbol-typing macros are directives wearing an instruction's
+# shape: no mnemonic table has them, and on Apple hosts ``ENDFUNC``
+# expands to nothing at all. They must not reach ``parse_instructions``
+# as instructions -- a trailing ``ENDFUNC sym`` is the last "instruction"
+# of all 187 FUNC regions in the tree, which hid every real ``ret`` from
+# the fallthrough check in ``scan_regions`` and chained 17 functions into
+# successors control never reaches.
+SYMBOL_DIRECTIVE_RE = re.compile(
+    r"^(?:FUNC|ENDFUNC|OBJECT|ENDOBJ)\s+[A-Za-z0-9_.$]+\s*$"
+)
+
 # Lines that belong to a region's *header* rather than to the previous
 # region's body: the doc comment block, blank lines, and the alignment /
 # visibility directives that immediately precede the label.
@@ -189,6 +201,8 @@ def parse_instructions(
         if not line:
             continue
         if line.startswith("#") or line.startswith("."):
+            continue
+        if SYMBOL_DIRECTIVE_RE.match(line):
             continue
         parts = line.split(None, 1)
         mnemonic = parts[0]
@@ -650,6 +664,22 @@ def scan_regions(text: str, path: Path,
             if label_index < data_index < end:
                 end = _header_start(lines, data_index, label_index + 1)
                 break
+        # A region's own ``ENDFUNC``/``ENDOBJ`` is the author saying where it
+        # stops, and it beats every heuristic above. Without this, a file-local
+        # helper that merely sits *below* a function is read as living *inside*
+        # it: ``detect_cpus`` is a sibling of ``install_sigchld``, not a
+        # nested one, but the two are indistinguishable by position alone --
+        # ``hex_to_val`` really does sit inside ``decode_url``, whose epilogue
+        # is below it. The closing marker tells them apart, and the regions
+        # that genuinely nest keep theirs after the helper, so they are
+        # unaffected.
+        name = next(n for i, n in candidates if i == label_index)
+        closer = f"END{{}} {name}"
+        for offset in range(label_index + 1, end):
+            text = strip_comment(lines[offset])
+            if text in (closer.format("FUNC"), closer.format("OBJ")):
+                end = offset + 1
+                break
         return start, end
 
     # Tier 1: the top-level units. Every .global symbol is one; so is any bl
@@ -725,12 +755,44 @@ def scan_regions(text: str, path: Path,
             insns, _ = parse_instructions(region.body)
             # An empty region is an alias for the label below it -- "_start:"
             # sits directly above "_main:" inside an #ifdef.
-            if not insns or insns[-1].mnemonic not in TERMINATORS:
+            if not insns or not _terminates(insns):
                 region.falls_through_to = same[idx + 1].name
     return regions
 
 
 TERMINATORS = {"ret", "br", "b", "eret"}
+
+SYSCALL_MNEMONICS = {"svc", "SCWISVC"}
+EXIT_NUMBER_RE = re.compile(r"\bSYS_exit(?:_group)?\b")
+
+
+def _terminates(insns: list[Instruction]) -> bool:
+    """Does control leave this region for good at its last instruction?
+
+    ``ret``/``b``/``br``/``eret`` are the obvious cases. The exit syscall is
+    the non-obvious one: ``worker_shutdown`` and ``sig_tramp`` end in
+
+        SCWINUM SYS_exit
+        mov x0, #0
+        SCWISVC
+
+    and nothing after that runs. Read as a plain ``svc``, the region looked
+    unterminated and was chained into the function textually below it, which
+    is where the extra registers those two headers were accused of missing
+    (x19-x22, x28, x30 -- ``_main``'s) actually came from. Both headers say so
+    in prose; this makes the parser agree.
+    """
+    last = insns[-1]
+    if last.mnemonic in TERMINATORS:
+        return True
+    if last.mnemonic not in SYSCALL_MNEMONICS:
+        return False
+    # The syscall number is set a few instructions above the svc, never
+    # between it and the argument moves.
+    for insn in reversed(insns[-6:]):
+        if EXIT_NUMBER_RE.search(insn.text):
+            return True
+    return False
 
 
 # ----------------------------------------------------------------------
@@ -859,6 +921,19 @@ def index_source(root: Path | None = None, *,
 
     # Pass 3: call edges, attributed to the enclosing region.
     known = set(index.by_name)
+    # Which region owns each label, per file. A tail branch does not have to
+    # name a region: `child` ends in `b Lchild_common`, a plain label in the
+    # middle of `child_with_data`'s body, and `h2_stage_headers` ends in
+    # `b .Lh2wh_entry` the same way. Those are still tail calls into another
+    # function -- the branch target just is not the function's entry -- so the
+    # owning region supplies the edge. Labels are file-scope, so this map is
+    # too; where a nested region and its enclosing one both contain the label,
+    # the innermost (last, by sort order) owner wins.
+    label_owner: dict[tuple[Path, str], str] = {}
+    for region in index.regions:
+        for label in parse_instructions(region.body)[1]:
+            label_owner[(region.path, label)] = region.name
+
     for region in index.regions:
         calls, tails = _branch_targets_in(region.body, macros)
         callees = set(calls)
@@ -866,10 +941,17 @@ def index_source(root: Path | None = None, *,
         # Only inter-region `b`s are tail calls; a `b` to a label inside this
         # region is ordinary control flow.
         local_labels = set(parse_instructions(region.body)[1])
-        index.tail_calls[region.name] = {
-            t for t in tails
-            if t in known and t not in local_labels and t != region.name
-        }
+        resolved: set[str] = set()
+        for target in tails:
+            if target in local_labels or target == region.name:
+                continue
+            if target in known:
+                resolved.add(target)
+                continue
+            owner = label_owner.get((region.path, target))
+            if owner is not None and owner != region.name:
+                resolved.add(owner)
+        index.tail_calls[region.name] = resolved
         for callee in callees:
             index.callers.setdefault(callee, []).append(
                 (region.name, region.rel))
