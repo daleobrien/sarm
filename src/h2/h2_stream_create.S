@@ -167,6 +167,31 @@ FUNC h2_stream_create
     // that can actually be taken instead of all H2_MAX_STREAMS of them,
     // and x4 still points at h2_stream_ids — each candidate's id comes
     // from the packed index, so no entry is read here at all.
+    //
+    // THIS LOOP IS STILL THE MOST EXPENSIVE THING IN THE FUNCTION, at
+    // ~104 cycles per request on N1 — roughly 2% of all h2c cycles, and
+    // unchanged by every attempt made on it so far. Read the profile
+    // carefully before trying again:
+    //
+    //   * Samples inside the loop skid. Two different instructions have
+    //     now occupied the slot after the ldr across three runs, and each
+    //     collected ~20% of the function. The pile is positional, from
+    //     the load; it is not the cost of whatever sits there.
+    //   * The csel change below cut the function 7.4%, and ALL of it came
+    //     out of the .Lh2_create_init block, not out of here — 44.2 to
+    //     30.6 cycles per request, while the loop stayed at 104.1/104.2.
+    //     That was mispredict recovery being attributed downstream of the
+    //     loop it belonged to. The loop's own 104 cycles never moved.
+    //   * So what is left here is load latency: a serial walk whose next
+    //     address comes from the previous rbit/clz, over an index that
+    //     spans two cache lines. Three rewrites (a NEON O(1) reduction,
+    //     the first-iteration-test removal in dfc1eae, and the csel here)
+    //     all left it at ~104 cycles, because none of them touched that.
+    //
+    // The next real attempt has to shorten the load chain — prefetching
+    // both h2_stream_ids lines ahead of the loop, or keeping a per-word
+    // running minimum so the walk is not serial. Anything that only
+    // reshuffles the compare will land where the other three did.
 .Lh2_create_recycle:
     ldr_l x6, h2_stream_closed, x7
     cbz x6, .Lh2_create_full
@@ -184,12 +209,28 @@ FUNC h2_stream_create
     // Strictly-lower wins, and the mask is walked low slot first, so a
     // tie keeps the lower slot exactly as the first-seen test did.
     //
-    // This is branchless on purpose. "Is this candidate older than the
-    // best so far?" is decided by the arrival order of client stream ids
-    // in a slot table, which no predictor can learn: the running minimum
-    // updates about ln(N) times per call, at positions that vary per
-    // request. A mispredict costs more here than the two csel's do, so
-    // the dependency they add to x8/w9 is the cheaper of the two.
+    // This is branchless on purpose, and unlike most of what surrounds it
+    // that is a measured claim rather than an argued one. "Is this
+    // candidate older than the best so far?" is decided by the arrival
+    // order of client stream ids in a slot table, which N1's predictor
+    // does not learn: the running minimum updates about ln(N) times per
+    // call, at positions that vary per request. Replacing the branch with
+    // these two csel's took 1.81 branch-misses per request off h2c and
+    // 2.35 off h2tls (ec2-20260827-203555 against -194908, h1 control
+    // +0.50%), and this function's cost per request fell 7.4% on h2c and
+    // 13.9% on h2tls.
+    //
+    // Do not read that as "the loop got faster" — see the block comment
+    // above .Lh2_create_recycle. It did not.
+    //
+    // A local M3 A/B argues the opposite, loudly and reproducibly: csel
+    // is ~28% WORSE on bench_h2_stream_create's recycle, recycle_eight
+    // and recycle_one. Those three replay a fixed mask with fixed ids,
+    // which M3 learns completely, leaving csel paying for the x8/w9
+    // dependency and buying nothing. recycle_varying — 64 rotating masks,
+    // permuted ids — has it 24% BETTER on the same machine. When a
+    // branchless rewrite splits that way, the fixed-pattern cases are
+    // measuring the predictor, not the code.
     cmp w5, w9
     csel x8, x7, x8, lo    // oldest CLOSED entry seen so far
     csel w9, w5, w9, lo    // and its id, for the next comparison
