@@ -456,35 +456,71 @@ spend again.
   **0 self-time samples across 56,935**. The unused mechanism was deleted rather
   than finished, and `lookup_embedded` got its first direct unit tests.
 
-- **I-cache layout, as a *capacity* play** (this commit). Standing question after
-  `06f5ae0`, whose numbers looked like a frontend problem: instructions/request
-  **-6.8%**, cycles/request only **-1.3%**, stalled-cycles-frontend **+11.8%**,
-  backend flat (`ec2-20260826-213854` -> `ec2-20260826-222952`). The footprint
-  does not support the diagnosis. All of `.text` is **48.6 KB** against a
-  **64 KB** L1I on Neoverse-N1, and the h2c hot set is **7.8 KB over 136 of the
-  cache's 1024 line slots at 91% line density** — sarm cannot capacity-miss its
-  own code, so reordering has no miss to remove. Two things that *can* explain
-  the counter: `STALL_FRONTEND` on N1 includes mispredict refill, and
-  branch-misses/request rose **+7.0%** in the same pair; and IPC fell **5.7%**,
-  which is the pass trading cheap predictable instructions for a shorter but
-  higher-latency NEON dependency chain. The eviction agent is the kernel — h2c
-  spends **49.8%** of server-core cycles there, in a TCP path far larger than
-  64 KB, which no userspace layout touches.
+- **Hot-path link ordering** (`2bfe8ca`, reverted here). Proposed as the answer
+  to `06f5ae0`, whose numbers looked like a frontend problem: instructions/
+  request **-6.8%**, cycles/request only **-1.3%**, stalled-cycles-frontend
+  **+11.8%**, backend flat (`ec2-20260826-213854` -> `ec2-20260826-222952`).
+  The link is a plain `ld $(OBJS)`, so object order *is* `.text` order and the
+  order in force was whatever rwildcard's directory walk returned. A `HOT_SRCS`
+  list put the profiled hot set first in request-flow order. It did what it
+  claimed to the layout: hot-set address span **27.0 KB -> 8.6 KB**, `.text`
+  byte-identical in size.
 
-  The reordering was implemented anyway, because it is a `HOT_SRCS` list in the
-  Makefile rather than a project (the link is a plain `ld $(OBJS)`, so object
-  order *is* `.text` order, and the order in place until now was rwildcard's
-  directory walk). It does what it says: hot-set address span **27.0 KB ->
-  8.6 KB**, `.text` byte-identical in size. It also already shows why that will
-  not pay — distinct 64 B lines fetched went **136 -> 138**, i.e. nowhere,
-  because at 91% density there was no slack to pack out. Prediction registered
-  before the first EC2 run: **under 0.3% on h2c cycles/request**, below this
-  rig's resolution. If a run ever contradicts that, the mechanism was never
-  capacity and the note above is the thing to re-read.
+  **Capacity was never the mechanism, and the footprint said so in advance.**
+  All of `.text` is **48.6 KB** against a **64 KB** L1I on Neoverse-N1 — the
+  whole program fits. The h2c hot set is **7.8 KB over 136 of the cache's 1024
+  line slots at 91% line density**, so there is no capacity miss to remove and
+  no slack to pack out. The reorder confirmed it twice: distinct 64 B lines
+  fetched went **136 -> 138**, and on the real run L1-icache-load-misses moved
+  **-5.8%** on h2c, a counter that was never binding.
+
+  **The prediction registered before the run was wrong, and that is the
+  finding.** Predicted: under 0.3% on h2c cycles/request, below the rig's
+  resolution. Measured, on a matched pair (`ec2-20260827-203555` ->
+  `ec2-20260828-073136`, identical `--duration 30 --repeat 7`, and the commits
+  between them touched only docs and a script, so the binaries differ *only* in
+  layout):
+
+  | 7 samples, req/s | before | after | |
+  |---|---|---|---|
+  | h2c | mean 994394 | mean 962413 | **-3.22%** |
+  | h2tls | mean 740529 | mean 756604 | **+2.17%** |
+  | h1 (control) | 97494 | 97459 | -0.04% |
+
+  Neither h2 distribution overlaps its counterpart at any of the 7 samples;
+  h1 is flat, so the rig did not drift. **Ten times the predicted magnitude, in
+  opposite directions on the same binary** — which rules out locality and names
+  the real mechanism: moving the code changed every branch's address, and with
+  it the BTB/predictor index bits. h2c branch-misses/request went **29.0 ->
+  35.9 (+23.7%)**, about half the +144 cycles/request at N1's ~11-cycle penalty;
+  h2tls happened to land in a better aliasing pattern (-18.6% icache, -7.3%
+  frontend stalls, +1.9% IPC). The h2c reorder gave back the whole csel win of
+  `6dbcafd` (30.85 -> 29.04) and then some.
+
+  **Why it is not worth reopening.** Layout does matter on this path, roughly
+  10x more than predicted — but through the predictor, which has no gradient to
+  design against. You cannot reason toward a good ordering, only try orderings
+  and keep the winner, and any winner is hostage to the next function that
+  changes size. Neither the -3.2% nor the +2.2% is a property of the idea; both
+  are properties of one arbitrary permutation. `HOT_SRCS` was removed rather
+  than kept-and-disabled so that nothing silently depends on an ordering now
+  measured as harmful. What remains true and reusable is the footprint
+  arithmetic above, and the standing frontend lever it points at instead: h2c
+  spends **49.8%** of server-core cycles in the kernel, in a TCP path far larger
+  than 64 KB that evicts us at every syscall. Syscalls per request, not
+  `.text` order.
 
 **Learning:** "delete the half-built thing" is a legitimate outcome of an
 optimisation task, and shipping the measurement that says so is what stops it
 being re-proposed.
+
+**Learning:** a registered prediction is worth most when it fails. "Under 0.3%"
+was wrong by 10x and wrong in sign on one protocol, and only because the number
+was written down first did the run distinguish *the footprint reasoning was
+sound but the mechanism was elsewhere* from *the reasoning was wrong*. Pair
+every layout or predictor experiment with a control run on the same tree and
+the same suite arguments — the h1 control is what makes the h2c and h2tls
+numbers claims rather than anecdotes.
 
 ---
 
