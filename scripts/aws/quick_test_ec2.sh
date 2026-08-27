@@ -452,6 +452,7 @@ INSTANCE_ID="$("${AWSC[@]}" ec2 run-instances \
     --security-group-ids "$SG_ID" \
     --associate-public-ip-address \
     --instance-initiated-shutdown-behavior terminate \
+    --monitoring 'Enabled=true' \
     --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
     --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${VOLUME_GB},VolumeType=gp3,DeleteOnTermination=true}" \
     --user-data "file://$WORK/user-data.sh" \
