@@ -183,11 +183,16 @@ FUNC h2_stream_create
     ldr w5, [x4, x7, lsl #2]          // its id, from the packed index
     // Strictly-lower wins, and the mask is walked low slot first, so a
     // tie keeps the lower slot exactly as the first-seen test did.
+    //
+    // This is branchless on purpose. "Is this candidate older than the
+    // best so far?" is decided by the arrival order of client stream ids
+    // in a slot table, which no predictor can learn: the running minimum
+    // updates about ln(N) times per call, at positions that vary per
+    // request. A mispredict costs more here than the two csel's do, so
+    // the dependency they add to x8/w9 is the cheaper of the two.
     cmp w5, w9
-    b.hs .Lh2_create_rnext            // not older — keep the current best
-    mov x8, x7             // oldest CLOSED entry seen so far
-    mov w9, w5             // and its id, for the next comparison
-.Lh2_create_rnext:
+    csel x8, x7, x8, lo    // oldest CLOSED entry seen so far
+    csel w9, w5, w9, lo    // and its id, for the next comparison
     sub x5, x6, #1
     and x6, x6, x5         // clear the lowest set bit and go again
     cbnz x6, .Lh2_create_rloop
