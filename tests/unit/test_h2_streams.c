@@ -571,6 +571,137 @@ static void test_h2_stream_bitmaps(void) {
 	ASSERT_EQ("reset clears closed", 0, (int)*h2_stream_closed_addr());
 }
 
+// ── the CLOSED-LRU choice, against an independent reference ─────────
+//
+// h2_stream_create recycles the OLDEST closed entry — the smallest stream
+// id — with ties going to the lowest slot. The suite above pins exactly
+// one shape of that: a full table closed in id order, where the oldest id
+// also sits in the lowest slot. That case cannot tell the documented rule
+// apart from "take the lowest closed slot", so it would pass unchanged if
+// the policy silently became the latter. It nearly is a distinction
+// without a difference, but not quite: taking the oldest is what buys a
+// recently-closed id the longest possible grace period before it is
+// handed to a new stream, which is what makes a late WINDOW_UPDATE or
+// RST_STREAM for a finished stream land harmlessly (§5.1, and the
+// late-wu scenario in tests/h2_browser_sim.py).
+//
+// So drive the choice over shapes where the two rules disagree, and check
+// it against a reference computed in C. The table is planted directly
+// rather than driven through h2_stream_event: what is under test is the
+// selection, and a state machine in the loop would only obscure which of
+// the two was wrong.
+static int reference_victim(const uint32_t *ids, uint32_t closed) {
+	int best = -1;
+	for (int i = 0; i < H2_MAX_STREAMS; i++)
+		if ((closed >> i) & 1)
+			if (best < 0 || ids[i] < ids[best])
+				best = i;
+	return best;
+}
+
+// Plant a FULL table: every slot used, `closed` marking the candidates.
+static void plant_table(const uint32_t *ids, uint32_t closed) {
+	reset_streams();
+	h2_stream_t *entries = (h2_stream_t *)h2_streams_addr();
+	uint32_t *idx = h2_stream_ids_addr();
+	for (int i = 0; i < H2_MAX_STREAMS; i++) {
+		entries[i].stream_id = ids[i];
+		entries[i].state = (closed >> i) & 1 ? H2_STREAM_CLOSED
+		                                     : H2_STREAM_OPEN;
+		idx[i] = ids[i];
+	}
+	*h2_stream_used_addr() = 0xffffffffu;
+	*h2_stream_closed_addr() = closed;
+}
+
+static void test_h2_recycle_choice(void) {
+	TEST_SUITE("recycling takes the oldest CLOSED entry");
+
+	h2_conn_t conn;
+	int64_t carry;
+	uint32_t ids[H2_MAX_STREAMS];
+
+	// The shape the suite above cannot see: ids DESCENDING by slot, so
+	// the oldest closed entry is the HIGHEST slot. A lowest-slot-wins
+	// implementation passes every other test in this file and fails here.
+	for (int i = 0; i < H2_MAX_STREAMS; i++)
+		ids[i] = (uint32_t)(2 * (H2_MAX_STREAMS - i) + 1);
+	plant_table(ids, 0xffffffffu);
+	reset_conn(&conn);
+	h2_stream_t *got = h2_stream_create_wrapper(4001, &conn, &carry);
+	ASSERT_EQ("ids descending → the oldest is the LAST slot", 0,
+	          (int)carry);
+	ASSERT_EQ("and that is the slot taken",
+	          (int64_t)((h2_stream_t *)h2_streams_addr()
+	                    + H2_MAX_STREAMS - 1),
+	          (int64_t)got);
+
+	// A tie must keep the lower slot. Two candidates, same id, and the
+	// answer may not drift to the later one.
+	for (int i = 0; i < H2_MAX_STREAMS; i++)
+		ids[i] = (uint32_t)(1001 + 2 * i);
+	ids[9] = 77;
+	ids[20] = 77;
+	plant_table(ids, (1u << 9) | (1u << 20));
+	reset_conn(&conn);
+	got = h2_stream_create_wrapper(4001, &conn, &carry);
+	ASSERT_EQ("equal ids → the lower slot wins",
+	          (int64_t)((h2_stream_t *)h2_streams_addr() + 9),
+	          (int64_t)got);
+
+	// Now sweep. Every single-candidate mask, then pseudo-random masks
+	// over several id layouts, each checked against the reference.
+	uint64_t rng = 0x243f6a8885a308d3ULL;
+	int disagreements = 0, refusals = 0, swept = 0;
+	for (int trial = 0; trial < 4000; trial++) {
+		rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+		// Every single-candidate mask, then the two extremes, then
+		// random. The extremes are spelled out because neither a
+		// single-bit sweep nor a 32-bit RNG will produce them.
+		uint32_t closed;
+		if (trial < H2_MAX_STREAMS)
+			closed = 1u << trial;
+		else if (trial == H2_MAX_STREAMS)
+			closed = 0;                    // nothing to recycle
+		else if (trial == H2_MAX_STREAMS + 1)
+			closed = 0xffffffffu;          // everything a candidate
+		else
+			closed = (uint32_t)(rng >> 32);
+		for (int i = 0; i < H2_MAX_STREAMS; i++) {
+			rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+			switch (trial % 3) {
+			case 0: ids[i] = (uint32_t)(2 * i + 1); break;
+			case 1: ids[i] = (uint32_t)(0x7ffffff0u - 2u * (unsigned)i);
+				break;
+			default: ids[i] = ((uint32_t)(rng >> 32) & 0x7ffffffeu) | 1u;
+			}
+		}
+		plant_table(ids, closed);
+		reset_conn(&conn);
+		int want = reference_victim(ids, closed);
+		h2_stream_t *p = h2_stream_create_wrapper(0x40000001, &conn,
+		                                          &carry);
+		if (want < 0) {          // nothing closed → must refuse
+			if (!carry || (int64_t)p != H2_ERR_REFUSED_STREAM)
+				disagreements++;
+			refusals++;
+			continue;
+		}
+		if (carry
+		    || p != (h2_stream_t *)h2_streams_addr() + want)
+			disagreements++;
+		swept++;
+	}
+	ASSERT_EQ("4000 planted shapes agree with the reference", 0,
+	          disagreements);
+	// Guard the sweep itself: a generator that stopped producing both
+	// outcomes would make the line above vacuously true.
+	ASSERT_EQ("the sweep exercised recycling", 1, swept > 3000);
+	ASSERT_EQ("the sweep exercised refusal", 1, refusals > 0);
+
+	reset_streams();
+}
+
 int main(void) {
 	test_h2_stream_table();
 	test_h2_validate_stream_id();
@@ -580,6 +711,7 @@ int main(void) {
 	test_h2_rst_stream();
 	test_h2_stream_id_index();
 	test_h2_stream_bitmaps();
+	test_h2_recycle_choice();
 	test_summary();
 	return 0;
 }
