@@ -37,7 +37,8 @@
 //       the CLOSED-LRU choice visits only entries that are actually
 //       CLOSED — one per iteration, cleared with the classic x & (x-1) —
 //       and reads each candidate's id from h2_stream_ids rather than from
-//       the entry.
+//       the entry. Its body carries ONE data-dependent branch, not two:
+//       the "first candidate seen" test is gone, absorbed into a sentinel.
 //
 //   The pass this replaced read H2S_STATE and H2S_STREAM_ID at a 32-byte
 //   stride, so it touched all 16 cache lines of h2_streams every time it
@@ -169,25 +170,28 @@ FUNC h2_stream_create
 .Lh2_create_recycle:
     ldr_l x6, h2_stream_closed, x7
     cbz x6, .Lh2_create_full
-    mov x8, #0             // oldest CLOSED slot seen, biased +1 (0 = none)
-    mov x9, #0             // its id
+    // The running best starts at a sentinel id rather than at "nothing
+    // seen yet". Wire ids are 31-bit (RFC 9113 §5.1.1), so 0xffffffff is
+    // above every real id and the first candidate always displaces it —
+    // which is what removes the per-iteration "have I seen one yet?"
+    // test. x8's +1 bias goes away with it, since 0 is now a real answer.
+    mov w9, #-1            // best id so far
+    mov x8, #0             // and its slot
 .Lh2_create_rloop:
     rbit x7, x6
     clz x7, x7             // lowest set bit — the next CLOSED slot
     ldr w5, [x4, x7, lsl #2]          // its id, from the packed index
-    cbz x8, .Lh2_create_take_closed   // first CLOSED entry seen
+    // Strictly-lower wins, and the mask is walked low slot first, so a
+    // tie keeps the lower slot exactly as the first-seen test did.
     cmp w5, w9
     b.hs .Lh2_create_rnext            // not older — keep the current best
-.Lh2_create_take_closed:
-    add x8, x7, #1         // oldest CLOSED entry seen so far
+    mov x8, x7             // oldest CLOSED entry seen so far
     mov w9, w5             // and its id, for the next comparison
 .Lh2_create_rnext:
     sub x5, x6, #1
     and x6, x6, x5         // clear the lowest set bit and go again
     cbnz x6, .Lh2_create_rloop
-    sub x5, x8, #1         // unbias: the slot to recycle. x8 cannot be 0
-                           //   here — the mask was non-empty, so the first
-                           //   iteration always took a candidate.
+    mov x5, x8             // the slot to recycle
 
 .Lh2_create_init:
     // x5 — the slot to initialise, as an index into both tables.
