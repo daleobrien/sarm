@@ -456,6 +456,32 @@ spend again.
   **0 self-time samples across 56,935**. The unused mechanism was deleted rather
   than finished, and `lookup_embedded` got its first direct unit tests.
 
+- **I-cache layout, as a *capacity* play** (this commit). Standing question after
+  `06f5ae0`, whose numbers looked like a frontend problem: instructions/request
+  **-6.8%**, cycles/request only **-1.3%**, stalled-cycles-frontend **+11.8%**,
+  backend flat (`ec2-20260826-213854` -> `ec2-20260826-222952`). The footprint
+  does not support the diagnosis. All of `.text` is **48.6 KB** against a
+  **64 KB** L1I on Neoverse-N1, and the h2c hot set is **7.8 KB over 136 of the
+  cache's 1024 line slots at 91% line density** — sarm cannot capacity-miss its
+  own code, so reordering has no miss to remove. Two things that *can* explain
+  the counter: `STALL_FRONTEND` on N1 includes mispredict refill, and
+  branch-misses/request rose **+7.0%** in the same pair; and IPC fell **5.7%**,
+  which is the pass trading cheap predictable instructions for a shorter but
+  higher-latency NEON dependency chain. The eviction agent is the kernel — h2c
+  spends **49.8%** of server-core cycles there, in a TCP path far larger than
+  64 KB, which no userspace layout touches.
+
+  The reordering was implemented anyway, because it is a `HOT_SRCS` list in the
+  Makefile rather than a project (the link is a plain `ld $(OBJS)`, so object
+  order *is* `.text` order, and the order in place until now was rwildcard's
+  directory walk). It does what it says: hot-set address span **27.0 KB ->
+  8.6 KB**, `.text` byte-identical in size. It also already shows why that will
+  not pay — distinct 64 B lines fetched went **136 -> 138**, i.e. nowhere,
+  because at 91% density there was no slack to pack out. Prediction registered
+  before the first EC2 run: **under 0.3% on h2c cycles/request**, below this
+  rig's resolution. If a run ever contradicts that, the mechanism was never
+  capacity and the note above is the thing to re-read.
+
 **Learning:** "delete the half-built thing" is a legitimate outcome of an
 optimisation task, and shipping the measurement that says so is what stops it
 being re-proposed.

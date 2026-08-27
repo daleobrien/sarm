@@ -6,6 +6,77 @@ DETECTED_OS := $(shell uname -s)
 # generated embedded table (built separately), and the generated HPACK
 # Huffman table (included by src/hpack/data.S, never compiled standalone).
 SRCS := $(filter-out src/config.S src/defs.S src/embedded.S src/tls/cert_data.S src/h2_huffman_table.S,$(call rwildcard,src,*.S))
+# ── hot-path link order (experiment, docs/HISTORY.md) ────────────────
+# The link is a plain `ld $(OBJS)`, so OBJS order IS the .text layout.
+# Left alone, that order is whatever rwildcard's directory walk hands
+# back — alphabetical by folder, which is to say arbitrary. HOT_SRCS
+# moves the profiled hot set to the front in request-flow order so the
+# functions that run together are laid out together.
+#
+# This is a null test, and the prediction registered before the first
+# run is that it buys nothing measurable. The whole of .text is 48.6 KB
+# against a 64 KB L1I on Neoverse-N1, and the h2c hot set is 7.8 KB
+# over 136 of the cache's 1024 line slots at 91% line density — sarm
+# cannot capacity-miss its own code, so there is no miss for reordering
+# to remove. Reordering does collapse the hot set's address span from
+# 27 KB to ~8 KB, and the point of running it is to have that measured
+# rather than argued. Ceiling if the mechanism were real: 136 -> ~125
+# lines, ~9%. Expected on h2c cycles/request: under 0.3%, i.e. below
+# this rig's resolution.
+#
+# The order below is request flow for h2c (the protocol under study),
+# then the utilities all three protocols share, then the TLS record
+# path, then HTTP/1.1. Every entry is a function the sampled profile
+# in perf-results/ec2-20260826-222952 actually attributed cycles to;
+# nothing here is guessed from reading the call graph.
+HOT_SRCS := \
+	src/h2/h2_connection_loop.S \
+	src/transport/transport_read.S \
+	src/h2/h2_handle_headers.S \
+	src/hpack/h2_hpack_decode_block.S \
+	src/hpack/h2_hpack_decode_field.S \
+	src/hpack/h2_hpack_decode_int.S \
+	src/hpack/h2_hpack_static_lookup.S \
+	src/hpack/dynamic_table/lookup.S \
+	src/h2/h2_name_eq.S \
+	src/h2/h2_stream_find.S \
+	src/h2/h2_stream_create.S \
+	src/h2/h2_stream_event.S \
+	src/h2/h2_build_request.S \
+	src/parse/parse_h2_path.S \
+	src/file/decode_url.S \
+	src/file/check_path_safety.S \
+	src/file/check_path_traversal.S \
+	src/h2/h2_process_request.S \
+	src/h2/h2_write_headers.S \
+	src/h2/h2_write_body.S \
+	src/transport/raw_writev.S \
+	src/util/memcpy.S \
+	src/util/streqn.S \
+	src/util/itoa.S \
+	src/crypto/gcm/encrypt.S \
+	src/transport/raw_write.S \
+	src/transport/raw_read.S \
+	src/parse/get_header_field.S \
+	src/util/streqn_i.S \
+	src/sarm/child.S \
+	src/http1/http1_write_response.S \
+	src/http1/reset_request.S \
+	src/parse/parse_header_end.S \
+	src/parse/parse_request.S \
+	src/parse/parse_path.S \
+	src/file/lookup_embedded.S
+
+# A renamed or moved hot-path file must not silently fall back to the
+# arbitrary order — that would turn a measured null into an unmeasured
+# one and nobody would notice.
+HOT_MISSING := $(filter-out $(SRCS),$(HOT_SRCS))
+ifneq ($(HOT_MISSING),)
+$(error HOT_SRCS lists files that are not in SRCS: $(HOT_MISSING))
+endif
+
+SRCS := $(HOT_SRCS) $(filter-out $(HOT_SRCS),$(SRCS))
+
 OBJS := $(SRCS:src/%.S=build/%.o)
 CFLAGS += -O3
 # Link-time hardening (docs/SECURITY.md §13).
