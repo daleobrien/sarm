@@ -233,6 +233,83 @@ static double bench_case(int fill, uint64_t closed_mask, uint64_t id_base,
     return best;
 }
 
+// THE BRANCH-PATTERN PROBLEM the cases above have, and what this one
+// fixes. bench_case replays ONE closed_mask for a whole round: the same
+// candidates, in the same order, with the same ids, several hundred
+// thousand times. The recycle pass is a loop whose trip count is the
+// popcount of that mask and whose compare-and-branch follows the order of
+// those ids, so after a handful of iterations the predictor has learned
+// both exactly and neither costs anything again.
+//
+// That makes every number above a measurement of the WORK, with the
+// mispredicts subtracted out -- and on the 2026-08-27 Graviton profile
+// the mispredicts were the story: 20.5% of h2_stream_create sat on one
+// branch in that loop and 7.0% on the other, because a real connection
+// closes and reopens streams continuously and the mask changes shape from
+// one request to the next. So the fixed-mask cases systematically
+// understate what removing a branch is worth, and overstate what adding a
+// data dependency (a csel, say) costs.
+//
+// This case rotates the shape instead: a ring of masks with differing
+// popcounts, and the ids permuted so the running minimum arrives at a
+// different point in the walk each time. Re-planting a whole table per
+// iteration would swamp the ~7-25 ns being measured, so the ring is
+// pre-built and each iteration installs one with two stores -- the same
+// trick, and the same reasoning, as the fixups above: a constant offset
+// carried identically by anything being compared. READ IT AGAINST
+// ITSELF ACROSS BUILDS, never as an absolute cost.
+#define RING 64
+static uint64_t ring_closed[RING];
+static uint32_t ring_ids[RING][H2_MAX_STREAMS];
+
+static void build_ring(void) {
+    uint64_t rng = 0x9e3779b97f4a7c15ULL;
+    for (int r = 0; r < RING; r++) {
+        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+        // Popcounts spread over the range a real connection produces,
+        // never empty -- an empty mask is the refuse path, not this one.
+        uint64_t m = (uint64_t)(uint32_t)(rng >> 32);
+        int want = 1 + (r % 24);
+        while (__builtin_popcountll(m) > want) m &= m - 1;
+        if (!m) m = 1;
+        ring_closed[r] = m;
+        for (int i = 0; i < H2_MAX_STREAMS; i++)
+            ring_ids[r][i] = (uint32_t)(2 * i + 1);
+        for (int i = H2_MAX_STREAMS - 1; i > 0; i--) {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            int j = (int)((rng >> 32) % (unsigned)(i + 1));
+            uint32_t t = ring_ids[r][i];
+            ring_ids[r][i] = ring_ids[r][j];
+            ring_ids[r][j] = t;
+        }
+    }
+}
+
+static double bench_varying(int iterations) {
+    uint32_t *ids = h2_stream_ids_addr();
+    double best = 1e18;
+    for (int r = 0; r < ROUNDS; r++) {
+        shape_table(H2_MAX_STREAMS, 0);
+        uint64_t sink = 0;
+        uint64_t t0 = now_ns();
+        for (int i = 0; i < iterations; i++) {
+            int k = i & (RING - 1);
+            memcpy(ids, ring_ids[k], H2_MAX_STREAMS * sizeof(uint32_t));
+            *h2_stream_closed_addr() = ring_closed[k];
+            *h2_stream_used_addr() = (H2_MAX_STREAMS == 64)
+                                         ? ~0ULL
+                                         : ((1ULL << H2_MAX_STREAMS) - 1);
+            sink += asm_stream_create(100001, conn);
+        }
+        uint64_t t1 = now_ns();
+        __asm__ volatile("" ::"r"(sink));
+        double ns = (double)(t1 - t0) / (double)iterations;
+        if (ns > 0.0 && ns < best)
+            best = ns;
+    }
+    return best;
+}
+
 int main(void) {
     memset(conn, 0, sizeof conn);
     *(uint64_t *)(conn + H2C_SETTINGS_INITIAL_WINDOW_SIZE) = 65535;
@@ -269,13 +346,17 @@ int main(void) {
     // the recycle case again, with the caches disturbed first
     double recycle_cold = bench_case(H2_MAX_STREAMS, all, fresh, 0,
                                      FIX_RECLOSE, iters / 20, 1);
+    // the recycle pass with a shape the predictor cannot learn
+    build_ring();
+    double varying = bench_varying(iters);
 
     printf("{\"function\":\"h2_stream_create\",\"cases\":{"
            "\"free_slot\":%.3f,\"recycle\":%.3f,\"recycle_eight\":%.3f,"
-           "\"recycle_one\":%.3f,\"hit_last\":%.3f,\"recycle_cold\":%.3f},"
+           "\"recycle_one\":%.3f,\"hit_last\":%.3f,\"recycle_cold\":%.3f,"
+           "\"recycle_varying\":%.3f},"
            "\"runtime_ns\":%.3f}\n",
            freeslot, recycle, recycle8, recycle1, hit, recycle_cold,
-           recycle8);
+           varying, recycle8);
     printf("RESULT_NS=%.3f\n", recycle8);
     return 0;
 }
