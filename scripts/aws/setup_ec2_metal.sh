@@ -67,9 +67,57 @@ for _ in $(seq 1 120); do
 done
 info "lock clear"
 
-say "Installing packages"
+say "Installing apt-fast"
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
+
+# apt-fast is a wrapper that hands the downloads to aria2c with several
+# connections per mirror. On a metal box with a fat pipe that is the whole
+# difference between a two-minute and a ten-minute provisioning run; the
+# package set below is large and mostly download-bound.
+#
+# It is packaged in universe on recent Ubuntu; where it is not, the
+# upstream script is a single file with aria2 as its only dependency.
+# Either way the debconf answers must be preseeded or the install blocks
+# on an interactive prompt.
+install_apt_fast() {
+    if command -v apt-fast >/dev/null 2>&1; then
+        info "already present: $(command -v apt-fast)"
+        return 0
+    fi
+
+    sudo debconf-set-selections <<'DEBCONF'
+apt-fast apt-fast/maxdownloads string 16
+apt-fast apt-fast/dlflag boolean true
+apt-fast apt-fast/aptmanager string apt-get
+DEBCONF
+
+    if sudo apt-get install -y -qq apt-fast 2>/dev/null && command -v apt-fast >/dev/null 2>&1; then
+        info "installed from apt"
+        return 0
+    fi
+
+    info "not packaged for this release — installing upstream"
+    sudo apt-get install -y -qq aria2 || return 1
+    sudo curl -fsSL -o /usr/local/bin/apt-fast \
+        https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast || return 1
+    sudo chmod 0755 /usr/local/bin/apt-fast
+    sudo curl -fsSL -o /etc/apt-fast.conf \
+        https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast.conf || return 1
+    command -v apt-fast >/dev/null 2>&1
+}
+
+# Everything below installs through $APT, so a failed apt-fast install just
+# falls back to plain apt-get rather than aborting the run.
+if install_apt_fast; then
+    APT=(sudo apt-fast -y -qq)
+    info "using apt-fast for package installs"
+else
+    warn "apt-fast unavailable — falling back to apt-get"
+    APT=(sudo apt-get -y -qq)
+fi
+
+say "Installing packages"
 
 # Split into "must have" and "nice to have" so one unavailable package in a
 # fresh release does not abort the provisioning run.
@@ -89,10 +137,10 @@ OPTIONAL=(
     hyperfine
 )
 
-sudo apt-get install -y -qq "${REQUIRED[@]}" || die "could not install the required packages"
+"${APT[@]}" install "${REQUIRED[@]}" || die "could not install the required packages"
 
 for pkg in "${OPTIONAL[@]}"; do
-    if ! sudo apt-get install -y -qq "$pkg" 2>/dev/null; then
+    if ! "${APT[@]}" install "$pkg" 2>/dev/null; then
         warn "optional package '$pkg' unavailable — continuing without it"
     fi
 done
@@ -104,7 +152,7 @@ done
 # while the versioned binary behind it does not.
 say "Installing perf"
 for pkg in "linux-tools-$(uname -r)" linux-tools-aws linux-tools-generic linux-aws-tools-common; do
-    sudo apt-get install -y -qq "$pkg" 2>/dev/null && info "installed $pkg" || true
+    "${APT[@]}" install "$pkg" 2>/dev/null && info "installed $pkg" || true
 done
 
 if ! perf --version >/dev/null 2>&1; then
@@ -121,7 +169,7 @@ fi
 say "Installing wrk"
 if command -v wrk >/dev/null 2>&1; then
     info "already present: $(command -v wrk)"
-elif sudo apt-get install -y -qq wrk 2>/dev/null && command -v wrk >/dev/null 2>&1; then
+elif "${APT[@]}" install wrk 2>/dev/null && command -v wrk >/dev/null 2>&1; then
     info "installed from apt"
 else
     info "not packaged for this release — building from source"
