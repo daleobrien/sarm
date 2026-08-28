@@ -11,7 +11,8 @@
 # timer and terminate-on-shutdown.
 #
 # What it does:
-#   1. ephemeral SSH keypair + security group locked to your public IP
+#   1. SSH key pair (yours if you have one, else ephemeral) + security
+#      group locked to your public IP
 #   2. launch ec2 (metal) on the latest Ubuntu arm64 (AMI resolved from SSM)
 #   3. upload this working tree (tracked files, as they are on disk)
 #   4. scripts/aws/setup_ec2_metal.sh   — toolchain, tuning, build, smoke
@@ -66,6 +67,8 @@
 #   ./scripts/aws/quick_test_ec2.sh --no-saturate          # old whole-box
 #                                                          # defaults
 #   ./scripts/aws/quick_test_ec2.sh --suite-args '--duration 30 --repeat 7'
+#   ./scripts/aws/quick_test_ec2.sh --key-name X --key-file ~/.ssh/X.pem
+#   ./scripts/aws/quick_test_ec2.sh --ephemeral-key        # mint one instead
 #   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
 #   ./scripts/aws/quick_test_ec2.sh --keep                 # leave it running
@@ -105,6 +108,14 @@ MAX_STREAMS=128         # h2 streams per connection — the other half of
 TIMEOUT=3600            # local watchdog, seconds
 DEADMAN=90              # in-instance self-destruct, minutes
 SSH_CIDR=""
+# Key pair. An existing AWS key pair is used when its private half is on
+# this machine; otherwise the script falls back to minting an ephemeral
+# one for the run. A key pair belongs to a single region, so the default
+# here is paired with the default REGION above — point --region somewhere
+# else and you will need that region's own key.
+KEY_NAME="${SARM_EC2_KEY_NAME:-DaleMelbourne}"
+KEY_FILE="${SARM_EC2_KEY_FILE:-$HOME/.ssh/DaleMelbourne.pem}"
+KEY_EXPLICIT=0
 ASSUME_YES=0
 KEEP=0
 SKIP_SUITE=0
@@ -129,6 +140,9 @@ while [ $# -gt 0 ]; do
         --timeout)     TIMEOUT="$2"; shift ;;
         --deadman)     DEADMAN="$2"; shift ;;
         --ssh-cidr)    SSH_CIDR="$2"; shift ;;
+        --key-name)    KEY_NAME="$2"; KEY_EXPLICIT=1; shift ;;
+        --key-file)    KEY_FILE="$2"; KEY_EXPLICIT=1; shift ;;
+        --ephemeral-key) KEY_NAME=""; KEY_FILE=""; KEY_EXPLICIT=0 ;;
         --setup-only)  SKIP_SUITE=1 ;;
         --sweep-only)  SWEEP_ONLY=1 ;;
         --keep)        KEEP=1 ;;
@@ -158,13 +172,13 @@ done
 RUNID="$(date +%Y%m%d-%H%M%S)"
 TAG="sarm-quicktest-$RUNID"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sarm-ec2-XXXXXX")"
-KEYFILE="$WORK/id_ed25519"
+KEYFILE=""
 LOCAL_OUT="$REPO/perf-results/ec2-$RUNID"
 AWSC=(aws --region "$REGION" --output text)
 
 INSTANCE_ID=""
 SG_ID=""
-KEY_NAME=""
+KEY_EPHEMERAL=0     # 1 only when this run created the key pair in AWS
 WATCHDOG=""
 STARTED=$(date +%s)
 RESULTS_FETCHED=0
@@ -281,7 +295,9 @@ cleanup() {
             warn "you are being billed. Terminate with:"
             warn "  aws ec2 terminate-instances --region $REGION --instance-ids $INSTANCE_ID"
             warn "it will self-terminate after ${DEADMAN} minutes regardless."
-            info "ssh key kept at $KEYFILE"
+            if [ "$KEY_EPHEMERAL" = 1 ]; then
+                info "ephemeral ssh key kept at $KEYFILE"
+            fi
             info "ssh -i $KEYFILE ubuntu@${PUBLIC_IP:-<ip>}"
             # Queued rather than deleted: the group is in use for as long
             # as you keep the box, and the sweep will simply skip it until
@@ -304,7 +320,9 @@ cleanup() {
     if [ -n "$SG_ID" ]; then
         defer_security_group "$SG_ID"
     fi
-    if [ -n "$KEY_NAME" ]; then
+    # Only ever the pair this run created — a long-lived key of yours is
+    # not this script's to delete.
+    if [ "$KEY_EPHEMERAL" = 1 ] && [ -n "$KEY_NAME" ]; then
         "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 \
             && info "deleted key pair $KEY_NAME" || warn "could not delete key pair $KEY_NAME"
     fi
@@ -369,12 +387,41 @@ if [ "$ASSUME_YES" != 1 ]; then
 fi
 
 # ── 1. keypair and security group ─────────────────────────────────────
-say "Creating an ephemeral key pair and security group"
-ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$KEYFILE"
-KEY_NAME="$TAG"
-"${AWSC[@]}" ec2 import-key-pair --key-name "$KEY_NAME" \
-    --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
-info "key pair $KEY_NAME (private key lives only in $WORK)"
+# Preference order: the key pair named above if this machine actually has
+# its private half and AWS still has it in this region, otherwise a fresh
+# ephemeral one. An explicit --key-name/--key-file is an instruction, not
+# a preference, so it fails rather than falling back.
+say "Key pair and security group"
+if [ -n "$KEY_NAME" ] && [ -n "$KEY_FILE" ]; then
+    if [ ! -r "$KEY_FILE" ]; then
+        [ "$KEY_EXPLICIT" = 1 ] && die "no readable private key at $KEY_FILE"
+        info "no private key at $KEY_FILE — falling back to an ephemeral pair"
+        KEY_NAME=""
+    elif ! "${AWSC[@]}" ec2 describe-key-pairs --key-names "$KEY_NAME" \
+            --query 'KeyPairs[0].KeyName' >/dev/null 2>&1; then
+        [ "$KEY_EXPLICIT" = 1 ] && die "AWS has no key pair named $KEY_NAME in $REGION"
+        info "AWS has no key pair $KEY_NAME in $REGION — falling back to an ephemeral pair"
+        KEY_NAME=""
+    else
+        KEYFILE="$KEY_FILE"
+        # ssh refuses a private key the rest of the world can read, and
+        # a .pem straight out of the console often arrives 0644.
+        case "$(ls -l "$KEYFILE" | cut -c5-10)" in
+            ------) ;;
+            *) warn "$KEYFILE is group/world readable; ssh will refuse it. chmod 600 it." ;;
+        esac
+        info "using your key pair $KEY_NAME ($KEYFILE)"
+    fi
+fi
+if [ -z "$KEY_NAME" ]; then
+    KEYFILE="$WORK/id_ed25519"
+    ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$KEYFILE"
+    KEY_NAME="$TAG"
+    "${AWSC[@]}" ec2 import-key-pair --key-name "$KEY_NAME" \
+        --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
+    KEY_EPHEMERAL=1
+    info "ephemeral key pair $KEY_NAME (private key lives only in $WORK)"
+fi
 
 # Several independent sources, because a single one is a single point of
 # failure: DNS filtering, a split-tunnel VPN or a captive resolver can take
