@@ -74,9 +74,9 @@ khs_empty_hash:
 //   filled in (src/tls/data.S).
 //
 // Clobbered Registers:
-//   x0-x11, x13, v0-v7, v16-v19, v21-v28, NZCV (x19, x20, x30
+//   x0-x11, x13, v0-v7, v16-v19, v22-v28, NZCV (x19, x20, x30
 //   saved/restored) — everything hkdf_extract / hkdf_expand_label
-//   clobber, plus v16-v19 and v21-v28 from aes_gcm_ctx_init's key
+//   clobber, plus v16-v19 and v22-v28 from aes_gcm_ctx_init's key
 //   expansion, zero-block encrypt and GHASH subkey powers
 //
 // Stack Usage:

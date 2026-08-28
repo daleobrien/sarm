@@ -35,7 +35,7 @@
 //
 // Clobbered Registers:
 //   x9-x12, x19-x28 (saved/restored), x30 (saved/restored), v0-v7,
-//   v16-v21, v22-v30, NZCV
+//   v17-v20, v22-v30, NZCV
 //
 //   Unlike the live path, this entry point has no key context to read
 //   the GHASH subkey powers from, so it derives them itself — once,
@@ -67,12 +67,9 @@ FUNC ghash
     mov     x23, x4                    // ct_len
     mov     x24, x5                    // out
 
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
 
     ld1     {v19.16b}, [x19]           // H
     gcm_rbit v19.16b, v19.16b          // H' in the natural domain

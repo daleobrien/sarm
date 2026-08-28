@@ -40,11 +40,10 @@
 //   none (void) - GCM_CTX_SIZE bytes written to [x1]
 //
 // Clobbered Registers:
-//   x0-x11, v0-v7, v16-v19, v21-v28, NZCV (x20, x30 saved/restored) —
+//   x0-x11, v0-v7, v17-v19, v22-v28, NZCV (x20, x30 saved/restored) —
 //   x0-x8, x10, x11 via aes128_key_expand, x1 via aes128_encrypt,
-//   v16/v21 for the gcm_rbit table and mask, v17/v18 for
-//   .Lgcm_gf_mul's reduction constant and zero, v19 and v22-v28 the
-//   subkey powers themselves
+//   v17/v18 for .Lgcm_gf_mul's reduction constant and zero, v19 and
+//   v22-v28 the subkey powers themselves
 //
 // Stack Usage:
 //   32 bytes - 16 for the all-zero block fed to aes128_encrypt, 8 for
@@ -72,11 +71,8 @@ FUNC aes_gcm_ctx_init
     bl      aes128_encrypt
 
     // ── map H into the natural domain ──
-    // gcm_rbit needs the nibble table in v16 and the 0x0f mask in v21;
+    // gcm_rbit is a bare RBIT and needs no state of its own;
     // .Lgcm_gf_mul below needs the 0x87 constant in v17 and zero in v18.
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
-    movi    v21.16b, #0x0f
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0

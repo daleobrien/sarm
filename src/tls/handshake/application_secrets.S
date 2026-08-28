@@ -54,8 +54,8 @@ as_label_iv:
 //
 // Clobbered Registers:
 //   x0-x11, x13 (x19, x20, x30 saved/restored), v0-v7, v16-v19,
-//   v21-v28, NZCV — everything hkdf_expand_label clobbers, plus
-//   v16-v19 and v21-v28 from aes_gcm_ctx_init's key expansion,
+//   v22-v28, NZCV — everything hkdf_expand_label clobbers, plus
+//   v16-v19 and v22-v28 from aes_gcm_ctx_init's key expansion,
 //   zero-block encrypt and GHASH subkey powers
 //
 // Stack Usage:

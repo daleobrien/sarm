@@ -20,7 +20,7 @@
 //   none (void) - 16 Z bytes written to [x2]
 //
 // Clobbered Registers:
-//   x9, x10, v0-v7, v16-v18, v21, NZCV
+//   x10, v0-v7, v17, v18, NZCV
 //
 // Stack Usage:
 //   16 bytes (x30)
@@ -33,12 +33,9 @@ FUNC gf_mult_128
     sub     sp, sp, #16
     str     x30, [sp]
 
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
 
     ld1     {v0.16b}, [x0]
     ld1     {v1.16b}, [x1]

@@ -5,26 +5,34 @@
 // ─────────────────────────────────────────────────────────────────────
 // Macro: gcm_rbit
 //
-// Description: Per-byte bit reversal of a 16-byte vector via nibble
-//   lookups (see the file header for why GCM needs this). v16 must hold
-//   the nibble-reversal table .Lgcm_rbit_table and v21 the byte mask
-//   0x0f (NEON has no byte-granular immediate AND). The operands are
-//   passed with their element qualifier, e.g. gcm_rbit v0.16b, v0.16b.
+// Description: Per-byte bit reversal of a 16-byte vector (see the file
+//   header for why GCM needs this) — which is precisely what the RBIT
+//   instruction does, one instruction, no operands but its own.
+//
+//   This used to be a six-instruction nibble-lookup: two TBLs against a
+//   16-byte reversal table in v16, masked with 0x0f in v21, with a
+//   four-deep serial dependency between them. The two spellings agree on
+//   all 256 byte values — the equivalence is a table, and it was checked
+//   exhaustively rather than argued. RBIT Vd.16b is baseline Armv8.0
+//   ASIMD (it needs no -march extension and no runtime feature check), so
+//   the lookup was buying nothing on any machine that can run the PMULL
+//   this file is built around.
+//
+//   Dropping it frees v16 and v21 — every caller used to spend four
+//   instructions on entry loading a table and a mask that only this
+//   macro read — and leaves v2/v3 alone, which the old body clobbered.
+//   The operands keep their element qualifier and their order, e.g.
+//   gcm_rbit v0.16b, v0.16b, so no call site changes.
 //
 // Input/Arguments:
 //   \src — source operand (full "vN.16b" form)
 //   \dst — destination operand (full "vN.16b" form; may alias \src)
 //
 // Clobbered Registers:
-//   v2, v3
+//   none beyond \dst
 // ─────────────────────────────────────────────────────────────────────
 .macro gcm_rbit src, dst
-    ushr    v2.16b, \src, #4             // high nibble -> low position
-    tbl     v3.16b, {v16.16b}, v2.16b    // T[hi] -> result low nibble
-    and     v2.16b, \src, v21.16b        // keep the low nibble only
-    tbl     v2.16b, {v16.16b}, v2.16b    // T[lo] -> result high nibble
-    shl     v2.16b, v2.16b, #4
-    orr     \dst, v3.16b, v2.16b
+    rbit    \dst, \src
 .endm
 
 // ─────────────────────────────────────────────────────────────────────
@@ -174,16 +182,16 @@
     eor     v5.16b, v5.16b, v7.16b     // P_hi = hi ⊕ mid/x^64
     // ── reduction: P mod (x^128+x^7+x^2+x+1), constant 0x87 ──
     // x^128 ≡ x^7+x^2+x+1, so every set bit j of P_hi contributes to
-    // positions j, j+1, j+2, j+7 of the result.
-    pmull   v2.1q, v5.1d, v17.1d       // P_hi[0..63]·0x87 → positions 0..70
-    eor     v4.16b, v4.16b, v2.16b     // fold 1
-    pmull2  v2.1q, v5.2d, v17.2d       // P_hi[64..127]·0x87 → bits 0..70
-    ext     v6.16b, v18.16b, v2.16b, #8  // bits 0..63 → positions 64..127
-    eor     v4.16b, v4.16b, v6.16b     // fold 2
-    ext     v3.16b, v2.16b, v2.16b, #8   // spill (bits 64..70) → bits 0..6
-    pmull   v3.1q, v3.1d, v17.1d       // spill·0x87 → positions 0..13
-    eor     v4.16b, v4.16b, v3.16b     // fold 3
-    mov     v0.16b, v4.16b
+    // positions j, j+1, j+2, j+7 of the result. Two phases, each
+    // retiring 64 bits of P_hi: see .Lgcm_reduce87 for why this is
+    // shorter than folding the three contributions separately.
+    pmull2  v2.1q, v5.2d, v17.2d       // P_hi[64..127]·0x87
+    ext     v3.16b, v18.16b, v5.16b, #8  // P_hi[0..63] → positions 64..127
+    eor     v3.16b, v3.16b, v2.16b     // phase 1: 64 bits of P_hi retired
+    pmull2  v2.1q, v3.2d, v17.2d       // and again on what is left
+    ext     v6.16b, v18.16b, v3.16b, #8
+    eor     v4.16b, v4.16b, v6.16b     // phase 2: the rest, into P_lo
+    eor     v0.16b, v4.16b, v2.16b
     ret
 
 // ─────────────────────────────────────────────────────────────────────
@@ -237,12 +245,32 @@
 // Description: Reduces an unreduced 256-bit GF(2^128) product (as
 //   produced by .Lgcm_karatsuba_br, or by summing several such products)
 //   mod (x^128+x^7+x^2+x+1). Identical to the reduction half of
-//   .Lgcm_gf_mul (data.S:93-104), split out so it can be applied once to
-//   an XOR-sum of several unreduced products instead of once per product
-//   — valid because reduction is linear over GF(2): reduce(a) ⊕
-//   reduce(b) == reduce(a ⊕ b) (proved in
-//   scripts/prompts/ghash_pmull_proto.py, "accumulate-then-reduce-once
-//   == reduce-then-sum").
+//   .Lgcm_gf_mul, split out so it can be applied once to an XOR-sum of
+//   several unreduced products instead of once per product — valid
+//   because reduction is linear over GF(2): reduce(a) ⊕ reduce(b) ==
+//   reduce(a ⊕ b).
+//
+//   Two phases, not three folds. The obvious way to reduce is to take
+//   the three places a set bit of P_hi lands (j, j+1, j+2, j+7 for the
+//   low lane; the same shifted by 64 for the high lane; then the handful
+//   of bits that spill past 128 on the way) and fold each separately —
+//   nine instructions and three PMULLs, which is what this used to be.
+//
+//   Instead, each phase retires exactly 64 bits of P_hi: multiply the
+//   high lane by 0x87, shift what remains up by 64, and XOR. Two phases
+//   clear all 128 bits, and the spill the three-fold version handled
+//   explicitly is simply part of the second phase's input. Seven
+//   instructions and two PMULLs — and on Neoverse N1, PMULL is the
+//   scarce port (one per cycle), so dropping one matters more than the
+//   two instructions do.
+//
+//   Both forms are GF(2)-linear maps from 256 bits to 128, so "identical"
+//   here is not a claim about test coverage: the two matrices were
+//   compared column by column over all 256 basis vectors and agree
+//   exactly. That is a proof over every input, and it is how this
+//   replacement was arrived at — by searching the space of two-phase
+//   shapes against the old map as an oracle, rather than by recalling a
+//   constant.
 //
 // Input/Arguments:
 //   v4  — P_lo (bits 0..127 of the unreduced product, or XOR-sum thereof)
@@ -260,15 +288,13 @@
 //   0 bytes - leaf function, no stack frame
 // ─────────────────────────────────────────────────────────────────────
 .Lgcm_reduce87:
-    pmull   v2.1q, v5.1d, v17.1d       // P_hi[0..63]·0x87 → positions 0..70
-    eor     v4.16b, v4.16b, v2.16b     // fold 1
-    pmull2  v2.1q, v5.2d, v17.2d       // P_hi[64..127]·0x87 → bits 0..70
-    ext     v6.16b, v18.16b, v2.16b, #8  // bits 0..63 → positions 64..127
-    eor     v4.16b, v4.16b, v6.16b     // fold 2
-    ext     v3.16b, v2.16b, v2.16b, #8   // spill (bits 64..70) → bits 0..6
-    pmull   v3.1q, v3.1d, v17.1d       // spill·0x87 → positions 0..13
-    eor     v4.16b, v4.16b, v3.16b     // fold 3
-    mov     v0.16b, v4.16b
+    pmull2  v2.1q, v5.2d, v17.2d       // P_hi[64..127]·0x87
+    ext     v3.16b, v18.16b, v5.16b, #8  // P_hi[0..63] → positions 64..127
+    eor     v3.16b, v3.16b, v2.16b     // phase 1: 64 bits of P_hi retired
+    pmull2  v2.1q, v3.2d, v17.2d       // and again on what is left
+    ext     v6.16b, v18.16b, v3.16b, #8
+    eor     v4.16b, v4.16b, v6.16b     // phase 2: the rest, into P_lo
+    eor     v0.16b, v4.16b, v2.16b
     ret
 
 // ─────────────────────────────────────────────────────────────────────
@@ -360,7 +386,7 @@
 // Input/Arguments:
 //   x27 — pointer to the data
 //   x28 — byte count (any value; 0 is a no-op)
-//   v16 — nibble table, v17 — 0x87 constant, v18 — zero
+//   v17 — 0x87 constant, v18 — zero
 //   v19 — H' (natural domain), v20 — running Y' accumulator
 //   v22-v24 — H'^2, H'^3, H'^4; v25-v28 — their rolled cross terms and
 //   H's, as .Lgcm_ghash_powers leaves them. Only read when four or more
@@ -372,7 +398,7 @@
 //   v20 - the updated accumulator
 //
 // Clobbered Registers:
-//   x9-x12, x27, v0-v7, v29, v30 (x19-x26, x28, v16-v21 and the
+//   x9-x12, x27, v0-v7, v29, v30 (x19-x26, x28, v17-v21 and the
 //   caller's v22-v28 powers are preserved)
 //
 // Stack Usage:
@@ -489,8 +515,8 @@
 // Input/Arguments:
 //   x9  — AAD length in bytes
 //   x10 — ciphertext length in bytes
-//   plus the state .Lgcm_ghash_run reads: v16 nibble table, v17 the
-//   0x87 constant, v18 zero, v19 H', v20 the running accumulator, and
+//   plus the state .Lgcm_ghash_run reads: v17 the 0x87 constant, v18
+//   zero, v19 H', v20 the running accumulator, and
 //   the v22-v28 subkey powers
 //
 // Output/Returns:
@@ -518,9 +544,3 @@
     ldr     x30, [sp, #16]
     add     sp, sp, #32
     ret
-
-// ---- Nibble-reversal table: T[i] = bit-reversed 4-bit value i ----
-.align 4
-.Lgcm_rbit_table:
-.byte 0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e
-.byte 0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f

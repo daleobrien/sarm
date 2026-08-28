@@ -204,6 +204,49 @@ Python before any assembly was written.
 
 **GHASH ~3x (7.13 → 2.3–2.4 ns/block); `aes_gcm_encrypt` ~1.9x (2113 → ~1075 ns).**
 
+### GHASH — one instruction for `gcm_rbit`, two phases for the reduction
+
+Two independent findings in the same loop, both of which replace a sequence
+with a provably identical shorter one. Neither needs an instruction the
+baseline Armv8.0 ASIMD set does not already have, so neither needs a runtime
+feature check.
+
+`gcm_rbit` was six instructions — two `TBL`s against a 16-byte nibble table in
+`v16`, masked with `0x0f` in `v21`, four deep in serial dependencies. It
+computes per-byte bit reversal, which is exactly what `RBIT Vd.16b` does in
+one. The equivalence is a 256-entry table and was checked exhaustively rather
+than argued. Removing it also freed `v16` and `v21` and deleted four setup
+instructions from each of five call sites.
+
+`.Lgcm_reduce87` folded the three places a set bit of `P_hi` lands — the low
+lane, the high lane shifted by 64, and the few bits that spill past 128 —
+separately: nine instructions and three PMULLs. Folding instead in two phases,
+each retiring 64 bits of `P_hi`, is seven instructions and two PMULLs, and the
+spill the three-fold version handled explicitly is simply part of the second
+phase's input. On N1 PMULL is the one-per-cycle port, so the dropped PMULL is
+worth more than the two instructions.
+
+Both reductions are GF(2)-linear maps from 256 bits to 128, so "identical" is
+not a claim about test coverage: the two matrices were compared column by
+column over all 256 basis vectors. That is a proof over every input, and it is
+how the replacement was found — by searching two-phase shapes against the old
+map as an oracle, rather than by recalling a constant. A reflected-domain
+rewrite (the usual way this loop is written elsewhere) was prototyped and
+verified first, then rejected: its per-block cost is `rev64`+`ext`, two
+instructions, against `RBIT`'s one.
+
+The 4-block loop goes from 102 to 80 instructions. `llvm-mca` predicted −22.9%
+on a Neoverse-N1 model; the measured figure was −20.8%.
+
+**GHASH −20.8% (7.062 → 5.595 ns/block at 16 KiB, ~−27% at 16–64 B);
+`aes_gcm_encrypt` −13.0% (3309 → 2879 ns at 4 KiB). GCM's share of h2tls
+cycles 12.4% → 11.3%.** Measured on c6g.metal against a run whose `src/` tree
+was identical apart from these files, and reproducible: two independent
+baseline runs agreed to 0.1%. End-to-end h2tls throughput was 740k → 768k
+req/s, but that comparison also spans an `h2_stream_create` change and was a
+median of 2 rather than 7, so the microbenchmarks are the defensible number;
+the honest end-to-end attribution is ~1% of server cycles.
+
 ### P-256 reduction — Barrett → Solinas folding
 
 `p256_reduce` was ~73% of `p256_fe_mul`. P-256's modulus is a Solinas prime, so

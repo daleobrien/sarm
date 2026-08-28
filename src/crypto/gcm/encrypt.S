@@ -117,7 +117,7 @@ FUNC aes_gcm_encrypt_ctx
     add     x25, sp, #96               // jbuf (counter block)
     add     x26, x0, #GCM_CTX_RK       // rk (176-byte round keys)
 
-    // The GHASH constants (v16-v21) and H' used to be set up here. They
+    // The GHASH constants (v17/v18) and H' used to be set up here. They
     // are needed only from .Lgcm_enc_ghash onwards, and the CTR section
     // below wants v16-v26 for the round-key schedule, so their setup now
     // sits immediately before the hashing instead. Nothing between here
@@ -210,12 +210,9 @@ FUNC aes_gcm_encrypt_ctx
     // Set up here rather than on entry: the CTR section above holds the
     // AES round-key schedule across v16-v26, so every one of these would
     // have been destroyed by it. Nothing before this point reads them.
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
 
     // ── H', already in the natural domain, out of the context ──
     // Deriving it here — expand the key, encrypt a zero block, rbit the

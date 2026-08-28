@@ -65,12 +65,9 @@ FUNC bench_ghash_run_once
     mov     x21, x3                    // ct
     mov     x22, x4                    // ct_len
 
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
 
     ld1     {v19.16b}, [x0]
     gcm_rbit v19.16b, v19.16b          // H' (natural domain)
@@ -133,12 +130,9 @@ FUNC bench_ghash_run_timed
     mov     x19, x0                    // data
     mov     x20, x1                    // len
 
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
     ld1     {v19.16b}, [x2]
     gcm_rbit v19.16b, v19.16b
 

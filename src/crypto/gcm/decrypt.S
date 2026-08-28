@@ -106,12 +106,9 @@ FUNC aes_gcm_decrypt_ctx
     add     x26, x0, #GCM_CTX_RK       // rk
 
     // ── GHASH constants ──
-    adr_l   x9, .Lgcm_rbit_table
-    ld1     {v16.16b}, [x9]
     mov     x10, #0x87
     dup     v17.2d, x10
     movi    v18.16b, #0
-    movi    v21.16b, #0x0f
 
     // ── H', already in the natural domain, out of the context ──
     // See aes_gcm_encrypt_ctx: expanding the key and encrypting a zero
