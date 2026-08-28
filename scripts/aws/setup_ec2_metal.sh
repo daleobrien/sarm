@@ -69,17 +69,21 @@ info "lock clear"
 
 say "Installing apt-fast"
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
 
 # apt-fast is a wrapper that hands the downloads to aria2c with several
 # connections per mirror. On a metal box with a fat pipe that is the whole
 # difference between a two-minute and a ten-minute provisioning run; the
 # package set below is large and mostly download-bound.
 #
-# It is packaged in universe on recent Ubuntu; where it is not, the
-# upstream script is a single file with aria2 as its only dependency.
-# Either way the debconf answers must be preseeded or the install blocks
-# on an interactive prompt.
+# Installed straight from upstream rather than from the archive, so this
+# costs no `apt-get update`: apt-fast is one bash script whose only real
+# dependency is aria2, and Ubuntu cloud images ship with package lists
+# already populated, so aria2 resolves off the existing index. The proper
+# refresh happens below, through apt-fast, where it is faster.
+#
+# The packaged version is used when it is already installed; its debconf
+# answers are preseeded either way, since the config file the script reads
+# is the same one the package prompts for.
 install_apt_fast() {
     if command -v apt-fast >/dev/null 2>&1; then
         info "already present: $(command -v apt-fast)"
@@ -92,18 +96,14 @@ apt-fast apt-fast/dlflag boolean true
 apt-fast apt-fast/aptmanager string apt-get
 DEBCONF
 
-    if sudo apt-get install -y -qq apt-fast 2>/dev/null && command -v apt-fast >/dev/null 2>&1; then
-        info "installed from apt"
-        return 0
-    fi
-
-    info "not packaged for this release — installing upstream"
     sudo apt-get install -y -qq aria2 || return 1
     sudo curl -fsSL -o /usr/local/bin/apt-fast \
         https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast || return 1
     sudo chmod 0755 /usr/local/bin/apt-fast
-    sudo curl -fsSL -o /etc/apt-fast.conf \
-        https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast.conf || return 1
+    if [ ! -f /etc/apt-fast.conf ]; then
+        sudo curl -fsSL -o /etc/apt-fast.conf \
+            https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast.conf || return 1
+    fi
     command -v apt-fast >/dev/null 2>&1
 }
 
@@ -118,6 +118,7 @@ else
 fi
 
 say "Installing packages"
+"${APT[@]}" update || die "apt update failed"
 
 # Split into "must have" and "nice to have" so one unavailable package in a
 # fresh release does not abort the provisioning run.
