@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# quick_test_ec2.sh — rent a ec2 (metal) in Melbourne, run the quick perf
-# suite on it, bring the results home, and give the machine back.
+# quick_test_ec2.sh — rent a ec2 (metal) in the nearest region with
+# capacity, run the quick perf suite on it, bring the results home,
+# and give the machine back.
 #
 # The whole point of the exercise is the Neoverse N1 PMU, which only bare
 # metal exposes, and bare metal is billed by the second from the moment it
@@ -11,6 +12,8 @@
 # timer and terminate-on-shutdown.
 #
 # What it does:
+#   0. pick a region: Melbourne, then Sydney, then the US, skipping any
+#      that lacks the image, the instance type or the vCPU quota
 #   1. SSH key pair (yours if you have one, else ephemeral) + security
 #      group locked to your public IP
 #   2. launch ec2 (metal) on the latest Ubuntu arm64 (AMI resolved from SSM)
@@ -70,6 +73,8 @@
 #   ./scripts/aws/quick_test_ec2.sh --key-name X --key-file ~/.ssh/X.pem
 #   ./scripts/aws/quick_test_ec2.sh --ephemeral-key        # mint one instead
 #   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
+#   ./scripts/aws/quick_test_ec2.sh --region us-east-1     # pin one region
+#   ./scripts/aws/quick_test_ec2.sh --regions "ap-southeast-2 us-west-2"
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
 #   ./scripts/aws/quick_test_ec2.sh --keep                 # leave it running
 #   ./scripts/aws/quick_test_ec2.sh --sweep-only           # just drain the
@@ -77,15 +82,24 @@
 #
 # Needs: awscli v2 with credentials, ssh, scp, git. c6g.metal counts 64
 # vCPUs against the "Running On-Demand Standard instances" quota in the
-# target region — if that quota is still the default 5, the launch fails
-# with VcpuLimitExceeded and nothing is billed.
+# target region — if that quota is still the default 5, that region is
+# skipped during the plan rather than failing mid-launch. Capacity itself
+# cannot be queried, only attempted: the launch walks every zone of the
+# chosen region and then the next region, and nothing is billed until one
+# of those attempts succeeds.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
 
 # ── options ───────────────────────────────────────────────────────────
-REGION="${AWS_REGION_OVERRIDE:-ap-southeast-4}"     # Melbourne
+# Candidate regions, in preference order. The script probes each one for
+# image + instance-type offering + vCPU quota before it launches anything,
+# and falls through to the next when a region turns out to have no
+# capacity. --region pins it to exactly one.
+REGION_CANDIDATES="${SARM_EC2_REGIONS:-ap-southeast-4 ap-southeast-2 us-east-1 us-west-2}"
+                        # Melbourne, Sydney, N. Virginia, Oregon
+REGION=""               # chosen from the above during the plan
 ITYPE="c6g.metal"  # 64 cores
 #ITYPE="c8g.metal-48xl"  # 192 cores
 AMI=""
@@ -111,8 +125,8 @@ SSH_CIDR=""
 # Key pair. An existing AWS key pair is used when its private half is on
 # this machine; otherwise the script falls back to minting an ephemeral
 # one for the run. A key pair belongs to a single region, so the default
-# here is paired with the default REGION above — point --region somewhere
-# else and you will need that region's own key.
+# here is paired with the first candidate region above; in any other
+# region it will not be found and an ephemeral pair is minted instead.
 KEY_NAME="${SARM_EC2_KEY_NAME:-DaleMelbourne}"
 KEY_FILE="${SARM_EC2_KEY_FILE:-$HOME/.ssh/DaleMelbourne.pem}"
 KEY_EXPLICIT=0
@@ -126,7 +140,8 @@ PENDING_SG_FILE="${SARM_PENDING_SG_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm/pe
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --region)      REGION="$2"; shift ;;
+        --region)      REGION_CANDIDATES="$2"; shift ;;
+        --regions)     REGION_CANDIDATES="$2"; shift ;;
         --type)        ITYPE="$2"; shift ;;
         --ami)         AMI="$2"; shift ;;
         --ubuntu)      UBUNTU="$2"; shift ;;
@@ -174,7 +189,7 @@ TAG="sarm-quicktest-$RUNID"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sarm-ec2-XXXXXX")"
 KEYFILE=""
 LOCAL_OUT="$REPO/perf-results/ec2-$RUNID"
-AWSC=(aws --region "$REGION" --output text)
+AWSC=()                 # rebuilt once the region is chosen
 
 INSTANCE_ID=""
 SG_ID=""
@@ -349,29 +364,154 @@ if [ "$SWEEP_ONLY" = 1 ]; then
     exit 0
 fi
 
-# ── 0. plan ───────────────────────────────────────────────────────────
-say "Plan"
-# Canonical publishes a "current" pointer per release, so this always picks
-# up the newest daily build of that release rather than a frozen serial.
+# ── 0. where to rent ──────────────────────────────────────────────────
+# Bare metal of one type is not offered everywhere, and where it is
+# offered a given zone can still be out of it. So rather than hard-coding
+# one region, walk a preference list and keep the ones that survive three
+# cheap, free API checks:
+#
+#   * Canonical publishes the Ubuntu arm64 image there,
+#   * the instance type is offered in at least one availability zone,
+#   * the On-Demand vCPU quota is big enough for the type.
+#
+# None of that proves there is capacity — only run-instances can, and the
+# answer changes minute to minute. So this is a shortlist, not a decision:
+# the launch below walks the zones of the winning region, and then the
+# next region, until one actually hands over a machine.
+#
+# The order is deliberate: Melbourne and Sydney are close (latency matters
+# only for the upload, but egress and instance price differ per region),
+# and the US regions are the deep capacity pool that almost always has
+# metal free when ap-southeast-4 does not.
+# Region codes are unreadable at a glance, and picking the wrong side of
+# the planet is an easy mistake to make in a hurry. The common ones are
+# spelled out here; anything else is asked of AWS, which publishes the
+# long names in SSM under a global path (readable from any region, so
+# us-east-1 is a convention here, not a dependency on that region).
+region_name() {
+    case "$1" in
+        ap-southeast-4) printf 'Melbourne' ;;
+        ap-southeast-2) printf 'Sydney' ;;
+        ap-southeast-1) printf 'Singapore' ;;
+        ap-northeast-1) printf 'Tokyo' ;;
+        us-east-1)      printf 'N. Virginia' ;;
+        us-east-2)      printf 'Ohio' ;;
+        us-west-1)      printf 'N. California' ;;
+        us-west-2)      printf 'Oregon' ;;
+        eu-west-1)      printf 'Ireland' ;;
+        eu-central-1)   printf 'Frankfurt' ;;
+        *)
+            local long
+            long="$(aws --region us-east-1 --output text ssm get-parameters \
+                      --names "/aws/service/global-infrastructure/regions/$1/longName" \
+                      --query 'Parameters[].Value' 2>/dev/null || true)"
+            case "$long" in
+                ''|None)  printf '%s' "$1" ;;
+                # "Asia Pacific (Melbourne)" -> "Melbourne"
+                *\(*\)*)  printf '%s' "${long#*(}" | tr -d ')' ;;
+                *)        printf '%s' "$long" ;;
+            esac ;;
+    esac
+}
+
+# Its stdout is the machine-readable result line and nothing else — the
+# caller captures it — so progress messages here go to stderr.
+probe_region() {
+    local region="$1" ami azs quota vcpus label
+    label="$(printf '%-16s %-14s' "$region" "$(region_name "$region")")"
+    local awsc=(aws --region "$region" --output text)
+
+    ami="$AMI"
+    if [ -z "$ami" ]; then
+        ami="$("${awsc[@]}" ssm get-parameters --names "$AMI_SSM" \
+                 --query 'Parameters[].Value' 2>/dev/null || true)"
+    fi
+    if [ -z "$ami" ] || [ "$ami" = "None" ]; then
+        info "$label no Ubuntu $UBUNTU arm64 image" >&2
+        return 1
+    fi
+
+    # Every zone that offers the type, not just the first: the launch loop
+    # needs the alternatives when zone one is out of capacity.
+    azs="$("${awsc[@]}" ec2 describe-instance-type-offerings \
+             --location-type availability-zone \
+             --filters "Name=instance-type,Values=$ITYPE" \
+             --query 'InstanceTypeOfferings[].Location' 2>/dev/null | tr '\t' ' ' || true)"
+    azs="$(printf '%s' "$azs" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+    if [ -z "$azs" ] || [ "$azs" = "None" ]; then
+        info "$label $ITYPE not offered" >&2
+        return 1
+    fi
+
+    # The quota is per region and counts vCPUs, not instances, so a
+    # 64-core metal box needs 64 against a default that is often 5. This
+    # is the failure that otherwise appears as VcpuLimitExceeded several
+    # minutes and one security group into the run.
+    vcpus="$("${awsc[@]}" ec2 describe-instance-types --instance-types "$ITYPE" \
+               --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' 2>/dev/null || true)"
+    quota="$(aws --region "$region" --output text service-quotas get-service-quota \
+               --service-code ec2 --quota-code L-1216C47A \
+               --query 'Quota.Value' 2>/dev/null || true)"
+    # An unreadable quota (no servicequotas:GetServiceQuota permission) is
+    # not evidence of a small one — only a known-too-small one disqualifies.
+    if [ -n "$quota" ] && [ "$quota" != "None" ] && [ -n "$vcpus" ] && [ "$vcpus" != "None" ]; then
+        if [ "${quota%%.*}" -lt "$vcpus" ]; then
+            info "$label On-Demand vCPU quota ${quota%%.*} < $vcpus" >&2
+            return 1
+        fi
+    fi
+
+    printf '%s|%s|%s\n' "$region" "$ami" "$azs"
+    return 0
+}
+
+say "Choosing a region"
+# An AMI id belongs to exactly one region, so pinning one pins the region.
+if [ -n "$AMI" ] && [ "$(printf '%s' "$REGION_CANDIDATES" | wc -w)" -gt 1 ]; then
+    REGION_CANDIDATES="${REGION_CANDIDATES%% *}"
+    warn "--ami is region-specific; only $REGION_CANDIDATES will be tried"
+fi
 AMI_SSM="/aws/service/canonical/ubuntu/server/$UBUNTU/stable/current/arm64/hvm/ebs-gp3/ami-id"
-[ -z "$AMI" ] && AMI="$("${AWSC[@]}" ssm get-parameters --names "$AMI_SSM" \
-    --query 'Parameters[].Value')"
-[ -n "$AMI" ] && [ "$AMI" != "None" ] || die "no Ubuntu $UBUNTU arm64 image in $REGION.
-   List what Canonical publishes there with:
-     aws --region $REGION ssm get-parameters-by-path --recursive \\
+CANDIDATES=()
+for region in $REGION_CANDIDATES; do
+    entry="$(probe_region "$region" || true)"
+    case "$entry" in "$region|ami-"*) ;; *) continue ;; esac
+    CANDIDATES+=("$entry") \
+        && info "$(printf '%-16s %-14s' "$region" "$(region_name "$region")") ok — $(printf '%s' "${entry##*|}" | wc -w | tr -d ' ') zone(s) offering $ITYPE"
+done
+
+if [ "${#CANDIDATES[@]}" = 0 ]; then
+    die "none of the candidate regions can run $ITYPE on Ubuntu $UBUNTU arm64:
+       $REGION_CANDIDATES
+   Pick one explicitly with --region, or a different type with --type.
+   List what Canonical publishes in a region with:
+     aws --region <region> ssm get-parameters-by-path --recursive \\
          --path /aws/service/canonical/ubuntu/server --query 'Parameters[].Name' \\
        | tr '\\t' '\\n' | grep 'current/arm64/hvm/ebs-gp3'"
+fi
 
-AZ="$("${AWSC[@]}" ec2 describe-instance-type-offerings \
-        --location-type availability-zone \
-        --filters "Name=instance-type,Values=$ITYPE" \
-        --query 'InstanceTypeOfferings[0].Location')"
-[ -n "$AZ" ] && [ "$AZ" != "None" ] || die "$ITYPE is not offered in $REGION"
+# The first survivor is the plan; the rest are the fallbacks.
+REGION="${CANDIDATES[0]%%|*}"
+AMI="$(printf '%s' "${CANDIDATES[0]}" | cut -d'|' -f2)"
+AZS="${CANDIDATES[0]##*|}"
+AZ="${AZS%% *}"
+AWSC=(aws --region "$REGION" --output text)
 
-printf '   %-14s %s\n' region "$REGION" type "$ITYPE" az "$AZ" \
+# ── 0b. plan ──────────────────────────────────────────────────────────
+say "Plan"
+printf '   %-14s %s\n' region "$REGION — $(region_name "$REGION")" type "$ITYPE" az "$AZ" \
     ubuntu "$UBUNTU" ami "$AMI" \
     suite "run_perf_suite.sh $SUITE_ARGS" timeout "${TIMEOUT}s (deadman ${DEADMAN}m)" \
     results "$LOCAL_OUT"
+printf '   %-14s %s\n' zones "$AZS"
+if [ "${#CANDIDATES[@]}" -gt 1 ]; then
+    fallbacks=""
+    for entry in "${CANDIDATES[@]:1}"; do
+        fallbacks="$fallbacks ${entry%%|*} ($(region_name "${entry%%|*}")),"
+    done
+    fallbacks="${fallbacks%,}"
+    printf '   %-14s %s\n' fallbacks "${fallbacks# } (used only if $REGION is out of capacity)"
+fi
 if [ "$SATURATE" = 1 ]; then
     printf '   %-14s %s\n' layout \
         "sarm on $SERVER_CORES core(s), load on the rest, $(( SERVER_CORES * CONNS_PER_CORE )) conns x $MAX_STREAMS streams"
@@ -391,37 +531,49 @@ fi
 # its private half and AWS still has it in this region, otherwise a fresh
 # ephemeral one. An explicit --key-name/--key-file is an instruction, not
 # a preference, so it fails rather than falling back.
-say "Key pair and security group"
-if [ -n "$KEY_NAME" ] && [ -n "$KEY_FILE" ]; then
-    if [ ! -r "$KEY_FILE" ]; then
-        [ "$KEY_EXPLICIT" = 1 ] && die "no readable private key at $KEY_FILE"
-        info "no private key at $KEY_FILE — falling back to an ephemeral pair"
-        KEY_NAME=""
-    elif ! "${AWSC[@]}" ec2 describe-key-pairs --key-names "$KEY_NAME" \
-            --query 'KeyPairs[0].KeyName' >/dev/null 2>&1; then
-        [ "$KEY_EXPLICIT" = 1 ] && die "AWS has no key pair named $KEY_NAME in $REGION"
-        info "AWS has no key pair $KEY_NAME in $REGION — falling back to an ephemeral pair"
-        KEY_NAME=""
-    else
-        KEYFILE="$KEY_FILE"
-        # ssh refuses a private key the rest of the world can read, and
-        # a .pem straight out of the console often arrives 0644.
-        case "$(ls -l "$KEYFILE" | cut -c5-10)" in
-            ------) ;;
-            *) warn "$KEYFILE is group/world readable; ssh will refuse it. chmod 600 it." ;;
-        esac
-        info "using your key pair $KEY_NAME ($KEYFILE)"
+#
+# Both of these are per-region, so they are functions rather than
+# straight-line code: failing over to the next region means doing them
+# again against the new one.
+KEY_NAME_REQUESTED="$KEY_NAME"
+KEY_FILE_REQUESTED="$KEY_FILE"
+
+setup_keypair() {
+    KEY_NAME="$KEY_NAME_REQUESTED"
+    KEY_FILE="$KEY_FILE_REQUESTED"
+    KEY_EPHEMERAL=0
+    KEYFILE=""
+    if [ -n "$KEY_NAME" ] && [ -n "$KEY_FILE" ]; then
+        if [ ! -r "$KEY_FILE" ]; then
+            [ "$KEY_EXPLICIT" = 1 ] && die "no readable private key at $KEY_FILE"
+            info "no private key at $KEY_FILE — falling back to an ephemeral pair"
+            KEY_NAME=""
+        elif ! "${AWSC[@]}" ec2 describe-key-pairs --key-names "$KEY_NAME" \
+                --query 'KeyPairs[0].KeyName' >/dev/null 2>&1; then
+            [ "$KEY_EXPLICIT" = 1 ] && die "AWS has no key pair named $KEY_NAME in $REGION"
+            info "AWS has no key pair $KEY_NAME in $REGION — falling back to an ephemeral pair"
+            KEY_NAME=""
+        else
+            KEYFILE="$KEY_FILE"
+            # ssh refuses a private key the rest of the world can read, and
+            # a .pem straight out of the console often arrives 0644.
+            case "$(ls -l "$KEYFILE" | cut -c5-10)" in
+                ------) ;;
+                *) warn "$KEYFILE is group/world readable; ssh will refuse it. chmod 600 it." ;;
+            esac
+            info "using your key pair $KEY_NAME ($KEYFILE)"
+        fi
     fi
-fi
-if [ -z "$KEY_NAME" ]; then
-    KEYFILE="$WORK/id_ed25519"
-    ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$KEYFILE"
-    KEY_NAME="$TAG"
-    "${AWSC[@]}" ec2 import-key-pair --key-name "$KEY_NAME" \
-        --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
-    KEY_EPHEMERAL=1
-    info "ephemeral key pair $KEY_NAME (private key lives only in $WORK)"
-fi
+    if [ -z "$KEY_NAME" ]; then
+        KEYFILE="$WORK/id_ed25519"
+        [ -f "$KEYFILE" ] || ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$KEYFILE"
+        KEY_NAME="$TAG"
+        "${AWSC[@]}" ec2 import-key-pair --key-name "$KEY_NAME" \
+            --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
+        KEY_EPHEMERAL=1
+        info "ephemeral key pair $KEY_NAME (private key lives only in $WORK)"
+    fi
+}
 
 # Several independent sources, because a single one is a single point of
 # failure: DNS filtering, a split-tunnel VPN or a captive resolver can take
@@ -465,25 +617,38 @@ fi
 case "$SSH_CIDR" in
     0.0.0.0/0) warn "port 22 will be open to the entire internet (key-only auth)" ;;
 esac
-VPC_ID="$("${AWSC[@]}" ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId')"
-[ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || die "no default VPC in $REGION"
-SUBNET_ID="$("${AWSC[@]}" ec2 describe-subnets \
-    --filters "Name=vpc-id,Values=$VPC_ID" "Name=availability-zone,Values=$AZ" \
-    --query 'Subnets[0].SubnetId')"
-[ -n "$SUBNET_ID" ] && [ "$SUBNET_ID" != "None" ] || die "no default subnet in $AZ"
 
-SG_ID="$("${AWSC[@]}" ec2 create-security-group --group-name "$TAG" \
-    --description "ephemeral sarm benchmark box" --vpc-id "$VPC_ID" --query 'GroupId')"
-"${AWSC[@]}" ec2 authorize-security-group-ingress --group-id "$SG_ID" \
-    --protocol tcp --port 22 --cidr "$SSH_CIDR" >/dev/null
-info "security group $SG_ID — port 22 from $SSH_CIDR only"
-info "the load generator runs on the box itself, so nothing else is exposed"
+setup_security_group() {
+    VPC_ID="$("${AWSC[@]}" ec2 describe-vpcs --filters Name=isDefault,Values=true \
+        --query 'Vpcs[0].VpcId')"
+    [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || die "no default VPC in $REGION"
+    SG_ID="$("${AWSC[@]}" ec2 create-security-group --group-name "$TAG" \
+        --description "ephemeral sarm benchmark box" --vpc-id "$VPC_ID" --query 'GroupId')"
+    "${AWSC[@]}" ec2 authorize-security-group-ingress --group-id "$SG_ID" \
+        --protocol tcp --port 22 --cidr "$SSH_CIDR" >/dev/null
+    info "security group $SG_ID — port 22 from $SSH_CIDR only"
+    info "the load generator runs on the box itself, so nothing else is exposed"
+}
+
+# Undo a region that would not give us a machine. Nothing is attached to
+# these — the launch failed — so the security group deletes immediately
+# rather than going on the deferred list.
+release_region() {
+    if [ -n "$SG_ID" ]; then
+        "${AWSC[@]}" ec2 delete-security-group --group-id "$SG_ID" >/dev/null 2>&1 \
+            || defer_security_group "$SG_ID"
+        SG_ID=""
+    fi
+    if [ "$KEY_EPHEMERAL" = 1 ] && [ -n "$KEY_NAME" ]; then
+        "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 || true
+        KEY_EPHEMERAL=0
+    fi
+}
 
 # ── 2. launch ─────────────────────────────────────────────────────────
 # Two independent kill switches, because the local trap only fires while
 # this shell is alive: the instance shuts itself down after $DEADMAN
 # minutes, and shutdown means terminate.
-say "Launching $ITYPE (bare metal takes several minutes to POST)"
 cat > "$WORK/user-data.sh" <<USERDATA
 #!/bin/bash
 # Deadman switch written by quick_test_ec2.sh — if the orchestrating
@@ -491,22 +656,87 @@ cat > "$WORK/user-data.sh" <<USERDATA
 shutdown -h +${DEADMAN}
 USERDATA
 
-INSTANCE_ID="$("${AWSC[@]}" ec2 run-instances \
-    --image-id "$AMI" \
-    --instance-type "$ITYPE" \
-    --key-name "$KEY_NAME" \
-    --subnet-id "$SUBNET_ID" \
-    --security-group-ids "$SG_ID" \
-    --associate-public-ip-address \
-    --instance-initiated-shutdown-behavior terminate \
-    --monitoring 'Enabled=true' \
-    --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
-    --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${VOLUME_GB},VolumeType=gp3,DeleteOnTermination=true}" \
-    --user-data "file://$WORK/user-data.sh" \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$TAG},{Key=Purpose,Value=sarm-benchmark},{Key=Ephemeral,Value=true}]" \
-    --query 'Instances[0].InstanceId')"
-[ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] || die "run-instances returned no instance id"
-info "$INSTANCE_ID"
+# One region's worth of attempts: every zone that offers the type, in
+# order, because "no capacity" is a property of a zone and not of a
+# region. Returns 0 with INSTANCE_ID set, 1 if the whole region is out.
+launch_in_region() {
+    local az subnet out rc
+    for az in $AZS; do
+        subnet="$("${AWSC[@]}" ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=availability-zone,Values=$az" \
+            --query 'Subnets[0].SubnetId')"
+        if [ -z "$subnet" ] || [ "$subnet" = "None" ]; then
+            info "$az — no default subnet, skipping"
+            continue
+        fi
+
+        info "trying $az"
+        # set -e must not fire here: a capacity error is an expected
+        # answer, not a failure of the script.
+        set +e
+        out="$("${AWSC[@]}" ec2 run-instances \
+            --image-id "$AMI" \
+            --instance-type "$ITYPE" \
+            --key-name "$KEY_NAME" \
+            --subnet-id "$subnet" \
+            --security-group-ids "$SG_ID" \
+            --associate-public-ip-address \
+            --instance-initiated-shutdown-behavior terminate \
+            --monitoring 'Enabled=true' \
+            --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
+            --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${VOLUME_GB},VolumeType=gp3,DeleteOnTermination=true}" \
+            --user-data "file://$WORK/user-data.sh" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$TAG},{Key=Purpose,Value=sarm-benchmark},{Key=Ephemeral,Value=true}]" \
+            --query 'Instances[0].InstanceId' 2>&1)"
+        rc=$?
+        set -e
+
+        if [ "$rc" = 0 ] && [ -n "$out" ] && [ "$out" != "None" ]; then
+            INSTANCE_ID="$out"
+            AZ="$az"
+            SUBNET_ID="$subnet"
+            return 0
+        fi
+
+        case "$out" in
+            *InsufficientInstanceCapacity*|*InsufficientHostCapacity*|*Unsupported*)
+                warn "$az has no $ITYPE capacity right now" ;;
+            *VcpuLimitExceeded*|*InstanceLimitExceeded*)
+                # A quota is regional; no other zone will answer differently.
+                warn "$REGION quota refused the launch: $(printf '%s' "$out" | tail -1)"
+                return 1 ;;
+            *)
+                # An unexpected error is worth surfacing rather than
+                # silently walking the remaining zones with it.
+                warn "$az: $(printf '%s' "$out" | tail -1)" ;;
+        esac
+    done
+    return 1
+}
+
+LAUNCHED=0
+for entry in "${CANDIDATES[@]}"; do
+    REGION="${entry%%|*}"
+    AMI="$(printf '%s' "$entry" | cut -d'|' -f2)"
+    AZS="${entry##*|}"
+    AWSC=(aws --region "$REGION" --output text)
+
+    say "Launching $ITYPE in $REGION / $(region_name "$REGION") (bare metal takes several minutes to POST)"
+    setup_keypair
+    setup_security_group
+    if launch_in_region; then LAUNCHED=1; break; fi
+
+    warn "no $ITYPE available anywhere in $REGION ($(region_name "$REGION"))"
+    release_region
+done
+
+if [ "$LAUNCHED" != 1 ]; then
+    INSTANCE_ID=""
+    die "no $ITYPE capacity in any candidate region ($REGION_CANDIDATES).
+   Nothing is running and nothing is billed. Options: wait and re-run,
+   try another type with --type, or name a region directly with --region."
+fi
+info "$INSTANCE_ID in $AZ — $(region_name "$REGION")"
 
 # The watchdog is armed only now — before this point there is nothing to
 # leak, and after it the trap does the right thing on TERM.
