@@ -205,11 +205,19 @@ RESULTS_FETCHED=0
 # group down and let a later run collect it. The list is plain text, one
 # "<region> <sg-id> <tag>" per line, and is rewritten atomically so two
 # scripts racing on it cannot leave it half-written.
+#
+# The region is on the line because a group id means nothing without one:
+# a later run may well be launching somewhere else entirely, and the
+# region a group was created in is not necessarily the region this run
+# ends in — the launch walks a candidate list and abandons a region that
+# has no capacity, leaving a group behind in it. So the region is passed
+# in by the caller rather than read from $REGION, which by then has moved
+# on. It still defaults to $REGION for the common case.
 defer_security_group() {
-    local sg="$1"
+    local sg="$1" region="${2:-$REGION}"
     mkdir -p "$(dirname "$PENDING_SG_FILE")" 2>/dev/null || return 0
-    printf '%s %s %s\n' "$REGION" "$sg" "$TAG" >> "$PENDING_SG_FILE" || return 0
-    info "security group $sg queued for deletion on a later run"
+    printf '%s %s %s\n' "$region" "$sg" "$TAG" >> "$PENDING_SG_FILE" || return 0
+    info "security group $sg queued for deletion on a later run ($region)"
 }
 
 # Try every group on the list; drop the ones that go away, keep the ones
@@ -223,7 +231,9 @@ sweep_pending_security_groups() {
     tmp="$(mktemp "${PENDING_SG_FILE}.XXXXXX")" || return 0
 
     while read -r region sg tag; do
-        [ -n "${sg:-}" ] || continue
+        # Both fields are required: a line missing the region cannot be
+        # acted on at all, since a group id is only unique within one.
+        [ -n "${sg:-}" ] && [ -n "${region:-}" ] || continue
         if err="$(aws --region "$region" --output text \
                     ec2 delete-security-group --group-id "$sg" 2>&1)"; then
             gone=$((gone + 1))
@@ -317,7 +327,7 @@ cleanup() {
             # Queued rather than deleted: the group is in use for as long
             # as you keep the box, and the sweep will simply skip it until
             # it is not.
-            [ -n "$SG_ID" ] && defer_security_group "$SG_ID"
+            [ -n "$SG_ID" ] && defer_security_group "$SG_ID" "$REGION"
             printf '\n'
             exit "$rc"
         fi
@@ -333,7 +343,7 @@ cleanup() {
     # The security group cannot be deleted while the instance still holds
     # it, and we are not waiting for that. Onto the list it goes.
     if [ -n "$SG_ID" ]; then
-        defer_security_group "$SG_ID"
+        defer_security_group "$SG_ID" "$REGION"
     fi
     # Only ever the pair this run created — a long-lived key of yours is
     # not this script's to delete.
@@ -634,9 +644,13 @@ setup_security_group() {
 # these — the launch failed — so the security group deletes immediately
 # rather than going on the deferred list.
 release_region() {
+    local region="$REGION"
     if [ -n "$SG_ID" ]; then
+        # Nothing is attached — the launch failed — so this normally
+        # deletes outright. If it does not, the group is recorded against
+        # the region it lives in, not the one we are about to try.
         "${AWSC[@]}" ec2 delete-security-group --group-id "$SG_ID" >/dev/null 2>&1 \
-            || defer_security_group "$SG_ID"
+            || defer_security_group "$SG_ID" "$region"
         SG_ID=""
     fi
     if [ "$KEY_EPHEMERAL" = 1 ] && [ -n "$KEY_NAME" ]; then
