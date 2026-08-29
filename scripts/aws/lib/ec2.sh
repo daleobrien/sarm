@@ -268,7 +268,15 @@ launch_one() {  # launch_one <itype> <role> <az> <subnet>
         printf '%s' "$out"
         return 0
     fi
+    # A refusal usually arrives as an API error, and the caller classifies
+    # it by matching on the text. But run-instances can also exit 0 having
+    # printed nothing, or print "None" — and the caller then warned
+    # "<zone>: " with an empty reason, which says only that something went
+    # wrong and nothing about what. Give those cases words of their own.
     LAUNCH_ERR="$out"
+    if [ -z "$out" ] || [ "$out" = "None" ]; then
+        LAUNCH_ERR="run-instances exited $rc without returning an instance id${out:+ (printed: $out)}"
+    fi
     return 1
 }
 
@@ -335,7 +343,11 @@ launch_group_in_region() {
                     *)
                         # An unexpected error is worth surfacing rather
                         # than silently walking the remaining zones with it.
-                        warn "$az: $(printf '%s' "$LAUNCH_ERR" | tail -1)" ;;
+                        # tail -1 on a multi-line API error; the ${...:-}
+                        # guard is because a reason we cannot read is still
+                        # worth reporting as one.
+                        warn "$az refused ${types[$i]}: $(printf '%s' "$LAUNCH_ERR" \
+                            | tail -1 | sed 's/^ *//')" ;;
                 esac
                 break
             fi
