@@ -18,11 +18,11 @@
 # no server work to do, and nothing lands on the server's cores except
 # sarm. What comes back is a ceiling rather than a floor.
 #
-#   server   c7g.2xlarge    8 vCPU   runs sarm, nothing else installed
-#   load     c7g.16xlarge  64 vCPU   runs wrk/h2load, no sarm, no compiler
+#   server   c7g.4xlarge   16 vCPU   runs sarm, nothing else installed
+#   load     c7g.12xlarge  48 vCPU   runs wrk/h2load, no sarm, no compiler
 #
 # The load box is not a fixed type: it is sized at --load-ratio (default
-# 8) times the server's cores, so changing --server-type cannot silently
+# 3) times the server's cores, so changing --server-type cannot silently
 # erode the margin that makes the measurement valid. Both sides' CPU is
 # then sampled over every protocol's window, so "the client had room to
 # spare" is a measurement in the summary rather than an assumption.
@@ -73,9 +73,9 @@
 # Usage:
 #   ./scripts/aws/rps_two_box_ec2.sh
 #   ./scripts/aws/rps_two_box_ec2.sh --yes
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge  # 16 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.8xlarge  # 32 vCPU
 #   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.large    # 2 vCPU
-#   ./scripts/aws/rps_two_box_ec2.sh --load-ratio 12            # more headroom
+#   ./scripts/aws/rps_two_box_ec2.sh --load-ratio 6             # more headroom
 #   ./scripts/aws/rps_two_box_ec2.sh --load-type c7gn.16xlarge  # pin it
 #   ./scripts/aws/rps_two_box_ec2.sh --protocols h2tls          # just TLS
 #   ./scripts/aws/rps_two_box_ec2.sh --duration 30 --repeat 5
@@ -128,13 +128,25 @@ REGION=""
 # must not happen is the load box failing to keep up, so it is not a fixed
 # type: LOAD_TYPE=auto sizes it at LOAD_RATIO times the server's cores,
 # and the run MEASURES both sides to prove the choice was right.
-SERVER_TYPE="c7g.2xlarge"   # 8 vCPU
+SERVER_TYPE="c7g.4xlarge"   # 16 vCPU
 LOAD_TYPE="auto"            # sized from the server; see resolve_load_type()
-# h2load costs roughly 4x what sarm costs per request, so 4:1 is break-even
-# and anything at or below it risks measuring the client. 8:1 is the
-# default because it leaves the client visibly idle at saturation, which
-# is the condition the summary checks for.
-LOAD_RATIO=8
+# MEASURED, not assumed. The repo's "h2load costs ~4x what sarm costs per
+# request" comes from LOOPBACK runs, where the two contend for the same
+# cores and caches; it does not survive the move to two boxes. The
+# 2026-08-29 run (perf-results/two-box-20260829-213226) drove a saturated
+# 8-core server and the client's own busy cores came to:
+#
+#   HTTP/1.1      4.49 client cores per 7.83 server   0.57x
+#   HTTP/2 h2c    9.53 per 7.81                       1.22x
+#   HTTP/2 + TLS 10.69 per 7.28                       1.47x
+#
+# So the worst protocol needs about 1.5 client cores per server core, and
+# the old 8:1 default was provisioning five times what the job used. 3:1
+# keeps a 2x margin over the worst case measured, which buys a much bigger
+# server inside the same family — and the run measures both sides every
+# time, so a ratio that turns out to be too thin is reported as
+# CLIENT-BOUND rather than quietly published as a server result.
+LOAD_RATIO=3
 AMI=""
 UBUNTU="26.04"
 VOLUME_GB=30
@@ -577,11 +589,11 @@ case "${LOAD_CPUS_N:-}"   in ''|*[!0-9]*) LOAD_CPUS_N=1 ;; esac
 info "server has $SERVER_CPUS_N vCPU, load box has $LOAD_CPUS_N"
 info "$(awk -v l="$LOAD_CPUS_N" -v s="$SERVER_CPUS_N" \
     'BEGIN{printf "%.1f:1 client cores per server core", (s>0?l/s:0)}')"
-if [ "$LOAD_CPUS_N" -lt $(( SERVER_CPUS_N * 4 )) ]; then
+if [ "$LOAD_CPUS_N" -lt $(( SERVER_CPUS_N * 2 )) ]; then
     warn "the load box has only $LOAD_CPUS_N cores to the server's $SERVER_CPUS_N."
-    warn "h2load costs ~4x what sarm costs per request, so below a 4:1 ratio the"
-    warn "client can be the side that runs out and the req/s figure is then its"
-    warn "ceiling, not sarm's. Raise --load-ratio, or name a --load-type."
+    warn "Measured worst case is ~1.5 client cores per server core (TLS), so below"
+    warn "2:1 there is no margin left and the client can be the side that runs out."
+    warn "Raise --load-ratio, or name a --load-type."
 fi
 
 # ── 5. size the load ──────────────────────────────────────────────────
@@ -824,6 +836,39 @@ PYEOF
 )"
     if [ -n "$line" ]; then note "$line"; fi
 done
+
+# What the pair actually cost, as opposed to what it was provisioned for.
+# This is the number that should set --load-ratio on the next run, and the
+# only reason the default is 3 rather than the 8 it started at: the figure
+# quoted everywhere for h2load's cost (~4x sarm) is a LOOPBACK figure and
+# does not survive the move to two boxes.
+RATIO_NOTE="$(python3 - "$WORK" $PROTOCOLS <<'PYEOF' 2>/dev/null || true
+import json, os, sys
+work = sys.argv[1]
+worst = None
+for proto in sys.argv[2:]:
+    p = os.path.join(work, proto + ".json")
+    if not os.path.exists(p):
+        continue
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    s, c = d.get("server_busy_cores"), d.get("client_busy_cores")
+    if not s or c is None:
+        continue
+    r = c / s
+    worst = r if worst is None else max(worst, r)
+if worst is not None:
+    print(f"{worst:.2f}")
+PYEOF
+)"
+if [ -n "$RATIO_NOTE" ]; then
+    note ""
+    note "Client cost: $RATIO_NOTE client cores per busy server core, worst protocol."
+    note "This run provisioned ${LOAD_RATIO}:1. A ratio of $(awk -v r="$RATIO_NOTE" \
+        'BEGIN{printf "%.0f", (r*2 < 2 ? 2 : r*2)}') would keep a 2x margin over that."
+fi
 
 note ""
 # The verdict. Anything under ~85% of the server's cores means the server

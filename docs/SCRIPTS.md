@@ -271,7 +271,7 @@ Three orchestrators in `scripts/aws/`, all built on the same two libraries.
 | script | what it rents | what it answers |
 |---|---|---|
 | `quick_test_ec2.sh` | one `c6g.metal` | *where does the time go* — PMU counters, profiles, annotation |
-| `rps_two_box_ec2.sh` | a sarm box + a load box 8x its size | *how many requests per second* |
+| `rps_two_box_ec2.sh` | a sarm box + a load box 3x its size | *how many requests per second* |
 | `run_perf_suite.sh` | nothing — runs on the box | the measurement suite itself |
 
 ```bash
@@ -285,23 +285,40 @@ taken over loopback with the load generator on the same machine, so the two
 competed for cores and one of them had to lose. `quick_test_ec2.sh` resolves
 that by starving sarm on purpose — two cores for the server, sixty for the
 client — which is exactly right for a *profile* and is not a throughput number
-anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.2xlarge` (8 vCPU)
-and the load on a box eight times its size, in one zone, in a cluster placement
+anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.4xlarge` (16 vCPU)
+and the load on a box three times its size, in one zone, in a cluster placement
 group, talking over their private addresses.
 
 **The load box is sized from the server, not fixed.** `--load-type auto` (the
 default) picks the smallest type in the server's own family with at least
-`--load-ratio` (default 8) times its cores, so changing `--server-type` cannot
-silently erode the margin the measurement depends on — a `c7g.8xlarge` client
-is 16:1 against 2 server cores but only 4:1 against 8, which is break-even
-against h2load's ~4x per-request cost. Past the family's largest size the
+`--load-ratio` times its cores, so changing `--server-type` cannot silently
+erode the margin the measurement depends on. Past the family's largest size the
 script says so and lets the measurement decide.
 
 ```bash
-./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge   # 16 vCPU server
-./scripts/aws/rps_two_box_ec2.sh --load-ratio 12             # more headroom
+./scripts/aws/rps_two_box_ec2.sh --server-type c7g.8xlarge   # 32 vCPU server
+./scripts/aws/rps_two_box_ec2.sh --load-ratio 6              # more headroom
 ./scripts/aws/rps_two_box_ec2.sh --load-type c7gn.16xlarge   # pin it
 ```
+
+**`--load-ratio` defaults to 3, and that number is measured.** The figure
+quoted elsewhere in this repo — h2load costing ~4x what sarm costs per request
+— is a *loopback* figure, taken where client and server contend for the same
+cores and caches. It does not survive the move to two boxes. Driving a
+saturated 8-core server
+(`perf-results/two-box-20260829-213226`), the client's own busy cores were:
+
+| protocol | server busy | client busy | client:server |
+|---|---|---|---|
+| HTTP/1.1 | 7.83/8 | 4.49/64 | 0.57x |
+| HTTP/2 h2c | 7.81/8 | 9.53/64 | 1.22x |
+| HTTP/2 + TLS | 7.28/8 | 10.69/64 | **1.47x** |
+
+So the worst protocol needs ~1.5 client cores per server core, and the original
+8:1 default was provisioning five times what the job used. 3:1 keeps a 2x
+margin over the worst case and buys a much larger server inside the same
+instance family. Every run prints the ratio it actually measured next to the
+one it provisioned, so this stays evidence rather than folklore.
 
 **Both sides are measured.** `/proc/stat` is sampled on the server *and* the
 load box across each protocol's window. The server's busy cores say whether
