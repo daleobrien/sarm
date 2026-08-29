@@ -168,12 +168,52 @@ Lread_got_data:
     adr_l x0, buf
     mov x1, x7
     bl h2_probe
-    cbz x0, 1f            // not the preface → HTTP/1
+    cbz x0, Lchild_h1_nodelay   // not the preface → HTTP/1
     ldr_l x0, clientfd
     adr_l x1, buf
     mov x2, x7
     bl h2_connection_loop
     b child_end           // the loop returns when the connection ends
+
+    // ── TCP_NODELAY, on the HTTP/1 path only ────────────────────────
+    // Nagle holds a small write while earlier data on the connection is
+    // unacknowledged. An unpipelined HTTP/1 client never notices — by
+    // the time sarm writes, the previous response has been acked — but a
+    // pipelining one stalls hard: responses 2..N of a batch are written
+    // while response 1 is unacked, they never fill a loopback MSS, and
+    // the client is reading rather than sending, so nothing acks until
+    // its delayed-ACK timer fires. Measured on a c6g.metal at depth 8:
+    // 7,059 req/s with Nagle against 208,621 without, latency pinned at
+    // 41ms (p90 40.98, p99 41.01) — a timer, not queueing.
+    //
+    // HTTP/2 must NOT have this. It multiplexes ~128 streams per
+    // connection and sarm answers each request with its own writev, so
+    // Nagle is doing free write-coalescing there: setting the option for
+    // every connection cost 64% of h2c (998k -> 362k req/s) and 55% of
+    // h2tls, and moved the top of the h2c profile off el0_svc and onto
+    // the per-packet path (skb_release_data, __tcp_transmit_skb,
+    // enqueue_to_backlog) — one segment per response frame instead of
+    // one per batch. Hence here, after the h2 probe has ruled HTTP/2
+    // out, rather than in main.S beside SO_RCVTIMEO.
+    //
+    // Reached once per connection: the probe runs on the first data
+    // only, and every later request jumps straight to 1f.
+    //
+    // TLS is unaffected either way — tls_alpn_h2 is the only protocol
+    // this server offers, so there is no HTTP/1-over-TLS path to reach.
+    //
+    // Not fatal if it fails; the connection is still correct, just
+    // liable to the stall. x7 (bytes buffered) and x25 (protocol
+    // decided) are live across this and are not touched.
+Lchild_h1_nodelay:
+    SCWINUM SYS_setsockopt
+    ldr_l x0, clientfd
+    mov x1, #IPPROTO_TCP
+    mov x2, #TCP_NODELAY
+    adr_l x3, one
+    mov x4, #4                  // int
+    SCWISVC
+    SCERR
 1:
     adr_l x0, buf
     mov x1, x7
