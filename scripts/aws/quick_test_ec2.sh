@@ -75,10 +75,19 @@
 #   ./scripts/aws/quick_test_ec2.sh --ubuntu 24.04         # previous LTS
 #   ./scripts/aws/quick_test_ec2.sh --region us-east-1     # pin one region
 #   ./scripts/aws/quick_test_ec2.sh --regions "ap-southeast-2 us-west-2"
+#   ./scripts/aws/quick_test_ec2.sh --on-demand            # not spot; costs
+#                                                          # ~3x, cannot be
+#                                                          # interrupted
 #   ./scripts/aws/quick_test_ec2.sh --timeout 5400
 #   ./scripts/aws/quick_test_ec2.sh --keep                 # leave it running
 #   ./scripts/aws/quick_test_ec2.sh --sweep-only           # just drain the
 #                                                          # deferred SG list
+#
+# Spot is the default market — the same bare metal for roughly a third of
+# the on-demand price, at the cost of AWS being able to reclaim it with
+# two minutes' notice. Everything here already survives the box
+# disappearing, so an interruption costs the run and nothing else; pass
+# --on-demand when a long suite is worth paying not to repeat.
 #
 # Needs: awscli v2 with credentials, ssh, scp, git. c6g.metal counts 64
 # vCPUs against the "Running On-Demand Standard instances" quota in the
@@ -97,8 +106,19 @@ REPO="$PWD"
 # image + instance-type offering + vCPU quota before it launches anything,
 # and falls through to the next when a region turns out to have no
 # capacity. --region pins it to exactly one.
-REGION_CANDIDATES="${SARM_EC2_REGIONS:-ap-southeast-4 ap-southeast-2 us-east-1 us-west-2}"
-                        # Melbourne, Sydney, N. Virginia, Oregon
+# Nearest first, then the deepest capacity pools. Probing is lazy — the
+# first region that passes is the only one queried — so a long list costs
+# nothing on a normal run and is what keeps a run possible on a day when
+# metal is scarce or a spot quota is zero in the near regions.
+REGION_CANDIDATES="${SARM_EC2_REGIONS:-\
+ap-southeast-4 ap-southeast-2 \
+us-west-2 us-west-1 us-east-1 us-east-2 \
+ap-southeast-1 ap-northeast-1 ap-northeast-2 ap-south-1 \
+eu-west-1 eu-west-2 eu-central-1 ca-central-1 sa-east-1}"
+                        # Melbourne, Sydney,
+                        # Oregon, N. California, N. Virginia, Ohio,
+                        # Singapore, Tokyo, Seoul, Mumbai,
+                        # Ireland, London, Frankfurt, Canada, Sao Paulo
 REGION=""               # chosen from the above during the plan
 ITYPE="c6g.metal"  # 64 cores
 #ITYPE="c8g.metal-48xl"  # 192 cores
@@ -111,6 +131,12 @@ SUITE_ARGS="--quick"
 # /--max-streams once the instance is up and its core count is known;
 # nothing here is computed locally, because the core count belongs to the
 # machine we are about to rent, not to this laptop.
+# Spot by default: it is the same hardware at roughly a third of the price,
+# and this script's whole design already assumes the instance can vanish
+# without warning — deadman shutdown, terminate-on-shutdown, cleanup on
+# every exit path, results fetched on the way out. An interruption costs a
+# re-run, not a leak. --on-demand buys certainty for a long suite.
+SPOT=1
 SATURATE=1
 SERVER_CORES=2          # cores sarm is pinned to — the smaller, the
                         #   sooner it saturates and the cleaner the PMU
@@ -142,6 +168,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --region)      REGION_CANDIDATES="$2"; shift ;;
         --regions)     REGION_CANDIDATES="$2"; shift ;;
+        --spot)        SPOT=1 ;;
+        --on-demand)   SPOT=0 ;;
         --type)        ITYPE="$2"; shift ;;
         --ami)         AMI="$2"; shift ;;
         --ubuntu)      UBUNTU="$2"; shift ;;
@@ -404,12 +432,17 @@ region_name() {
         ap-southeast-2) printf 'Sydney' ;;
         ap-southeast-1) printf 'Singapore' ;;
         ap-northeast-1) printf 'Tokyo' ;;
+        ap-northeast-2) printf 'Seoul' ;;
+        ap-south-1)     printf 'Mumbai' ;;
         us-east-1)      printf 'N. Virginia' ;;
         us-east-2)      printf 'Ohio' ;;
         us-west-1)      printf 'N. California' ;;
         us-west-2)      printf 'Oregon' ;;
         eu-west-1)      printf 'Ireland' ;;
+        eu-west-2)      printf 'London' ;;
         eu-central-1)   printf 'Frankfurt' ;;
+        ca-central-1)   printf 'Canada Central' ;;
+        sa-east-1)      printf 'Sao Paulo' ;;
         *)
             local long
             long="$(aws --region us-east-1 --output text ssm get-parameters \
@@ -424,14 +457,41 @@ region_name() {
     esac
 }
 
+# Regions the account can actually use. Several of the candidates above —
+# Melbourne among them — are opt-in: they exist, they publish images and
+# instance types, and every API call against them fails with AuthFailure
+# until the account enables them in the console. Without this check that
+# looks identical to "no image published here", which sends you hunting
+# the wrong problem. One call, cached, and only made once a probe needs it.
+ENABLED_REGIONS=""
+region_enabled() {
+    if [ -z "$ENABLED_REGIONS" ]; then
+        ENABLED_REGIONS="$(aws --region us-east-1 --output text ec2 describe-regions \
+            --query 'Regions[].RegionName' 2>/dev/null | tr '\t' ' ' || true)"
+        # Unreadable (no ec2:DescribeRegions) is not evidence of anything,
+        # so fall back to letting every candidate through.
+        [ -n "$ENABLED_REGIONS" ] || ENABLED_REGIONS="ALL"
+    fi
+    [ "$ENABLED_REGIONS" = "ALL" ] && return 0
+    case " $ENABLED_REGIONS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
 # Its stdout is the machine-readable result line and nothing else — the
 # caller captures it — so progress messages here go to stderr.
 probe_region() {
-    local region="$1" ami azs quota vcpus label
+    local region="$1" ami azs quota vcpus label quota_code
     label="$(printf '%-16s %-14s' "$region" "$(region_name "$region")")"
     local awsc=(aws --region "$region" --output text)
 
-    ami="$AMI"
+    # AMI_PINNED, not AMI: AMI holds whatever the last probe resolved, and
+    # in a fallback probe that is the previous region's image id — which
+    # exists nowhere else. Only an explicit --ami pins across regions.
+    if ! region_enabled "$region"; then
+        info "$label not enabled on this account (opt-in region)" >&2
+        return 1
+    fi
+
+    ami="$AMI_PINNED"
     if [ -z "$ami" ]; then
         ami="$("${awsc[@]}" ssm get-parameters --names "$AMI_SSM" \
                  --query 'Parameters[].Value' 2>/dev/null || true)"
@@ -457,16 +517,24 @@ probe_region() {
     # 64-core metal box needs 64 against a default that is often 5. This
     # is the failure that otherwise appears as VcpuLimitExceeded several
     # minutes and one security group into the run.
+    #
+    # Spot and on-demand are counted against SEPARATE quotas, so checking
+    # the wrong one is worse than not checking: a healthy on-demand limit
+    # says nothing about whether the spot request will be allowed.
+    #   L-34B43A08  All Standard Spot Instance Requests
+    #   L-1216C47A  Running On-Demand Standard instances
     vcpus="$("${awsc[@]}" ec2 describe-instance-types --instance-types "$ITYPE" \
                --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' 2>/dev/null || true)"
+    quota_code=L-1216C47A
+    [ "$SPOT" = 1 ] && quota_code=L-34B43A08
     quota="$(aws --region "$region" --output text service-quotas get-service-quota \
-               --service-code ec2 --quota-code L-1216C47A \
+               --service-code ec2 --quota-code "$quota_code" \
                --query 'Quota.Value' 2>/dev/null || true)"
     # An unreadable quota (no servicequotas:GetServiceQuota permission) is
     # not evidence of a small one — only a known-too-small one disqualifies.
     if [ -n "$quota" ] && [ "$quota" != "None" ] && [ -n "$vcpus" ] && [ "$vcpus" != "None" ]; then
         if [ "${quota%%.*}" -lt "$vcpus" ]; then
-            info "$label On-Demand vCPU quota ${quota%%.*} < $vcpus" >&2
+            info "$label $([ "$SPOT" = 1 ] && echo spot || echo on-demand) vCPU quota ${quota%%.*} < $vcpus" >&2
             return 1
         fi
     fi
@@ -482,30 +550,116 @@ if [ -n "$AMI" ] && [ "$(printf '%s' "$REGION_CANDIDATES" | wc -w)" -gt 1 ]; the
     warn "--ami is region-specific; only $REGION_CANDIDATES will be tried"
 fi
 AMI_SSM="/aws/service/canonical/ubuntu/server/$UBUNTU/stable/current/arm64/hvm/ebs-gp3/ami-id"
-CANDIDATES=()
-for region in $REGION_CANDIDATES; do
-    entry="$(probe_region "$region" || true)"
-    case "$entry" in "$region|ami-"*) ;; *) continue ;; esac
-    CANDIDATES+=("$entry") \
-        && info "$(printf '%-16s %-14s' "$region" "$(region_name "$region")") ok — $(printf '%s' "${entry##*|}" | wc -w | tr -d ' ') zone(s) offering $ITYPE"
-done
+AMI_PINNED="$AMI"       # empty unless --ami was given
 
-if [ "${#CANDIDATES[@]}" = 0 ]; then
-    die "none of the candidate regions can run $ITYPE on Ubuntu $UBUNTU arm64:
+# Probing is lazy: the first region that passes is the one we use, and the
+# rest are never asked about unless it turns out to have no capacity. Four
+# regions x three API calls is a slow way to answer a question that the
+# first region almost always settles, and every one of those calls is a
+# round trip to the other side of the planet.
+#
+# PENDING_REGIONS is the queue of codes not yet looked at. next_region()
+# takes from the front until one passes, sets the globals for it, and
+# leaves the remainder in place for the launch loop to fall back on.
+PENDING_REGIONS="$REGION_CANDIDATES"
+next_region() {
+    local region entry
+    while [ -n "$PENDING_REGIONS" ]; do
+        region="${PENDING_REGIONS%% *}"
+        case "$PENDING_REGIONS" in
+            *' '*) PENDING_REGIONS="${PENDING_REGIONS#* }" ;;
+            *)     PENDING_REGIONS="" ;;
+        esac
+
+        entry="$(probe_region "$region" || true)"
+        case "$entry" in "$region|ami-"*) ;; *) continue ;; esac
+
+        REGION="$region"
+        AMI="$(printf '%s' "$entry" | cut -d'|' -f2)"
+        AZS="${entry##*|}"
+        AZ="${AZS%% *}"
+        AWSC=(aws --region "$REGION" --output text)
+        info "$(printf '%-16s %-14s' "$REGION" "$(region_name "$REGION")") ok — $(printf '%s' "$AZS" | wc -w | tr -d ' ') zone(s) offering $ITYPE"
+        return 0
+    done
+    return 1
+}
+
+no_region_left() {
+    die "no region can run $ITYPE on Ubuntu $UBUNTU arm64 — tried:
        $REGION_CANDIDATES
+   The reason per region is listed above. The three that repeat:
+     * opt-in region    — enable it in the console (Account > AWS Regions)
+     * not offered      — $ITYPE does not exist there; try --type
+     * vCPU quota       — $([ "$SPOT" = 1 ] && echo 'spot' || echo 'on-demand') limit is too small, and spot and
+                          on-demand are counted separately. Request a rise
+                          in Service Quotas, or try --on-demand.
    Pick one explicitly with --region, or a different type with --type.
    List what Canonical publishes in a region with:
      aws --region <region> ssm get-parameters-by-path --recursive \\
          --path /aws/service/canonical/ubuntu/server --query 'Parameters[].Name' \\
        | tr '\\t' '\\n' | grep 'current/arm64/hvm/ebs-gp3'"
-fi
+}
 
-# The first survivor is the plan; the rest are the fallbacks.
-REGION="${CANDIDATES[0]%%|*}"
-AMI="$(printf '%s' "${CANDIDATES[0]}" | cut -d'|' -f2)"
-AZS="${CANDIDATES[0]##*|}"
-AZ="${AZS%% *}"
-AWSC=(aws --region "$REGION" --output text)
+next_region || no_region_left
+
+# ── 0c. spot pricing ──────────────────────────────────────────────────
+# Spot is the same instance on the same hardware; what differs is that AWS
+# can take it back with two minutes' notice, and that the price floats.
+# The deadman shutdown and the cleanup trap already assume the box can
+# vanish, so an interruption costs a re-run, not a leak — but a long suite
+# is a bigger bet than a quick one.
+#
+# The price is per zone, and on metal the spread between zones in one
+# region is routinely 2x, so on spot the zones are tried cheapest first
+# rather than in AWS's order. One API call per zone, skipped entirely
+# under --on-demand.
+spot_price() {
+    aws --region "$REGION" --output text ec2 describe-spot-price-history \
+        --instance-types "$ITYPE" --product-descriptions "Linux/UNIX" \
+        --availability-zone "$1" --max-items 1 \
+        --query 'SpotPriceHistory[0].SpotPrice' 2>/dev/null || true
+}
+
+# Rewrites $AZS in ascending price order, dropping nothing: a zone with no
+# published price still gets tried, just last.
+#
+# Written without a `case` inside the command substitution on purpose:
+# bash 3.2, which is what macOS still ships as /bin/bash, fails to parse
+# one at runtime even though `bash -n` accepts the file.
+order_azs_by_price() {
+    local az price prices sorted
+    prices=""
+    for az in $AZS; do
+        price="$(spot_price "$az")"
+        if [ -z "$price" ] || [ "$price" = None ]; then
+            price=999            # sorts last, still gets tried
+        fi
+        prices="$prices$price $az
+"
+    done
+    sorted="$(printf '%s' "$prices" | sort -n)"
+    [ -n "$sorted" ] || return 0
+
+    while read -r price az; do
+        [ -n "$az" ] || continue
+        if [ "$price" = 999 ]; then
+            info "$(printf '%-18s' "$az") no published spot price"
+        else
+            info "$(printf '%-18s' "$az") \$$price/hr spot"
+        fi
+    done <<PRICES
+$sorted
+PRICES
+
+    AZS="$(printf '%s' "$sorted" | awk '{printf "%s ", $2}' | sed 's/ *$//')"
+    AZ="${AZS%% *}"
+}
+
+if [ "$SPOT" = 1 ]; then
+    say "Spot pricing in $REGION"
+    order_azs_by_price
+fi
 
 # ── 0b. plan ──────────────────────────────────────────────────────────
 say "Plan"
@@ -513,14 +667,13 @@ printf '   %-14s %s\n' region "$REGION — $(region_name "$REGION")" type "$ITYP
     ubuntu "$UBUNTU" ami "$AMI" \
     suite "run_perf_suite.sh $SUITE_ARGS" timeout "${TIMEOUT}s (deadman ${DEADMAN}m)" \
     results "$LOCAL_OUT"
-printf '   %-14s %s\n' zones "$AZS"
-if [ "${#CANDIDATES[@]}" -gt 1 ]; then
+printf '   %-14s %s\n' zones "$AZS" \
+    market "$([ "$SPOT" = 1 ] && echo 'spot — interruptible on 2 minutes notice' || echo 'on-demand (--on-demand)')"
+if [ -n "$PENDING_REGIONS" ]; then
     fallbacks=""
-    for entry in "${CANDIDATES[@]:1}"; do
-        fallbacks="$fallbacks ${entry%%|*} ($(region_name "${entry%%|*}")),"
-    done
-    fallbacks="${fallbacks%,}"
-    printf '   %-14s %s\n' fallbacks "${fallbacks# } (used only if $REGION is out of capacity)"
+    for r in $PENDING_REGIONS; do fallbacks="$fallbacks $r ($(region_name "$r")),"; done
+    printf '   %-14s %s\n' fallbacks \
+        "${fallbacks# } — not checked yet, only if $REGION is out of capacity"
 fi
 if [ "$SATURATE" = 1 ]; then
     printf '   %-14s %s\n' layout \
@@ -685,12 +838,19 @@ launch_in_region() {
         fi
 
         info "trying $az"
+        # One-time spot, terminating on interruption: a persistent request
+        # would try to replace the instance behind our back, long after
+        # this script has stopped watching.
+        MARKET=()
+        [ "$SPOT" = 1 ] && MARKET=(--instance-market-options
+            'MarketType=spot,SpotOptions={SpotInstanceRequestType=one-time,InstanceInterruptionBehavior=terminate}')
         # set -e must not fire here: a capacity error is an expected
         # answer, not a failure of the script.
         set +e
         out="$("${AWSC[@]}" ec2 run-instances \
             --image-id "$AMI" \
             --instance-type "$ITYPE" \
+            ${MARKET[@]+"${MARKET[@]}"} \
             --key-name "$KEY_NAME" \
             --subnet-id "$subnet" \
             --security-group-ids "$SG_ID" \
@@ -715,6 +875,8 @@ launch_in_region() {
         case "$out" in
             *InsufficientInstanceCapacity*|*InsufficientHostCapacity*|*Unsupported*)
                 warn "$az has no $ITYPE capacity right now" ;;
+            *MaxSpotInstanceCountExceeded*|*SpotMaxPriceTooLow*)
+                warn "$az refused the spot request: $(printf '%s' "$out" | tail -1)" ;;
             *VcpuLimitExceeded*|*InstanceLimitExceeded*)
                 # A quota is regional; no other zone will answer differently.
                 warn "$REGION quota refused the launch: $(printf '%s' "$out" | tail -1)"
@@ -728,25 +890,26 @@ launch_in_region() {
     return 1
 }
 
+# next_region() has already chosen the first one; a region that turns out
+# to have no capacity sends us back to it for the next candidate, which is
+# only probed at that point.
 LAUNCHED=0
-for entry in "${CANDIDATES[@]}"; do
-    REGION="${entry%%|*}"
-    AMI="$(printf '%s' "$entry" | cut -d'|' -f2)"
-    AZS="${entry##*|}"
-    AWSC=(aws --region "$REGION" --output text)
-
+TRIED=""
+while :; do
     say "Launching $ITYPE in $REGION / $(region_name "$REGION") (bare metal takes several minutes to POST)"
+    TRIED="$TRIED $REGION"
     setup_keypair
     setup_security_group
     if launch_in_region; then LAUNCHED=1; break; fi
 
     warn "no $ITYPE available anywhere in $REGION ($(region_name "$REGION"))"
     release_region
+    next_region || break
 done
 
 if [ "$LAUNCHED" != 1 ]; then
     INSTANCE_ID=""
-    die "no $ITYPE capacity in any candidate region ($REGION_CANDIDATES).
+    die "no $ITYPE capacity in any region tried:${TRIED}
    Nothing is running and nothing is billed. Options: wait and re-run,
    try another type with --type, or name a region directly with --region."
 fi
@@ -756,6 +919,11 @@ info "$INSTANCE_ID in $AZ — $(region_name "$REGION")"
 # leak, and after it the trap does the right thing on TERM.
 ( sleep "$TIMEOUT"; kill -TERM $$ 2>/dev/null ) &
 WATCHDOG=$!
+# Killing it on the way out is normal and expected, but the shell reaps it
+# noisily ("Terminated: 15 ( sleep ... )") on top of whatever the run was
+# actually reporting. Disowning it drops the job-table entry, so cleanup
+# can still kill the pid and nothing is printed about it.
+disown "$WATCHDOG" 2>/dev/null || true
 
 "${AWSC[@]}" ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 PUBLIC_IP="$("${AWSC[@]}" ec2 describe-instances --instance-ids "$INSTANCE_ID" \

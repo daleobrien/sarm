@@ -75,12 +75,34 @@ export DEBIAN_FRONTEND=noninteractive
 # difference between a two-minute and a ten-minute provisioning run; the
 # package set below is large and mostly download-bound.
 #
-# Installed straight from upstream rather than from the archive, so this
-# costs no `apt-get update`: apt-fast is one bash script whose only real
-# dependency is aria2, and Ubuntu cloud images ship with package lists
-# already populated, so aria2 resolves off the existing index. The proper
-# refresh happens below, through apt-fast, where it is faster.
-#
+# Installed straight from upstream rather than from the archive: apt-fast
+# is one bash script, and its only real dependency is aria2. That keeps
+# the pre-apt-fast work to at most one `apt-get update` — and none at all
+# when the image's index is already usable. The refresh that matters runs
+# below, through apt-fast.
+# aria2 is the one thing apt-fast cannot do without. It lives in universe,
+# and it is resolved from whatever package index the image happens to have
+# — which on a fresh EC2 Ubuntu image is often empty, so the first attempt
+# answers "Unable to locate package aria2". That is a stale-index problem,
+# not a missing-package one, so: try, refresh, try again, and only then
+# reach for enabling universe.
+install_aria2() {
+    command -v aria2c >/dev/null 2>&1 && return 0
+
+    sudo apt-get install -y -qq aria2 2>/dev/null && return 0
+
+    info "aria2 not in the current package index — refreshing"
+    sudo apt-get update -qq || true
+    sudo apt-get install -y -qq aria2 2>/dev/null && return 0
+
+    # Universe is enabled on the stock cloud images, but a hardened or
+    # mirrored one may not have it.
+    info "still not found — enabling universe"
+    sudo add-apt-repository -y universe >/dev/null 2>&1 || true
+    sudo apt-get update -qq || true
+    sudo apt-get install -y -qq aria2 2>/dev/null
+}
+
 # The packaged version is used when it is already installed; its debconf
 # answers are preseeded either way, since the config file the script reads
 # is the same one the package prompts for.
@@ -96,7 +118,7 @@ apt-fast apt-fast/dlflag boolean true
 apt-fast apt-fast/aptmanager string apt-get
 DEBCONF
 
-    sudo apt-get install -y -qq aria2 || return 1
+    install_aria2 || return 1
     sudo curl -fsSL -o /usr/local/bin/apt-fast \
         https://raw.githubusercontent.com/ilikenwf/apt-fast/master/apt-fast || return 1
     sudo chmod 0755 /usr/local/bin/apt-fast
@@ -111,14 +133,33 @@ DEBCONF
 # falls back to plain apt-get rather than aborting the run.
 if install_apt_fast; then
     APT=(sudo apt-fast -y -qq)
+    # More parallel connections than the default 5. The archive mirrors
+    # are the bottleneck, not the box.
+    grep -q '^_MAXNUM=16' /etc/apt-fast.conf 2>/dev/null \
+        || printf '\n# raised by scripts/aws/setup_ec2_metal.sh\n_MAXNUM=16\n' \
+           | sudo tee -a /etc/apt-fast.conf >/dev/null
     info "using apt-fast for package installs"
 else
-    warn "apt-fast unavailable — falling back to apt-get"
+    warn "apt-fast could not be installed — falling back to apt-get."
+    warn "The usual cause is aria2: check 'apt-cache policy aria2' on this box."
     APT=(sudo apt-get -y -qq)
 fi
 
+# apt and aria2 between them produce hundreds of lines that matter only
+# when something fails, and they bury the parts of this script that do not.
+# Everything goes to a log, and only a failure gets to print.
+APT_LOG="/tmp/sarm-apt.log"
+: > "$APT_LOG"
+apt_run() {
+    if "${APT[@]}" "$@" >>"$APT_LOG" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+apt_log_tail() { sed 's/^/     /' "$APT_LOG" | tail -"${1:-15}"; }
+
 say "Installing packages"
-"${APT[@]}" update || die "apt update failed"
+apt_run update || { apt_log_tail; die "apt update failed — see $APT_LOG"; }
 
 # Split into "must have" and "nice to have" so one unavailable package in a
 # fresh release does not abort the provisioning run.
@@ -138,13 +179,30 @@ OPTIONAL=(
     hyperfine
 )
 
-"${APT[@]}" install "${REQUIRED[@]}" || die "could not install the required packages"
-
-for pkg in "${OPTIONAL[@]}"; do
-    if ! "${APT[@]}" install "$pkg" 2>/dev/null; then
-        warn "optional package '$pkg' unavailable — continuing without it"
-    fi
-done
+# Everything in one apt call: apt-fast fetches the whole set through aria2
+# concurrently and dpkg then unpacks it in one pass, so the two lists cost
+# one round of apt startup between them rather than one each — let alone
+# one per package.
+#
+# The split above still decides what a failure MEANS, which is the only
+# reason to keep it. A single missing package fails the whole batch and
+# apt does not make it cheap to find out which, so the fallback re-runs
+# the two sets on their own terms: required as a batch that must succeed,
+# optional one at a time so the survivors still get installed.
+ALL=("${REQUIRED[@]}" "${OPTIONAL[@]}")
+if apt_run install "${ALL[@]}"; then
+    info "${#ALL[@]} packages"
+else
+    info "the combined install failed — separating the required from the optional"
+    apt_run install "${REQUIRED[@]}" || {
+        apt_log_tail 25
+        die "could not install the required packages — see $APT_LOG"
+    }
+    info "${#REQUIRED[@]} required packages"
+    for pkg in "${OPTIONAL[@]}"; do
+        apt_run install "$pkg" || warn "optional package '$pkg' unavailable — continuing without it"
+    done
+fi
 
 # ── 2. perf, which is packaged per kernel flavour ─────────────────────
 # EC2 Ubuntu runs the -aws kernel, so the tools live in linux-tools-aws.
@@ -153,7 +211,7 @@ done
 # while the versioned binary behind it does not.
 say "Installing perf"
 for pkg in "linux-tools-$(uname -r)" linux-tools-aws linux-tools-generic linux-aws-tools-common; do
-    "${APT[@]}" install "$pkg" 2>/dev/null && info "installed $pkg" || true
+    apt_run install "$pkg" && info "installed $pkg" || true
 done
 
 if ! perf --version >/dev/null 2>&1; then
@@ -170,7 +228,7 @@ fi
 say "Installing wrk"
 if command -v wrk >/dev/null 2>&1; then
     info "already present: $(command -v wrk)"
-elif "${APT[@]}" install wrk 2>/dev/null && command -v wrk >/dev/null 2>&1; then
+elif apt_run install wrk && command -v wrk >/dev/null 2>&1; then
     info "installed from apt"
 else
     info "not packaged for this release — building from source"
@@ -361,6 +419,7 @@ printf '   %-22s %s\n' "sarm"        "$DEST"
 printf '   %-22s %s\n' "binary"      "$DEST/sarm (unstripped)"
 printf '   %-22s %s\n' "CPUs"        "$(nproc)"
 printf '   %-22s %s\n' "PMU"         "$([ "$PMU_OK" = 1 ] && echo 'available' || echo 'UNAVAILABLE — sampling only')"
+printf '   %-22s %s\n' "apt log" "$APT_LOG"
 for t in perf wrk h2load bpftrace valgrind; do
     printf '   %-22s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo '— not installed')"
 done
