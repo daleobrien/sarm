@@ -1,6 +1,7 @@
 #include "../defs.S"
 
 .extern h2_hpack_dyn_reset
+.extern transport_flush
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: h2_connection_loop
@@ -103,6 +104,25 @@ FUNC h2_connection_loop
     str xzr, [x9]
     adr_l x9, plain_read_stage_pos
     str xzr, [x9]
+
+    // ── turn on write staging for the rest of this connection ──
+    // From here every response is copied into write_stage_buf and put on
+    // the wire in batches by transport_flush, instead of costing a write
+    // syscall each. This is the right span for it: the TLS handshake is
+    // already done (it must not be buffered — it reads its replies with
+    // tls_read_record, never through transport_read, so a staged flight
+    // would deadlock it), and a multiplexed connection is where there is
+    // anything to batch — the frame loop serves ~50 requests out of one
+    // read() before it blocks again.
+    //
+    // Cleared and flushed at .Lh2cl_end. The stage length is reset here
+    // too rather than only there: under `no_fork` one process serves
+    // connection after connection, and a previous connection's undrained
+    // bytes must not be written to this one's socket — the same hazard
+    // the read staging above is reset for.
+    str_l xzr, write_stage_len, x9
+    mov x10, #1
+    str_l x10, transport_write_buffering, x9
 
     // ── 3.4 — verify the client connection preface ──
     cmp x21, #H2_PREFACE_LEN
@@ -275,6 +295,12 @@ FUNC h2_connection_loop
     b .Lh2cl_end
 
 .Lh2cl_end:
+    // Drain the stage before the caller closes the socket, or the last
+    // response of the connection dies with it, then take buffering back
+    // off so nothing outside an HTTP/2 connection inherits it.
+    mov x0, x19
+    bl transport_flush
+    str_l xzr, transport_write_buffering, x9
     ldp x23, x30, [sp, #32]
     ldp x21, x22, [sp, #16]
     ldp x19, x20, [sp], #64

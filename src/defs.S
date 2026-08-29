@@ -986,6 +986,13 @@
 .equ TLS_RECORD_HEADER_LEN, 5  // type(1) + legacy_record_version(2) + length(2)
 .equ TLS_MAX_PLAINTEXT, 16384  // 2^14 — plaintext record payload limit (§5.2)
 
+// WRITE_STAGE_SIZE — capacity of the transport write-side stage buffer
+// (src/transport/data.S), the write-side mirror of the 16384-byte
+// plain_read_stage_buf. One full TLS_MAX_PLAINTEXT record's worth, so a
+// flush in TRANSPORT_TLS mode seals exactly one maximal record rather
+// than one maximal record plus a runt.
+.equ WRITE_STAGE_SIZE, 16384
+
 // record-layer limits (§5.2). A TLSPlaintext fragment is at most 2^14;
 // a TLSCiphertext may reach 2^14 + 256 on the wire, but with AES-128-GCM
 // (16-byte tag) and a single TLSInnerPlaintext.type byte the largest

@@ -3,6 +3,7 @@
 .extern raw_writev_all
 .extern memcpy
 .extern transport_write
+.extern transport_flush
 
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: transport_writev
@@ -49,7 +50,80 @@ FUNC transport_writev
     ldr_l   x9, transport_mode
     cbnz    x9, .Ltwv_tls
 
-    // ── TRANSPORT_PLAIN: one real writev(2), zero-copy ──
+    // ── TRANSPORT_PLAIN ──
+    // With write staging on, a real writev(2) here would overtake bytes
+    // transport_write has staged but not yet flushed — an earlier
+    // response arriving on the wire behind a later one. So when there is
+    // a stage to respect, both parts go into it (see transport_write);
+    // the zero-copy writev is kept for the case that made it worth
+    // having, a body too big to stage, where flushing first and then
+    // sending it straight off the response buffer is both correct and
+    // still one syscall with no copy.
+    ldr_l   x9, transport_write_buffering
+    cbz     x9, .Ltwv_plain_now
+    ldr_l   x9, write_stage_len
+    add     x10, x2, x4
+    add     x10, x10, x9
+    mov     x11, #WRITE_STAGE_SIZE
+    cmp     x10, x11
+    b.hi    .Ltwv_plain_flush_first
+
+    // Both parts fit. transport_write appends each without a syscall,
+    // and doing it in two calls rather than one open-coded copy keeps
+    // the stage's bookkeeping in the one function that owns it.
+    stp     x19, x20, [sp, #-48]!
+    stp     x21, x22, [sp, #16]
+    str     x30, [sp, #32]
+    mov     x19, x0             // fd
+    mov     x20, x3             // body ptr
+    mov     x21, x4             // body length
+    mov     x22, x2             // header length
+    bl      transport_write     // x0/x1/x2 are already fd/header/len
+    b.cs    .Ltwv_stage_ret
+    mov     x0, x19
+    mov     x1, x20
+    mov     x2, x21
+    bl      transport_write
+    b.cs    .Ltwv_stage_ret
+    add     x0, x22, x21        // both parts accepted
+    cmn     xzr, xzr            // success — carry clear
+.Ltwv_stage_ret:
+    ldr     x30, [sp, #32]      // flag-preserving, so a failure's carry
+    ldp     x21, x22, [sp, #16] // and errno survive to our caller
+    ldp     x19, x20, [sp], #48
+    ret
+
+.Ltwv_plain_flush_first:
+    // Too big to stage. Drain the stage so ordering holds, then fall
+    // into the ordinary zero-copy writev with the arguments we came in
+    // with.
+    stp     x19, x20, [sp, #-64]!
+    stp     x21, x22, [sp, #16]
+    stp     x23, x30, [sp, #32]
+    mov     x19, x0
+    mov     x20, x1
+    mov     x21, x2
+    mov     x22, x3
+    mov     x23, x4
+    bl      transport_flush
+    b.cs    .Ltwv_flush_failed
+    mov     x0, x19
+    mov     x1, x20
+    mov     x2, x21
+    mov     x3, x22
+    mov     x4, x23
+    ldp     x23, x30, [sp, #32]
+    ldp     x21, x22, [sp, #16]
+    ldp     x19, x20, [sp], #64
+    b       .Ltwv_plain_now
+.Ltwv_flush_failed:
+    ldp     x23, x30, [sp, #32]
+    ldp     x21, x22, [sp, #16]
+    ldp     x19, x20, [sp], #64
+    ret                         // x0 = errno, carry still set
+
+.Ltwv_plain_now:
+    // one real writev(2), zero-copy
     sub     sp, sp, #48
     str     x30, [sp, #32]       // bl below clobbers x30 — save our own
     str     x1, [sp, #0]        // iov[0].iov_base = header

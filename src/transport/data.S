@@ -34,6 +34,26 @@
 //     the same process serves connection after connection, so a
 //     previous connection's unread staged bytes must never leak into
 //     the next one.
+//   transport_write_buffering / write_stage_buf / write_stage_len —
+//     the write-side mirror of the read staging above. While buffering
+//     is on, transport_write copies into write_stage_buf and returns
+//     instead of issuing a syscall, and transport_flush puts the
+//     accumulated bytes on the wire as one write (in TRANSPORT_TLS, as
+//     one sealed record). transport_read flushes before every refill
+//     read, so nothing can be left staged while this end blocks waiting
+//     for the peer — which is the whole correctness argument, and the
+//     reason a flush call sits in the *read* path.
+//
+//     It is a flag rather than always-on because the TLS handshake
+//     writes its flights with transport_write but reads the client's
+//     with tls_read_record directly, never through transport_read.
+//     Buffering that unconditionally would leave our flight staged
+//     while we blocked reading the reply the flight was meant to
+//     provoke — a deadlock until the client timed out. So the flag is
+//     off through the handshake and h2_connection_loop turns it on once
+//     the connection is established, which is also exactly the span
+//     where there is anything to coalesce.
+//
 //   transport_writev_scratch — TRANSPORT_TLS's fallback for
 //     transport_writev (Plan.md Phase 2, Step 11): a TLS record has to
 //     be sealed from one contiguous plaintext buffer, so the TLS branch
@@ -50,6 +70,11 @@
 OBJECT transport_mode
                 .quad TRANSPORT_MODE
 ENDOBJ transport_mode
+
+.align 4
+OBJECT transport_write_buffering
+                          .quad 0
+ENDOBJ transport_write_buffering
 
 .align 4
 OBJECT tls_read_stage_len
@@ -91,6 +116,16 @@ ENDOBJ plain_read_stage_pos
 OBJECT plain_read_stage_buf
                       .skip 16384
 ENDOBJ plain_read_stage_buf
+
+.align 4
+OBJECT write_stage_len
+                .quad 0
+ENDOBJ write_stage_len
+
+.align 4
+OBJECT write_stage_buf
+                .skip WRITE_STAGE_SIZE
+ENDOBJ write_stage_buf
 
 .align 4
 OBJECT transport_writev_scratch

@@ -1,6 +1,7 @@
 #include "../defs.S"
 
 .extern tls_read_record
+.extern transport_flush
 .extern tls_app_data_read
 
 // ─────────────────────────────────────────────────────────────────────
@@ -75,6 +76,17 @@ FUNC transport_read
     b.gt    .Ltr_plain_drain
 
     // stage buffer empty — one real (not "exact") read() off the wire
+    // Everything staged for writing has to be on the wire before we
+    // block here. The peer is very often waiting on exactly those bytes
+    // before it sends the ones we are about to ask for, so leaving them
+    // staged is a deadlock, not a delay. This is the only place that
+    // needs the rule, because this is the only place either transport
+    // blocks — every other read in the connection is served out of the
+    // stage buffer below without a syscall. See transport_write.
+    mov     x0, x19
+    bl      transport_flush
+    b.cs    .Ltr_plain_ret      // x0 = errno, carry set — the write end
+                                // is gone, so the read end is too
     SCWINUM SYS_read
     mov     x0, x19
     adr_l   x1, plain_read_stage_buf
@@ -153,6 +165,17 @@ FUNC transport_read
     b.gt    .Ltr_tls_drain
 
     // stage buffer empty — pull and decrypt the next record
+    // Everything staged for writing has to be on the wire before we
+    // block here. The peer is very often waiting on exactly those bytes
+    // before it sends the ones we are about to ask for, so leaving them
+    // staged is a deadlock, not a delay. This is the only place that
+    // needs the rule, because this is the only place either transport
+    // blocks — every other read in the connection is served out of the
+    // stage buffer below without a syscall. See transport_write.
+    mov     x0, x19
+    bl      transport_flush
+    b.cs    .Ltr_tls_fail       // x0 = errno, carry set
+
     mov     x0, x19
     adr_l   x1, tls_read_raw_buf
     mov     x2, #16448

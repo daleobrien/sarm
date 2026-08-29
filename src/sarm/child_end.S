@@ -1,5 +1,7 @@
 #include "../defs.S"
 
+.extern transport_flush
+
 // ─────────────────────────────────────────────────────────────────────
 // Function Name: child_end
 //
@@ -16,7 +18,11 @@
 //   (never returns — exits the child, or branches to loop under no_fork)
 //
 // Clobbered Registers:
-//   x0, x9, x16 (syscall scratch)
+//   x0-x17, x19-x26, x30, v0-v7, v16-v30 — the syscall scratch this
+//   always used (x0, x9, x16) plus everything transport_flush reaches
+//   through transport_write_now. Nothing here has to be preserved:
+//   child_end exits the process (or, under no_fork, branches to the
+//   accept loop, which starts a connection from scratch).
 //
 // Stack Usage:
 //   none
@@ -25,6 +31,15 @@
 .text
 .align 2
 FUNC child_end
+    // Anything transport_write has staged goes out before the socket
+    // does. h2_connection_loop already flushes on its own way out, so
+    // this is normally a load and a branch over an empty stage — but
+    // losing a response to a close(2) is the one failure this staging
+    // could introduce, and this is the single funnel every connection
+    // leaves through, so it is worth the two instructions.
+    ldr_l x0, clientfd
+    bl transport_flush
+
     // close(clientfd)
     SCWINUM SYS_close
     ldr_l x0, clientfd
