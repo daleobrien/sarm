@@ -205,6 +205,21 @@ probe_region() {
         return 1
     fi
 
+    # A region with no DEFAULT VPC cannot be used by this script: the
+    # security group and the subnet lookup are both built on it. us-east-1
+    # is in the default candidate list and has no default VPC on this
+    # account, and without this check a run that fell through to it died
+    # outright — after the earlier regions had been probed, priced and
+    # walked — rather than moving on to the next candidate. One call, and
+    # it turns a fatal into a skip.
+    local vpc
+    vpc="$("${awsc[@]}" ec2 describe-vpcs --filters Name=isDefault,Values=true \
+             --query 'Vpcs[0].VpcId' 2>/dev/null || true)"
+    if [ -z "$vpc" ] || [ "$vpc" = "None" ]; then
+        info "$label no default VPC" >&2
+        return 1
+    fi
+
     # The quota is per region and counts vCPUs, not instances, so a
     # 64-core metal box needs 64 against a default that is often 5. This
     # is the failure that otherwise appears as VcpuLimitExceeded several

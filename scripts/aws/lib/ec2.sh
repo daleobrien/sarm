@@ -210,7 +210,16 @@ setup_placement_group() {
 # ── launching ─────────────────────────────────────────────────────────
 # One instance. Echoes its id on success; on failure echoes nothing and
 # leaves the API's own words in $LAUNCH_ERR for the caller to classify.
+#
+# THE ERROR TRAVELS THROUGH A FILE, NOT A VARIABLE. This function is
+# called as `id="$(launch_one ...)"`, and a command substitution runs in a
+# SUBSHELL — so every assignment it makes to a global is discarded the
+# moment it returns. The caller was reading an empty $LAUNCH_ERR every
+# time, which is why a refused zone printed "<zone> refused <type>: " with
+# no reason through three separate attempts to fix the wording. The file
+# is the only channel that survives the subshell.
 LAUNCH_ERR=""
+LAUNCH_ERR_FILE=""
 launch_one() {  # launch_one <itype> <role> <az> <subnet>
     local itype="$1" role="$2" az="$3" subnet="$4" out rc name
     local market=() tagspec=() placement=() tags use_spot=0
@@ -263,8 +272,9 @@ launch_one() {  # launch_one <itype> <role> <az> <subnet>
     rc=$?
     set -e
 
+    LAUNCH_ERR_FILE="$WORK/launch.err"
     if [ "$rc" = 0 ] && [ -n "$out" ] && [ "$out" != "None" ]; then
-        LAUNCH_ERR=""
+        : > "$LAUNCH_ERR_FILE"
         printf '%s' "$out"
         return 0
     fi
@@ -273,10 +283,10 @@ launch_one() {  # launch_one <itype> <role> <az> <subnet>
     # printed nothing, or print "None" — and the caller then warned
     # "<zone>: " with an empty reason, which says only that something went
     # wrong and nothing about what. Give those cases words of their own.
-    LAUNCH_ERR="$out"
     if [ -z "$out" ] || [ "$out" = "None" ]; then
-        LAUNCH_ERR="run-instances exited $rc without returning an instance id${out:+ (printed: $out)}"
+        out="run-instances exited $rc without returning an instance id"
     fi
+    printf '%s' "$out" > "$LAUNCH_ERR_FILE"
     return 1
 }
 
@@ -329,6 +339,9 @@ launch_group_in_region() {
                 fi
             else
                 ok=0
+                # Back out of the subshell the only way it can come: the
+                # file launch_one wrote before it returned.
+                LAUNCH_ERR="$(cat "$WORK/launch.err" 2>/dev/null || true)"
                 case "$LAUNCH_ERR" in
                     *InsufficientInstanceCapacity*|*InsufficientHostCapacity*|*Unsupported*)
                         warn "$az has no ${types[$i]} capacity right now$(
