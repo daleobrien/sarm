@@ -327,6 +327,50 @@ fetch_results() {
     info "results in $LOCAL_OUT"
 }
 
+# ── spot requests: cancel what this run created ───────────────────────
+# RunInstances with MarketType=spot creates a spot instance request that
+# outlives the API call. Terminating the instance of a fulfilled one-time
+# request does close it — but that only covers the paths where we hold an
+# instance id. If the run-instances call is interrupted client-side (a
+# Ctrl-C, a dropped connection, a timeout) the request can exist on AWS's
+# side while this script never learns of it, and an *open* request will
+# happily fulfil minutes later into an instance nobody is watching and
+# nothing will terminate. So the requests are tagged at creation and
+# cancelled here by tag, whether or not an instance was ever seen.
+#
+# Defined before cleanup() because cleanup calls it. Best-effort like
+# every other step in there.
+cancel_spot_requests() {
+    [ "$SPOT" = 1 ] || return 0
+    [ ${#AWSC[@]} -gt 0 ] || return 0     # region never chosen; nothing was asked for
+    local ids orphan orphans
+
+    ids="$("${AWSC[@]}" ec2 describe-spot-instance-requests \
+        --filters "Name=tag:Name,Values=$TAG" "Name=state,Values=open,active" \
+        --query 'SpotInstanceRequests[].SpotInstanceRequestId' 2>/dev/null)" || return 0
+    [ -n "$ids" ] && [ "$ids" != None ] || return 0
+
+    say "Cancelling spot request(s): $ids"
+    "${AWSC[@]}" ec2 cancel-spot-instance-requests --spot-instance-request-ids $ids \
+        >/dev/null 2>&1 || warn "cancel failed — CHECK THE CONSOLE for $ids"
+
+    # Cancelling a request never terminates an instance. One that was
+    # fulfilled in the gap between the describe above and the cancel is
+    # now running, un-tracked, and billing.
+    orphans="$("${AWSC[@]}" ec2 describe-spot-instance-requests \
+        --spot-instance-request-ids $ids \
+        --query 'SpotInstanceRequests[?InstanceId].InstanceId' 2>/dev/null || true)"
+    for orphan in $orphans; do
+        # None is the text-output spelling of an unfulfilled request;
+        # $INSTANCE_ID was already terminated by the caller.
+        if [ "$orphan" != None ] && [ "$orphan" != "$INSTANCE_ID" ]; then
+            warn "spot request fulfilled while cancelling — terminating $orphan"
+            "${AWSC[@]}" ec2 terminate-instances --instance-ids "$orphan" >/dev/null 2>&1 \
+                || warn "terminate call failed — CHECK THE CONSOLE for $orphan"
+        fi
+    done
+}
+
 # ── cleanup: the reason this script exists ────────────────────────────
 # Runs on every exit path — success, failure (set -e), Ctrl-C, watchdog
 # TERM. Each step is independently best-effort: a failure deleting the
@@ -367,6 +411,10 @@ cleanup() {
             --query 'TerminatingInstances[].CurrentState.Name' 2>&1 | sed 's/^/   /' || \
             warn "terminate call failed — CHECK THE CONSOLE for $INSTANCE_ID"
     fi
+
+    # After the terminate, not before: the terminate is what stops the
+    # billing clock, and this runs on the no-instance paths too.
+    cancel_spot_requests || warn "spot request cleanup failed"
 
     # The security group cannot be deleted while the instance still holds
     # it, and we are not waiting for that. Onto the list it goes.
@@ -617,7 +665,7 @@ next_region || no_region_left
 spot_price() {
     aws --region "$REGION" --output text ec2 describe-spot-price-history \
         --instance-types "$ITYPE" --product-descriptions "Linux/UNIX" \
-        --availability-zone "$1" --max-items 1 \
+        --availability-zone "$1" --start-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
         --query 'SpotPriceHistory[0].SpotPrice' 2>/dev/null || true
 }
 
@@ -631,10 +679,14 @@ order_azs_by_price() {
     local az price prices sorted
     prices=""
     for az in $AZS; do
-        price="$(spot_price "$az")"
-        if [ -z "$price" ] || [ "$price" = None ]; then
-            price=999            # sorts last, still gets tried
-        fi
+        # Anything that is not a bare decimal — "None", an error, or a
+        # stray extra line — is treated as "no price": the field is fed
+        # straight into a sort key, so a mangled value would silently
+        # reshuffle or drop a zone rather than fail loudly.
+        price="$(spot_price "$az" | head -1)"
+        case "$price" in
+            ''|*[!0-9.]*|*.*.*) price=999 ;;   # sorts last, still gets tried
+        esac
         prices="$prices$price $az
 "
     done
@@ -842,8 +894,18 @@ launch_in_region() {
         # would try to replace the instance behind our back, long after
         # this script has stopped watching.
         MARKET=()
-        [ "$SPOT" = 1 ] && MARKET=(--instance-market-options
-            'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
+        TAGS="Tags=[{Key=Name,Value=$TAG},{Key=Purpose,Value=sarm-benchmark},{Key=Ephemeral,Value=true}]"
+        # One flag, many values: a repeated --tag-specifications would
+        # replace the earlier one rather than add to it.
+        TAGSPEC=(--tag-specifications "ResourceType=instance,$TAGS")
+        if [ "$SPOT" = 1 ]; then
+            MARKET=(--instance-market-options
+                'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
+            # The request is tagged in the same call that creates it, so
+            # cleanup can find and cancel it by tag even on the paths
+            # where this script never learns the instance id.
+            TAGSPEC+=("ResourceType=spot-instances-request,$TAGS")
+        fi
         # set -e must not fire here: a capacity error is an expected
         # answer, not a failure of the script.
         set +e
@@ -860,7 +922,7 @@ launch_in_region() {
             --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
             --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${VOLUME_GB},VolumeType=gp3,DeleteOnTermination=true}" \
             --user-data "file://$WORK/user-data.sh" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$TAG},{Key=Purpose,Value=sarm-benchmark},{Key=Ephemeral,Value=true}]" \
+            ${TAGSPEC[@]+"${TAGSPEC[@]}"} \
             --query 'Instances[0].InstanceId' 2>&1)"
         rc=$?
         set -e
