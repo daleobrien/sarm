@@ -120,6 +120,15 @@ eu-west-1 eu-west-2 eu-central-1 ca-central-1 sa-east-1}"
                         # Singapore, Tokyo, Seoul, Mumbai,
                         # Ireland, London, Frankfurt, Canada, Sao Paulo
 REGION=""               # chosen from the above during the plan
+
+# The regions that are compared on price rather than taken in list order.
+# Australia only, and deliberately: Melbourne and Sydney are
+# interchangeable for this workload — same country, same order of latency
+# from here, same data-residency answer — so a run should go wherever
+# spot is cheaper that hour rather than wherever the list happens to
+# start. Everywhere else the list order IS the preference, and a cheaper
+# region on another continent is not a better one.
+PRICE_GROUP="ap-southeast-4 ap-southeast-2"
 ITYPE="c6g.metal"  # 64 cores
 #ITYPE="c8g.metal-48xl"  # 192 cores
 AMI=""
@@ -136,7 +145,8 @@ SUITE_ARGS="--quick"
 # without warning — deadman shutdown, terminate-on-shutdown, cleanup on
 # every exit path, results fetched on the way out. An interruption costs a
 # re-run, not a leak. --on-demand buys certainty for a long suite.
-SPOT=1
+SPOT=1                  # effective for the CURRENT region; the price
+                        #   check below can drop a region to on-demand
 SATURATE=1
 SERVER_CORES=2          # cores sarm is pinned to — the smaller, the
                         #   sooner it saturates and the cleaner the PMU
@@ -202,6 +212,12 @@ for opt in SERVER_CORES RESERVE_CORES CONNS_PER_CORE MAX_STREAMS; do
     esac
 done
 [ "$SERVER_CORES" -ge 1 ] || { echo "$0: --server-cores must be at least 1" >&2; exit 2; }
+
+# $SPOT is per region from here on — the price check drops a region with
+# no spot discount to on-demand, and that verdict must not follow us into
+# the next region on a capacity fallback. $SPOT_WANTED is what was asked
+# for, and is what "did this run ever ask for spot" means.
+SPOT_WANTED="$SPOT"
 
 say()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -306,13 +322,50 @@ fetch_results() {
     say "Downloading results"
     # Streamed as a tarball rather than scp -r: recent scp speaks SFTP and
     # will not expand a remote glob, and perf.data files are worth the gzip.
-    if rsh "cd \$HOME/sarm/perf-results && tar -czf - '$RUNID'" > "$WORK/results.tar.gz" 2>/dev/null \
-        && [ -s "$WORK/results.tar.gz" ]; then
-        tar -xzf "$WORK/results.tar.gz" -C "$LOCAL_OUT" --strip-components 1 2>/dev/null || \
-            warn "results tarball arrived but would not unpack"
+    #
+    # Judged by what lands here, not by tar's exit status. GNU tar exits
+    # non-zero for things that do not cost us the results — a file it
+    # could not read, a file that changed under it — and the old `&&`
+    # threw a good tarball away on those, reporting nothing but "could
+    # not retrieve". Both sides' stderr is kept and quoted instead, so
+    # the next failure says what actually happened.
+    local before after
+    before="$(find "$LOCAL_OUT" -type f | wc -l | tr -d ' ')"
+    rsh "cd \$HOME/sarm/perf-results && tar -czf - '$RUNID'" \
+        > "$WORK/results.tar.gz" 2> "$WORK/results.err" || true
+    if [ -s "$WORK/results.tar.gz" ]; then
+        # A truncated archive still yields every member before the cut,
+        # so unpack first and count afterwards rather than believing the
+        # exit status either way.
+        tar -xzf "$WORK/results.tar.gz" -C "$LOCAL_OUT" --strip-components 1 \
+            2>> "$WORK/results.err" || true
+    fi
+    after="$(find "$LOCAL_OUT" -type f | wc -l | tr -d ' ')"
+
+    if [ "$after" -gt "$before" ]; then
         info "$(du -sh "$LOCAL_OUT" | cut -f1) retrieved"
+        # Arrived, but not cleanly: say so rather than let a half-copied
+        # run look like a complete one in perf-results/.
+        if [ -s "$WORK/results.err" ]; then
+            warn "the transfer complained — results may be incomplete:"
+            sed 's/^/     /' "$WORK/results.err" | head -3
+            cp "$WORK/results.err" "$LOCAL_OUT/results-fetch.err" 2>/dev/null || true
+        fi
     else
-        warn "could not retrieve the results directory — keeping what we have locally"
+        warn "could not retrieve $RUNID from ~/sarm/perf-results — keeping what we have locally"
+        if [ -s "$WORK/results.err" ]; then
+            sed 's/^/     /' "$WORK/results.err" | head -5
+            cp "$WORK/results.err" "$LOCAL_OUT/results-fetch.err" 2>/dev/null || true
+        fi
+        # What the box thinks it has. One round trip, only on the failing
+        # path, and it is the difference between guessing and knowing
+        # whether the suite wrote anywhere we then failed to read.
+        local listing
+        listing="$(rsh 'ls -1 $HOME/sarm/perf-results 2>&1 | tail -5' 2>/dev/null || true)"
+        if [ -n "$listing" ]; then
+            warn "~/sarm/perf-results on the instance holds:"
+            printf '%s\n' "$listing" | sed 's/^/     /'
+        fi
     fi
     rsh 'uname -a; nproc; head -20 /proc/cpuinfo' > "$LOCAL_OUT/host.txt" 2>/dev/null || true
     # Anything the suite wrote outside its own directory, plus what the
@@ -343,7 +396,10 @@ fetch_results() {
 # Defined before cleanup() because cleanup calls it. Best-effort like
 # every other step in there.
 cancel_spot_requests() {
-    [ "$SPOT" = 1 ] || return 0
+    # SPOT_WANTED, not SPOT: a region priced down to on-demand after an
+    # earlier region had already made a spot request would otherwise
+    # leave that request behind.
+    [ "$SPOT_WANTED" = 1 ] || return 0
     [ ${#AWSC[@]} -gt 0 ] || return 0     # region never chosen; nothing was asked for
     local ids orphan orphans
 
@@ -595,9 +651,9 @@ probe_region() {
     # 64-core metal box needs 64 against a default that is often 5. This
     # is the failure that otherwise appears as VcpuLimitExceeded several
     # minutes and one security group into the run.
-    short="$(vcpu_shortfall "$region" "$SPOT")"
+    short="$(vcpu_shortfall "$region" "$SPOT_WANTED")"
     if [ -n "$short" ]; then
-        info "$label $([ "$SPOT" = 1 ] && echo spot || echo on-demand) vCPU quota ${short%% *} < ${short##* }" >&2
+        info "$label $([ "$SPOT_WANTED" = 1 ] && echo spot || echo on-demand) vCPU quota ${short%% *} < ${short##* }" >&2
         return 1
     fi
 
@@ -624,6 +680,16 @@ AMI_PINNED="$AMI"       # empty unless --ami was given
 # takes from the front until one passes, sets the globals for it, and
 # leaves the remainder in place for the launch loop to fall back on.
 PENDING_REGIONS="$REGION_CANDIDATES"
+
+# Regions the price comparison already probed, as probe_region's own
+# "<region>|<ami>|<zones>" lines. A probe is three round trips to the
+# other side of the planet; having paid for them once, the capacity
+# fallback should not pay again.
+PROBED=""
+probe_cached() {
+    printf '%s\n' "$PROBED" | grep "^$1|" | head -1 || true
+}
+
 next_region() {
     local region entry
     while [ -n "$PENDING_REGIONS" ]; do
@@ -633,7 +699,12 @@ next_region() {
             *)     PENDING_REGIONS="" ;;
         esac
 
-        entry="$(probe_region "$region" || true)"
+        entry="$(probe_cached "$region")"
+        if [ -z "$entry" ]; then
+            entry="$(probe_region "$region" || true)"
+            case "$entry" in "$region|ami-"*) PROBED="$PROBED$entry
+" ;; esac
+        fi
         case "$entry" in "$region|ami-"*) ;; *) continue ;; esac
 
         REGION="$region"
@@ -653,7 +724,7 @@ no_region_left() {
    The reason per region is listed above. The three that repeat:
      * opt-in region    — enable it in the console (Account > AWS Regions)
      * not offered      — $ITYPE does not exist there; try --type
-     * vCPU quota       — $([ "$SPOT" = 1 ] && echo 'spot' || echo 'on-demand') limit is too small, and spot and
+     * vCPU quota       — $([ "$SPOT_WANTED" = 1 ] && echo 'spot' || echo 'on-demand') limit is too small, and spot and
                           on-demand are counted separately. Request a rise
                           in Service Quotas, or try --on-demand.
    Pick one explicitly with --region, or a different type with --type.
@@ -694,10 +765,11 @@ fmt_price() {
 # before reading a price from it, or the first "USD" found would be
 # whichever reserved-instance rate happened to be serialised first.
 ondemand_price() {
+    local region="${1:-$REGION}"
     aws --region us-east-1 --output text pricing get-products \
         --service-code AmazonEC2 \
         --filters "Type=TERM_MATCH,Field=instanceType,Value=$ITYPE" \
-                  "Type=TERM_MATCH,Field=regionCode,Value=$REGION" \
+                  "Type=TERM_MATCH,Field=regionCode,Value=$region" \
                   "Type=TERM_MATCH,Field=operatingSystem,Value=Linux" \
                   "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
                   "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" \
@@ -707,8 +779,11 @@ ondemand_price() {
         | grep -o '"USD" *: *"[0-9.]*"' | head -1 | grep -o '[0-9.]*' || true
 }
 
+# The zone is $1; the region defaults to $REGION but is a parameter,
+# because the price comparison below quotes zones in a region this run
+# has not moved to yet.
 spot_price() {
-    aws --region "$REGION" --output text ec2 describe-spot-price-history \
+    aws --region "${2:-$REGION}" --output text ec2 describe-spot-price-history \
         --instance-types "$ITYPE" --product-descriptions "Linux/UNIX" \
         --availability-zone "$1" --start-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
         --query 'SpotPriceHistory[0].SpotPrice' 2>/dev/null || true
@@ -772,9 +847,118 @@ PRICES
     AZ="${AZS%% *}"
 }
 
-if [ "$SPOT" = 1 ]; then
+# The cheapest published spot price across a region's zones, and nothing
+# else on stdout. Empty when no zone in it publishes one — which is not
+# the same as cheap, so callers must not read it as zero.
+region_min_spot() {
+    local region="$1" az price best=""
+    for az in $2; do
+        price="$(spot_price "$az" "$region" | head -1)"
+        case "$price" in ''|*[!0-9.]*|*.*.*) continue ;; esac
+        if [ -z "$best" ] || [ "$(awk -v a="$price" -v b="$best" \
+                'BEGIN{print (a<b)?1:0}')" = 1 ]; then
+            best="$price"
+        fi
+    done
+    printf '%s' "$best"
+}
+
+# Melbourne or Sydney, whichever is cheaper on spot right now — see
+# $PRICE_GROUP. next_region() has already settled on one of them by list
+# order; this runs before anything has been created in it, so switching
+# is free, and it only ever moves the run WITHIN the group.
+#
+# The cost is one probe (three calls) plus one call per zone for each
+# peer, paid once, only on spot, and only when the chosen region is in
+# the group. The probe is cached for the capacity fallback, so a peer
+# that loses on price is not re-probed if the winner runs out of metal.
+GROUP_COMPARED=0
+cheapest_price_group() {
+    local peer entry azs price rest saving
+    local best_region best_price best_entry home_price
+    [ "$GROUP_COMPARED" = 0 ] || return 0
+    GROUP_COMPARED=1
+    case " $PRICE_GROUP " in *" $REGION "*) ;; *) return 0 ;; esac
+
+    rest=""
+    for peer in $PENDING_REGIONS; do
+        case " $PRICE_GROUP " in *" $peer "*) rest="$rest $peer" ;; esac
+    done
+    [ -n "$rest" ] || return 0
+
+    say "Cheapest spot in the region group"
+    best_region="$REGION"
+    best_price="$(region_min_spot "$REGION" "$AZS")"
+    best_entry=""
+    home_price="$best_price"        # kept for the comparison in the move
+    if [ -n "$best_price" ]; then
+        info "$(printf '%-18s' "$(region_name "$REGION")") \$$(fmt_price "$best_price")/hr at its cheapest zone"
+    else
+        info "$(printf '%-18s' "$(region_name "$REGION")") no published spot price"
+    fi
+
+    for peer in $rest; do
+        entry="$(probe_region "$peer" || true)"
+        case "$entry" in "$peer|ami-"*) ;; *) continue ;; esac
+        PROBED="$PROBED$entry
+"
+        azs="${entry##*|}"
+        price="$(region_min_spot "$peer" "$azs")"
+        if [ -z "$price" ]; then
+            info "$(printf '%-18s' "$(region_name "$peer")") no published spot price"
+            continue
+        fi
+        info "$(printf '%-18s' "$(region_name "$peer")") \$$(fmt_price "$price")/hr at its cheapest zone"
+        if [ -z "$best_price" ] || [ "$(awk -v a="$price" -v b="$best_price" \
+                'BEGIN{print (a<b)?1:0}')" = 1 ]; then
+            best_region="$peer"; best_price="$price"; best_entry="$entry"
+        fi
+    done
+
+    if [ "$best_region" = "$REGION" ]; then
+        info "staying in $REGION — nothing cheaper in the group"
+        return 0
+    fi
+
+    # The region being left is probed, viable, and now the natural first
+    # fallback: cheaper is only better while the cheap one has metal.
+    rest=""
+    for peer in $PENDING_REGIONS; do
+        [ "$peer" = "$best_region" ] || rest="$rest $peer"
+    done
+    PENDING_REGIONS="$REGION$rest"
+
+    if [ -n "$home_price" ]; then
+        saving="$(awk -v n="$best_price" -v h="$home_price" \
+            'BEGIN{printf "%.0f", (h-n)*100/h}')"
+        info "moving to $best_region — $(region_name "$best_region"), ${saving}% cheaper on spot"
+    else
+        info "moving to $best_region — $(region_name "$best_region") publishes a price and $REGION does not"
+    fi
+    REGION="$best_region"
+    AMI="$(printf '%s' "$best_entry" | cut -d'|' -f2)"
+    AZS="${best_entry##*|}"
+    AZ="${AZS%% *}"
+    AWSC=(aws --region "$REGION" --output text)
+}
+
+# Everything above, applied to whichever region the run is in. Called
+# again after a capacity fallback, because none of it carries over: the
+# zone order, the spot-vs-on-demand verdict and the on-demand rate itself
+# are all per region, and a fallback that kept the first region's answers
+# would launch on-demand in every zone of the second (its zones are not
+# in $SPOT_AZS) while claiming otherwise in the plan.
+price_region() {
+    local short
+    SPOT="$SPOT_WANTED"
+    ONDEMAND=""
+    SPOT_AZS=""
+    [ "$SPOT" = 1 ] || return 0
+
+    cheapest_price_group
+
     say "Spot pricing in $REGION"
-    ONDEMAND="$(ondemand_price)"
+    ONDEMAND="$(ondemand_price "$REGION")"
     if [ -n "$ONDEMAND" ]; then
         info "$(printf '%-18s' 'on-demand') \$$(fmt_price "$ONDEMAND")/hr — the bar spot has to beat"
     else
@@ -802,7 +986,9 @@ if [ "$SPOT" = 1 ]; then
             SPOT_AZS="$AZS"
         fi
     fi
-fi
+}
+
+price_region
 
 # What the launch loop will actually ask for. Not a single answer any
 # more: spot is taken only in the zones where it beats on-demand, so a
@@ -1081,6 +1267,11 @@ while :; do
     warn "no $ITYPE available anywhere in $REGION ($(region_name "$REGION"))"
     release_region
     next_region || break
+    # Priced from scratch: see price_region(). Without this the new
+    # region inherits the old one's zone order and its $SPOT_AZS, and
+    # every zone here would quietly launch on-demand.
+    price_region
+    info "market: $(market_summary)"
 done
 
 if [ "$LAUNCHED" != 1 ]; then
