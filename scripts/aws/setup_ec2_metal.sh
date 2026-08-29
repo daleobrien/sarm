@@ -234,7 +234,7 @@ else
     info "not packaged for this release — building from source"
     rm -rf /tmp/wrk-build
     git clone --depth 1 -q https://github.com/wg/wrk.git /tmp/wrk-build
-    make -C /tmp/wrk-build -j"$(nproc)" >/dev/null
+    make -j$(nproc) -C /tmp/wrk-build -j"$(nproc)" >/dev/null
     sudo install -m 0755 /tmp/wrk-build/wrk /usr/local/bin/wrk
     rm -rf /tmp/wrk-build
     info "installed to /usr/local/bin/wrk"
@@ -347,8 +347,8 @@ say "Building"
 # Stripping changes no instruction and no load-segment layout, so it costs
 # nothing in throughput. If a future strip ever takes the globals too, the
 # check below catches it and the fallback rebuilds unstripped.
-make -C "$DEST" clean >/dev/null 2>&1 || true
-make -C "$DEST" production 2>&1 | tail -20
+make -j$(nproc) -C "$DEST" clean >/dev/null 2>&1 || true
+make -j$(nproc) -C "$DEST" production 2>&1 | tail -20
 [ -x "$DEST/sarm" ] || die "build produced no ./sarm binary"
 
 # `|| true`, not `|| echo 0`: grep -c PRINTS 0 on no match and ALSO
@@ -360,8 +360,8 @@ SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 if [ "$SYMS" -lt 50 ]; then
     warn "the production build left only ${SYMS} global symbols — perf could not"
     warn "attribute samples. Rebuilding unstripped instead."
-    make -C "$DEST" clean >/dev/null 2>&1 || true
-    make -C "$DEST" 2>&1 | tail -5
+    make -j$(nproc) -C "$DEST" clean >/dev/null 2>&1 || true
+    make -j$(nproc) -C "$DEST" 2>&1 | tail -5
     SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 fi
 # Zero is the EXPECTED answer here -- a clean `strip -x` leaves no local
