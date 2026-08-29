@@ -19,10 +19,35 @@ connection.
 ./scripts/benchmarks/rps_bench.sh --path /pretty/index.html
 ./scripts/benchmarks/rps_bench.sh --workers 4                  # N pre-forked accept workers
 ./scripts/benchmarks/rps_bench.sh --json                       # machine-readable summary
+./scripts/benchmarks/rps_bench.sh --target 10.0.1.7:8080       # server on another machine
+./scripts/benchmarks/rps_bench.sh --target host:8080 --only h2tls
 ```
 
-Requires `wrk`, `h2load`, and `curl` on PATH — the script checks and exits
-2 with a clear message if any are missing.
+Requires `curl`, plus `wrk` for the HTTP/1.1 leg and `h2load` for the two
+HTTP/2 legs — the script checks only what the selected protocols need and
+exits 2 with a clear message if any are missing. `make` is required only
+when it is doing the build.
+
+**A same-box number is a floor, not a ceiling.** Without `--target`, the
+client and the server share the machine, and `h2load` costs roughly 4x
+what sarm costs per request — so the figure describes the split, not the
+server. `--target HOST:PORT` drives a server running elsewhere: nothing is
+built, nothing is started, and every core here belongs to the client.
+`--server-cpus` is rejected with `--target` (that pinning is the other
+box's job); `--only h1,h2c,h2tls` selects protocols.
+
+For a throughput number worth quoting, rent the two machines:
+
+```bash
+./scripts/aws/rps_two_box_ec2.sh --yes       # small sarm box + large load box
+```
+
+It puts sarm on a 2-vCPU instance and the load on a 32-vCPU one, in one
+availability zone and one cluster placement group, and samples the
+*server's* `/proc/stat` across each protocol's window. Read its saturation
+verdict before any req/s figure it prints: under ~85% server-core
+utilisation, something other than sarm was the bottleneck and the number
+is not sarm's.
 
 Use duration mode (the default; `--duration`), not a fixed request count:
 a fixed-request-count mode undercounts once more clients are configured

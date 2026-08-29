@@ -14,8 +14,10 @@
 # What it does:
 #   0. pick a region: Melbourne, then Sydney, then the US, skipping any
 #      that lacks the image, the instance type or the vCPU quota
-#   1. SSH key pair (yours if you have one, else ephemeral) + security
-#      group locked to your public IP
+#   1. SSH key pair — the one this REGION maps to (Melbourne ->
+#      DaleMelbourne, Sydney -> DaleSydney; override with SARM_EC2_KEYS or
+#      --key-name), else an ephemeral pair — plus a security group locked
+#      to your public IP
 #   2. launch ec2 (metal) on the latest Ubuntu arm64 (AMI resolved from SSM)
 #   3. upload this working tree (tracked files, as they are on disk)
 #   4. scripts/aws/setup_ec2_metal.sh   — toolchain, tuning, build, smoke
@@ -96,10 +98,36 @@
 # cannot be queried, only attempted: the launch walks every zone of the
 # chosen region and then the next region, and nothing is billed until one
 # of those attempts succeeds.
+#
+# HOW THIS SCRIPT IS PUT TOGETHER. Everything that is not specific to
+# "rent one metal box and run the perf suite on it" now lives in
+# scripts/aws/lib/ and is shared with scripts/aws/rps_two_box_ec2.sh, the
+# two-machine RPS run:
+#
+#   lib/common.sh      say/info/warn/die and the small numeric helpers
+#   lib/pending_sg.sh  the deferred security-group deletion list
+#   lib/region.sh      region probing: image, instance type, vCPU quota
+#   lib/pricing.sh     spot vs on-demand, per zone and per region
+#   lib/ec2.sh         key pair, security group, the launch loop, ssh
+#   lib/upload.sh      the working-tree tarball and its provenance stamp
+#
+# The instance-side provisioning is split the same way, under
+# scripts/aws/setup/ — see scripts/aws/setup_ec2_metal.sh.
+#
+# The library is written for N instances because the two-box run needs
+# two; this script asks it for one, which is why $ITYPES and $IROLES
+# below are single-element lists.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
+LIB="$REPO/scripts/aws/lib"
+. "$LIB/common.sh"
+. "$LIB/pending_sg.sh"
+. "$LIB/region.sh"
+. "$LIB/pricing.sh"
+. "$LIB/ec2.sh"
+. "$LIB/upload.sh"
 
 # ── options ───────────────────────────────────────────────────────────
 # Candidate regions, in preference order. The script probes each one for
@@ -171,9 +199,6 @@ KEEP=0
 SKIP_SUITE=0
 SWEEP_ONLY=0
 
-# Security groups awaiting deletion, one "<region> <sg-id> <tag>" per line.
-PENDING_SG_FILE="${SARM_PENDING_SG_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/sarm/pending-security-groups}"
-
 while [ $# -gt 0 ]; do
     case "$1" in
         --region)      REGION_CANDIDATES="$2"; shift ;;
@@ -219,14 +244,16 @@ done
 # for, and is what "did this run ever ask for spot" means.
 SPOT_WANTED="$SPOT"
 
-say()  { printf '\n\033[1;36m━━ %s\033[0m\n' "$*"; }
-info() { printf '   %s\n' "$*"; }
-warn() { printf '\033[1;33m   WARNING: %s\033[0m\n' "$*" >&2; }
-die()  { printf '\033[1;31m   FATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+require_tools aws ssh scp git
 
-for tool in aws ssh scp git; do
-    command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed"
-done
+# Before anything is priced or launched: every script this run will execute
+# on the instance has to be in the upload, and the upload is `git ls-files`.
+require_tracked \
+    scripts/aws/setup_ec2_metal.sh scripts/aws/run_perf_suite.sh \
+    scripts/aws/setup/lib.sh scripts/aws/setup/packages.sh \
+    scripts/aws/setup/tuning.sh scripts/aws/setup/loadgen.sh \
+    scripts/aws/setup/build_sarm.sh scripts/aws/setup/profiling.sh \
+    scripts/aws/setup/report.sh scripts/benchmarks/rps_bench.sh
 
 RUNID="$(date +%Y%m%d-%H%M%S)"
 TAG="sarm-quicktest-$RUNID"
@@ -235,8 +262,12 @@ KEYFILE=""
 LOCAL_OUT="$REPO/perf-results/ec2-$RUNID"
 AWSC=()                 # rebuilt once the region is chosen
 
+# The library launches a group, so the id lives in an array; this run
+# holds exactly one and INSTANCE_ID is the readable name for it.
+INSTANCE_IDS=()
 INSTANCE_ID=""
 SG_ID=""
+SG_INTERNAL=0       # one box: nothing has to reach it but ssh
 ONDEMAND=""         # on-demand $/hr for $ITYPE in $REGION, once known
 SPOT_AZS=""         # the zones where spot actually beats it
 KEY_EPHEMERAL=0     # 1 only when this run created the key pair in AWS
@@ -244,64 +275,10 @@ WATCHDOG=""
 STARTED=$(date +%s)
 RESULTS_FETCHED=0
 
-# ── deferred security-group deletion ──────────────────────────────────
-# A security group is still attached to a terminating instance for as long
-# as that instance takes to disappear, which on bare metal is minutes. We
-# refuse to pay for that wall-clock, so instead of waiting we write the
-# group down and let a later run collect it. The list is plain text, one
-# "<region> <sg-id> <tag>" per line, and is rewritten atomically so two
-# scripts racing on it cannot leave it half-written.
-#
-# The region is on the line because a group id means nothing without one:
-# a later run may well be launching somewhere else entirely, and the
-# region a group was created in is not necessarily the region this run
-# ends in — the launch walks a candidate list and abandons a region that
-# has no capacity, leaving a group behind in it. So the region is passed
-# in by the caller rather than read from $REGION, which by then has moved
-# on. It still defaults to $REGION for the common case.
-defer_security_group() {
-    local sg="$1" region="${2:-$REGION}"
-    mkdir -p "$(dirname "$PENDING_SG_FILE")" 2>/dev/null || return 0
-    printf '%s %s %s\n' "$region" "$sg" "$TAG" >> "$PENDING_SG_FILE" || return 0
-    info "security group $sg queued for deletion on a later run ($region)"
-}
-
-# Try every group on the list; drop the ones that go away, keep the ones
-# that are still held by an instance that has not finished dying. Entirely
-# best-effort: this must never be a reason for a run to fail or to stall,
-# so it never waits on anything and always returns 0.
-sweep_pending_security_groups() {
-    [ -s "$PENDING_SG_FILE" ] || return 0
-
-    local tmp kept=0 gone=0 err region sg tag
-    tmp="$(mktemp "${PENDING_SG_FILE}.XXXXXX")" || return 0
-
-    while read -r region sg tag; do
-        # Both fields are required: a line missing the region cannot be
-        # acted on at all, since a group id is only unique within one.
-        [ -n "${sg:-}" ] && [ -n "${region:-}" ] || continue
-        if err="$(aws --region "$region" --output text \
-                    ec2 delete-security-group --group-id "$sg" 2>&1)"; then
-            gone=$((gone + 1))
-        elif printf '%s' "$err" | grep -q 'InvalidGroup\.NotFound'; then
-            # Already deleted by hand or by an earlier run: nothing to keep.
-            gone=$((gone + 1))
-        else
-            printf '%s %s %s\n' "$region" "$sg" "${tag:-}" >> "$tmp"
-            kept=$((kept + 1))
-        fi
-    done < "$PENDING_SG_FILE"
-
-    if [ -s "$tmp" ]; then
-        mv "$tmp" "$PENDING_SG_FILE"
-    else
-        rm -f "$tmp" "$PENDING_SG_FILE"
-    fi
-
-    [ "$gone" -gt 0 ] && info "deleted $gone deferred security group(s)"
-    [ "$kept" -gt 0 ] && info "$kept still attached — will retry next run"
-    return 0
-}
+# The library probes, prices and launches whatever is in $ITYPES, with
+# $IROLES naming each one for its Name tag. One entry each here.
+ITYPES="$ITYPE"
+IROLES=""
 
 # ── pulling the results home ──────────────────────────────────────────
 # Defined before cleanup() because cleanup calls it: whatever the suite
@@ -382,53 +359,6 @@ fetch_results() {
     info "results in $LOCAL_OUT"
 }
 
-# ── spot requests: cancel what this run created ───────────────────────
-# RunInstances with MarketType=spot creates a spot instance request that
-# outlives the API call. Terminating the instance of a fulfilled one-time
-# request does close it — but that only covers the paths where we hold an
-# instance id. If the run-instances call is interrupted client-side (a
-# Ctrl-C, a dropped connection, a timeout) the request can exist on AWS's
-# side while this script never learns of it, and an *open* request will
-# happily fulfil minutes later into an instance nobody is watching and
-# nothing will terminate. So the requests are tagged at creation and
-# cancelled here by tag, whether or not an instance was ever seen.
-#
-# Defined before cleanup() because cleanup calls it. Best-effort like
-# every other step in there.
-cancel_spot_requests() {
-    # SPOT_WANTED, not SPOT: a region priced down to on-demand after an
-    # earlier region had already made a spot request would otherwise
-    # leave that request behind.
-    [ "$SPOT_WANTED" = 1 ] || return 0
-    [ ${#AWSC[@]} -gt 0 ] || return 0     # region never chosen; nothing was asked for
-    local ids orphan orphans
-
-    ids="$("${AWSC[@]}" ec2 describe-spot-instance-requests \
-        --filters "Name=tag:Name,Values=$TAG" "Name=state,Values=open,active" \
-        --query 'SpotInstanceRequests[].SpotInstanceRequestId' 2>/dev/null)" || return 0
-    [ -n "$ids" ] && [ "$ids" != None ] || return 0
-
-    say "Cancelling spot request(s): $ids"
-    "${AWSC[@]}" ec2 cancel-spot-instance-requests --spot-instance-request-ids $ids \
-        >/dev/null 2>&1 || warn "cancel failed — CHECK THE CONSOLE for $ids"
-
-    # Cancelling a request never terminates an instance. One that was
-    # fulfilled in the gap between the describe above and the cancel is
-    # now running, un-tracked, and billing.
-    orphans="$("${AWSC[@]}" ec2 describe-spot-instance-requests \
-        --spot-instance-request-ids $ids \
-        --query 'SpotInstanceRequests[?InstanceId].InstanceId' 2>/dev/null || true)"
-    for orphan in $orphans; do
-        # None is the text-output spelling of an unfulfilled request;
-        # $INSTANCE_ID was already terminated by the caller.
-        if [ "$orphan" != None ] && [ "$orphan" != "$INSTANCE_ID" ]; then
-            warn "spot request fulfilled while cancelling — terminating $orphan"
-            "${AWSC[@]}" ec2 terminate-instances --instance-ids "$orphan" >/dev/null 2>&1 \
-                || warn "terminate call failed — CHECK THE CONSOLE for $orphan"
-        fi
-    done
-}
-
 # ── cleanup: the reason this script exists ────────────────────────────
 # Runs on every exit path — success, failure (set -e), Ctrl-C, watchdog
 # TERM. Each step is independently best-effort: a failure deleting the
@@ -472,7 +402,7 @@ cleanup() {
 
     # After the terminate, not before: the terminate is what stops the
     # billing clock, and this runs on the no-instance paths too.
-    cancel_spot_requests || warn "spot request cleanup failed"
+    cancel_spot_requests ${INSTANCE_ID:+"$INSTANCE_ID"} || warn "spot request cleanup failed"
 
     # The security group cannot be deleted while the instance still holds
     # it, and we are not waiting for that. Onto the list it goes.
@@ -499,167 +429,15 @@ trap cleanup EXIT INT TERM
 sweep_pending_security_groups
 
 if [ "$SWEEP_ONLY" = 1 ]; then
-    if [ -s "$PENDING_SG_FILE" ]; then
-        info "still pending in $PENDING_SG_FILE:"
-        sed 's/^/     /' "$PENDING_SG_FILE"
-    else
-        info "no security groups pending deletion"
-    fi
+    report_pending_security_groups
     exit 0
 fi
 
 # ── 0. where to rent ──────────────────────────────────────────────────
-# Bare metal of one type is not offered everywhere, and where it is
-# offered a given zone can still be out of it. So rather than hard-coding
-# one region, walk a preference list and keep the ones that survive three
-# cheap, free API checks:
-#
-#   * Canonical publishes the Ubuntu arm64 image there,
-#   * the instance type is offered in at least one availability zone,
-#   * the On-Demand vCPU quota is big enough for the type.
-#
-# None of that proves there is capacity — only run-instances can, and the
-# answer changes minute to minute. So this is a shortlist, not a decision:
-# the launch below walks the zones of the winning region, and then the
-# next region, until one actually hands over a machine.
-#
-# The order is deliberate: Melbourne and Sydney are close (latency matters
-# only for the upload, but egress and instance price differ per region),
-# and the US regions are the deep capacity pool that almost always has
-# metal free when ap-southeast-4 does not.
-# Region codes are unreadable at a glance, and picking the wrong side of
-# the planet is an easy mistake to make in a hurry. The common ones are
-# spelled out here; anything else is asked of AWS, which publishes the
-# long names in SSM under a global path (readable from any region, so
-# us-east-1 is a convention here, not a dependency on that region).
-region_name() {
-    case "$1" in
-        ap-southeast-4) printf 'Melbourne' ;;
-        ap-southeast-2) printf 'Sydney' ;;
-        ap-southeast-1) printf 'Singapore' ;;
-        ap-northeast-1) printf 'Tokyo' ;;
-        ap-northeast-2) printf 'Seoul' ;;
-        ap-south-1)     printf 'Mumbai' ;;
-        us-east-1)      printf 'N. Virginia' ;;
-        us-east-2)      printf 'Ohio' ;;
-        us-west-1)      printf 'N. California' ;;
-        us-west-2)      printf 'Oregon' ;;
-        eu-west-1)      printf 'Ireland' ;;
-        eu-west-2)      printf 'London' ;;
-        eu-central-1)   printf 'Frankfurt' ;;
-        ca-central-1)   printf 'Canada Central' ;;
-        sa-east-1)      printf 'Sao Paulo' ;;
-        *)
-            local long
-            long="$(aws --region us-east-1 --output text ssm get-parameters \
-                      --names "/aws/service/global-infrastructure/regions/$1/longName" \
-                      --query 'Parameters[].Value' 2>/dev/null || true)"
-            case "$long" in
-                ''|None)  printf '%s' "$1" ;;
-                # "Asia Pacific (Melbourne)" -> "Melbourne"
-                *\(*\)*)  printf '%s' "${long#*(}" | tr -d ')' ;;
-                *)        printf '%s' "$long" ;;
-            esac ;;
-    esac
-}
-
-# Regions the account can actually use. Several of the candidates above —
-# Melbourne among them — are opt-in: they exist, they publish images and
-# instance types, and every API call against them fails with AuthFailure
-# until the account enables them in the console. Without this check that
-# looks identical to "no image published here", which sends you hunting
-# the wrong problem. One call, cached, and only made once a probe needs it.
-ENABLED_REGIONS=""
-region_enabled() {
-    if [ -z "$ENABLED_REGIONS" ]; then
-        ENABLED_REGIONS="$(aws --region us-east-1 --output text ec2 describe-regions \
-            --query 'Regions[].RegionName' 2>/dev/null | tr '\t' ' ' || true)"
-        # Unreadable (no ec2:DescribeRegions) is not evidence of anything,
-        # so fall back to letting every candidate through.
-        [ -n "$ENABLED_REGIONS" ] || ENABLED_REGIONS="ALL"
-    fi
-    [ "$ENABLED_REGIONS" = "ALL" ] && return 0
-    case " $ENABLED_REGIONS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
-}
-
-# Echoes "<quota> <vcpus>" when the region's vCPU quota is known to be too
-# small for a single $ITYPE, and stays silent when it is big enough or
-# unreadable — an unreadable quota (no servicequotas:GetServiceQuota) is
-# not evidence of a small one.
-#
-# Spot and on-demand are counted against SEPARATE quotas, so which one to
-# ask about is a parameter rather than a constant: the price check below
-# can move a run to on-demand after its region was probed on spot, and
-# the quota that was checked would then be the wrong one.
-#   L-34B43A08  All Standard Spot Instance Requests
-#   L-1216C47A  Running On-Demand Standard instances
-vcpu_shortfall() {
-    local region="$1" use_spot="$2" vcpus quota quota_code
-    vcpus="$(aws --region "$region" --output text ec2 describe-instance-types \
-               --instance-types "$ITYPE" \
-               --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' 2>/dev/null || true)"
-    quota_code=L-1216C47A
-    [ "$use_spot" = 1 ] && quota_code=L-34B43A08
-    quota="$(aws --region "$region" --output text service-quotas get-service-quota \
-               --service-code ec2 --quota-code "$quota_code" \
-               --query 'Quota.Value' 2>/dev/null || true)"
-    [ -n "$quota" ] && [ "$quota" != "None" ] || return 0
-    [ -n "$vcpus" ] && [ "$vcpus" != "None" ] || return 0
-    if [ "${quota%%.*}" -lt "$vcpus" ]; then
-        printf '%s %s\n' "${quota%%.*}" "$vcpus"
-    fi
-}
-
-# Its stdout is the machine-readable result line and nothing else — the
-# caller captures it — so progress messages here go to stderr.
-probe_region() {
-    local region="$1" ami azs label short
-    label="$(printf '%-16s %-14s' "$region" "$(region_name "$region")")"
-    local awsc=(aws --region "$region" --output text)
-
-    # AMI_PINNED, not AMI: AMI holds whatever the last probe resolved, and
-    # in a fallback probe that is the previous region's image id — which
-    # exists nowhere else. Only an explicit --ami pins across regions.
-    if ! region_enabled "$region"; then
-        info "$label not enabled on this account (opt-in region)" >&2
-        return 1
-    fi
-
-    ami="$AMI_PINNED"
-    if [ -z "$ami" ]; then
-        ami="$("${awsc[@]}" ssm get-parameters --names "$AMI_SSM" \
-                 --query 'Parameters[].Value' 2>/dev/null || true)"
-    fi
-    if [ -z "$ami" ] || [ "$ami" = "None" ]; then
-        info "$label no Ubuntu $UBUNTU arm64 image" >&2
-        return 1
-    fi
-
-    # Every zone that offers the type, not just the first: the launch loop
-    # needs the alternatives when zone one is out of capacity.
-    azs="$("${awsc[@]}" ec2 describe-instance-type-offerings \
-             --location-type availability-zone \
-             --filters "Name=instance-type,Values=$ITYPE" \
-             --query 'InstanceTypeOfferings[].Location' 2>/dev/null | tr '\t' ' ' || true)"
-    azs="$(printf '%s' "$azs" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
-    if [ -z "$azs" ] || [ "$azs" = "None" ]; then
-        info "$label $ITYPE not offered" >&2
-        return 1
-    fi
-
-    # The quota is per region and counts vCPUs, not instances, so a
-    # 64-core metal box needs 64 against a default that is often 5. This
-    # is the failure that otherwise appears as VcpuLimitExceeded several
-    # minutes and one security group into the run.
-    short="$(vcpu_shortfall "$region" "$SPOT_WANTED")"
-    if [ -n "$short" ]; then
-        info "$label $([ "$SPOT_WANTED" = 1 ] && echo spot || echo on-demand) vCPU quota ${short%% *} < ${short##* }" >&2
-        return 1
-    fi
-
-    printf '%s|%s|%s\n' "$region" "$ami" "$azs"
-    return 0
-}
+# See lib/region.sh for what a region is checked for and why none of it
+# proves there is capacity. The order is deliberate: Melbourne and Sydney
+# are close, and the US regions are the deep capacity pool that almost
+# always has metal free when ap-southeast-4 does not.
 
 say "Choosing a region"
 # An AMI id belongs to exactly one region, so pinning one pins the region.
@@ -669,7 +447,6 @@ if [ -n "$AMI" ] && [ "$(printf '%s' "$REGION_CANDIDATES" | wc -w)" -gt 1 ]; the
 fi
 AMI_SSM="/aws/service/canonical/ubuntu/server/$UBUNTU/stable/current/arm64/hvm/ebs-gp3/ami-id"
 AMI_PINNED="$AMI"       # empty unless --ami was given
-
 # Probing is lazy: the first region that passes is the one we use, and the
 # rest are never asked about unless it turns out to have no capacity. Four
 # regions x three API calls is a slow way to answer a question that the
@@ -681,327 +458,13 @@ AMI_PINNED="$AMI"       # empty unless --ami was given
 # leaves the remainder in place for the launch loop to fall back on.
 PENDING_REGIONS="$REGION_CANDIDATES"
 
-# Regions the price comparison already probed, as probe_region's own
-# "<region>|<ami>|<zones>" lines. A probe is three round trips to the
-# other side of the planet; having paid for them once, the capacity
-# fallback should not pay again.
-PROBED=""
-probe_cached() {
-    printf '%s\n' "$PROBED" | grep "^$1|" | head -1 || true
-}
-
-next_region() {
-    local region entry
-    while [ -n "$PENDING_REGIONS" ]; do
-        region="${PENDING_REGIONS%% *}"
-        case "$PENDING_REGIONS" in
-            *' '*) PENDING_REGIONS="${PENDING_REGIONS#* }" ;;
-            *)     PENDING_REGIONS="" ;;
-        esac
-
-        entry="$(probe_cached "$region")"
-        if [ -z "$entry" ]; then
-            entry="$(probe_region "$region" || true)"
-            case "$entry" in "$region|ami-"*) PROBED="$PROBED$entry
-" ;; esac
-        fi
-        case "$entry" in "$region|ami-"*) ;; *) continue ;; esac
-
-        REGION="$region"
-        AMI="$(printf '%s' "$entry" | cut -d'|' -f2)"
-        AZS="${entry##*|}"
-        AZ="${AZS%% *}"
-        AWSC=(aws --region "$REGION" --output text)
-        info "$(printf '%-16s %-14s' "$REGION" "$(region_name "$REGION")") ok — $(printf '%s' "$AZS" | wc -w | tr -d ' ') zone(s) offering $ITYPE"
-        return 0
-    done
-    return 1
-}
-
-no_region_left() {
-    die "no region can run $ITYPE on Ubuntu $UBUNTU arm64 — tried:
-       $REGION_CANDIDATES
-   The reason per region is listed above. The three that repeat:
-     * opt-in region    — enable it in the console (Account > AWS Regions)
-     * not offered      — $ITYPE does not exist there; try --type
-     * vCPU quota       — $([ "$SPOT_WANTED" = 1 ] && echo 'spot' || echo 'on-demand') limit is too small, and spot and
-                          on-demand are counted separately. Request a rise
-                          in Service Quotas, or try --on-demand.
-   Pick one explicitly with --region, or a different type with --type.
-   List what Canonical publishes in a region with:
-     aws --region <region> ssm get-parameters-by-path --recursive \\
-         --path /aws/service/canonical/ubuntu/server --query 'Parameters[].Name' \\
-       | tr '\\t' '\\n' | grep 'current/arm64/hvm/ebs-gp3'"
-}
-
 next_region || no_region_left
 
 # ── 0c. spot pricing ──────────────────────────────────────────────────
-# Spot is the same instance on the same hardware; what differs is that AWS
-# can take it back with two minutes' notice, and that the price floats.
-# The deadman shutdown and the cleanup trap already assume the box can
-# vanish, so an interruption costs a re-run, not a leak — but a long suite
-# is a bigger bet than a quick one.
-#
-# The price is per zone, and on metal the spread between zones in one
-# region is routinely 2x, so on spot the zones are tried cheapest first
-# rather than in AWS's order. One API call per zone, skipped entirely
-# under --on-demand.
-# Display only — the Pricing API pads to ten decimal places and the spot
-# history to six, and neither reads as money. The unrounded values are
-# what the comparisons use; nothing numeric goes through here.
-fmt_price() {
-    printf '%s' "$1" | sed 's/\(\.[0-9]*[1-9]\)0*$/\1/; s/\.0*$//'
-}
-
-# The on-demand rate for the same instance in the same region, from the
-# Pricing API — which lives only in a handful of endpoints, so the call
-# goes to us-east-1 and names the region of interest as a filter rather
-# than being made there.
-#
-# There is no --query path into the answer: the Pricing API returns each
-# product as a *JSON string*, not as structure, so JMESPath sees one
-# opaque blob. Hence the sed: cut the OnDemand term out of the blob
-# before reading a price from it, or the first "USD" found would be
-# whichever reserved-instance rate happened to be serialised first.
-ondemand_price() {
-    local region="${1:-$REGION}"
-    aws --region us-east-1 --output text pricing get-products \
-        --service-code AmazonEC2 \
-        --filters "Type=TERM_MATCH,Field=instanceType,Value=$ITYPE" \
-                  "Type=TERM_MATCH,Field=regionCode,Value=$region" \
-                  "Type=TERM_MATCH,Field=operatingSystem,Value=Linux" \
-                  "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
-                  "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" \
-                  "Type=TERM_MATCH,Field=capacitystatus,Value=Used" \
-        --query 'PriceList[0]' 2>/dev/null \
-        | sed 's/.*"OnDemand"//; s/"Reserved".*//' \
-        | grep -o '"USD" *: *"[0-9.]*"' | head -1 | grep -o '[0-9.]*' || true
-}
-
-# The zone is $1; the region defaults to $REGION but is a parameter,
-# because the price comparison below quotes zones in a region this run
-# has not moved to yet.
-spot_price() {
-    aws --region "${2:-$REGION}" --output text ec2 describe-spot-price-history \
-        --instance-types "$ITYPE" --product-descriptions "Linux/UNIX" \
-        --availability-zone "$1" --start-time "$(date -u +%Y-%m-%dT%H:%M:%S)" \
-        --query 'SpotPriceHistory[0].SpotPrice' 2>/dev/null || true
-}
-
-# Rewrites $AZS in ascending price order, dropping nothing: a zone with no
-# published price still gets tried, just last.
-#
-# Written without a `case` inside the command substitution on purpose:
-# bash 3.2, which is what macOS still ships as /bin/bash, fails to parse
-# one at runtime even though `bash -n` accepts the file.
-order_azs_by_price() {
-    local az price prices sorted cheaper saving
-    prices=""
-    for az in $AZS; do
-        # Anything that is not a bare decimal — "None", an error, or a
-        # stray extra line — is treated as "no price": the field is fed
-        # straight into a sort key, so a mangled value would silently
-        # reshuffle or drop a zone rather than fail loudly.
-        price="$(spot_price "$az" | head -1)"
-        case "$price" in
-            ''|*[!0-9.]*|*.*.*) price=999 ;;   # sorts last, still gets tried
-        esac
-        prices="$prices$price $az
-"
-    done
-    sorted="$(printf '%s' "$prices" | sort -n)"
-    [ -n "$sorted" ] || return 0
-
-    # Spot is only worth its interruption risk where it is actually
-    # cheaper. AWS caps the spot price at the on-demand rate, so a zone
-    # can sit at exact parity — all of the risk, none of the discount —
-    # and those zones are launched on-demand instead. Zones qualifying
-    # for spot are collected in $SPOT_AZS; the ordering is untouched, so
-    # nothing is dropped from the capacity search either way.
-    SPOT_AZS=""
-    while read -r price az; do
-        [ -n "$az" ] || continue
-        if [ "$price" = 999 ]; then
-            info "$(printf '%-18s' "$az") no published spot price — on-demand there"
-        elif [ -z "$ONDEMAND" ]; then
-            info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot"
-            SPOT_AZS="$SPOT_AZS $az"
-        else
-            # awk, not the shell: these are decimals, and [ -lt ] is integers.
-            cheaper="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{print (s<o)?1:0}')"
-            saving="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{printf "%.0f", (o-s)*100/o}')"
-            if [ "$cheaper" = 1 ]; then
-                info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot — ${saving}% under on-demand"
-                SPOT_AZS="$SPOT_AZS $az"
-            else
-                info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot — no saving, on-demand there"
-            fi
-        fi
-    done <<PRICES
-$sorted
-PRICES
-
-    SPOT_AZS="${SPOT_AZS# }"        # comparable with $AZS below
-    AZS="$(printf '%s' "$sorted" | awk '{printf "%s ", $2}' | sed 's/ *$//')"
-    AZ="${AZS%% *}"
-}
-
-# The cheapest published spot price across a region's zones, and nothing
-# else on stdout. Empty when no zone in it publishes one — which is not
-# the same as cheap, so callers must not read it as zero.
-region_min_spot() {
-    local region="$1" az price best=""
-    for az in $2; do
-        price="$(spot_price "$az" "$region" | head -1)"
-        case "$price" in ''|*[!0-9.]*|*.*.*) continue ;; esac
-        if [ -z "$best" ] || [ "$(awk -v a="$price" -v b="$best" \
-                'BEGIN{print (a<b)?1:0}')" = 1 ]; then
-            best="$price"
-        fi
-    done
-    printf '%s' "$best"
-}
-
-# Melbourne or Sydney, whichever is cheaper on spot right now — see
-# $PRICE_GROUP. next_region() has already settled on one of them by list
-# order; this runs before anything has been created in it, so switching
-# is free, and it only ever moves the run WITHIN the group.
-#
-# The cost is one probe (three calls) plus one call per zone for each
-# peer, paid once, only on spot, and only when the chosen region is in
-# the group. The probe is cached for the capacity fallback, so a peer
-# that loses on price is not re-probed if the winner runs out of metal.
-GROUP_COMPARED=0
-cheapest_price_group() {
-    local peer entry azs price rest saving
-    local best_region best_price best_entry home_price
-    [ "$GROUP_COMPARED" = 0 ] || return 0
-    GROUP_COMPARED=1
-    case " $PRICE_GROUP " in *" $REGION "*) ;; *) return 0 ;; esac
-
-    rest=""
-    for peer in $PENDING_REGIONS; do
-        case " $PRICE_GROUP " in *" $peer "*) rest="$rest $peer" ;; esac
-    done
-    [ -n "$rest" ] || return 0
-
-    say "Cheapest spot in the region group"
-    best_region="$REGION"
-    best_price="$(region_min_spot "$REGION" "$AZS")"
-    best_entry=""
-    home_price="$best_price"        # kept for the comparison in the move
-    if [ -n "$best_price" ]; then
-        info "$(printf '%-18s' "$(region_name "$REGION")") \$$(fmt_price "$best_price")/hr at its cheapest zone"
-    else
-        info "$(printf '%-18s' "$(region_name "$REGION")") no published spot price"
-    fi
-
-    for peer in $rest; do
-        entry="$(probe_region "$peer" || true)"
-        case "$entry" in "$peer|ami-"*) ;; *) continue ;; esac
-        PROBED="$PROBED$entry
-"
-        azs="${entry##*|}"
-        price="$(region_min_spot "$peer" "$azs")"
-        if [ -z "$price" ]; then
-            info "$(printf '%-18s' "$(region_name "$peer")") no published spot price"
-            continue
-        fi
-        info "$(printf '%-18s' "$(region_name "$peer")") \$$(fmt_price "$price")/hr at its cheapest zone"
-        if [ -z "$best_price" ] || [ "$(awk -v a="$price" -v b="$best_price" \
-                'BEGIN{print (a<b)?1:0}')" = 1 ]; then
-            best_region="$peer"; best_price="$price"; best_entry="$entry"
-        fi
-    done
-
-    if [ "$best_region" = "$REGION" ]; then
-        info "staying in $REGION — nothing cheaper in the group"
-        return 0
-    fi
-
-    # The region being left is probed, viable, and now the natural first
-    # fallback: cheaper is only better while the cheap one has metal.
-    rest=""
-    for peer in $PENDING_REGIONS; do
-        [ "$peer" = "$best_region" ] || rest="$rest $peer"
-    done
-    PENDING_REGIONS="$REGION$rest"
-
-    if [ -n "$home_price" ]; then
-        saving="$(awk -v n="$best_price" -v h="$home_price" \
-            'BEGIN{printf "%.0f", (h-n)*100/h}')"
-        info "moving to $best_region — $(region_name "$best_region"), ${saving}% cheaper on spot"
-    else
-        info "moving to $best_region — $(region_name "$best_region") publishes a price and $REGION does not"
-    fi
-    REGION="$best_region"
-    AMI="$(printf '%s' "$best_entry" | cut -d'|' -f2)"
-    AZS="${best_entry##*|}"
-    AZ="${AZS%% *}"
-    AWSC=(aws --region "$REGION" --output text)
-}
-
-# Everything above, applied to whichever region the run is in. Called
-# again after a capacity fallback, because none of it carries over: the
-# zone order, the spot-vs-on-demand verdict and the on-demand rate itself
-# are all per region, and a fallback that kept the first region's answers
-# would launch on-demand in every zone of the second (its zones are not
-# in $SPOT_AZS) while claiming otherwise in the plan.
-price_region() {
-    local short
-    SPOT="$SPOT_WANTED"
-    ONDEMAND=""
-    SPOT_AZS=""
-    [ "$SPOT" = 1 ] || return 0
-
-    cheapest_price_group
-
-    say "Spot pricing in $REGION"
-    ONDEMAND="$(ondemand_price "$REGION")"
-    if [ -n "$ONDEMAND" ]; then
-        info "$(printf '%-18s' 'on-demand') \$$(fmt_price "$ONDEMAND")/hr — the bar spot has to beat"
-    else
-        warn "could not read the on-demand rate; taking spot in every zone"
-        warn "  (spot is capped at on-demand, so this cannot cost more — it"
-        warn "   just means a zone at parity will not be spotted)"
-    fi
-    order_azs_by_price
-    if [ -z "$SPOT_AZS" ]; then
-        SPOT=0
-        warn "no zone is cheaper on spot — running on-demand instead"
-    fi
-
-    # A zone that just dropped to on-demand is billed against a different
-    # quota than the one the region was probed against, and an unchecked
-    # quota is exactly how VcpuLimitExceeded arrives minutes into a run.
-    if [ "$SPOT_AZS" != "$AZS" ]; then
-        short="$(vcpu_shortfall "$REGION" 0)"
-        if [ -n "$short" ]; then
-            warn "on-demand vCPU quota ${short%% *} < ${short##* } in $REGION"
-            warn "  staying on spot in every zone: AWS caps the spot price at"
-            warn "  the on-demand rate, so a zone at parity costs no more than"
-            warn "  on-demand would have — it just carries the interruption risk"
-            SPOT=1
-            SPOT_AZS="$AZS"
-        fi
-    fi
-}
-
+# Spot is the default market — the same bare metal for roughly a third of
+# the on-demand price, at the cost of AWS being able to reclaim it with
+# two minutes' notice. See lib/pricing.sh.
 price_region
-
-# What the launch loop will actually ask for. Not a single answer any
-# more: spot is taken only in the zones where it beats on-demand, so a
-# run can be spot in its first choice and on-demand in its fallback.
-market_summary() {
-    if [ "$SPOT" != 1 ]; then
-        echo "on-demand$([ -n "$ONDEMAND" ] && echo " at \$$(fmt_price "$ONDEMAND")/hr")"
-    elif [ "$SPOT_AZS" = "$AZS" ]; then
-        echo "spot in every zone — interruptible on 2 minutes notice"
-    else
-        echo "spot in ${SPOT_AZS:-none} — interruptible on 2 minutes notice; on-demand elsewhere"
-    fi
-}
 
 # ── 0b. plan ──────────────────────────────────────────────────────────
 say "Plan"
@@ -1032,225 +495,17 @@ if [ "$ASSUME_YES" != 1 ]; then
 fi
 
 # ── 1. keypair and security group ─────────────────────────────────────
-# Preference order: the key pair named above if this machine actually has
-# its private half and AWS still has it in this region, otherwise a fresh
-# ephemeral one. An explicit --key-name/--key-file is an instruction, not
-# a preference, so it fails rather than falling back.
-#
-# Both of these are per-region, so they are functions rather than
-# straight-line code: failing over to the next region means doing them
-# again against the new one.
+# Both are per region, so they are redone inside the launch loop when a
+# region turns out to have no capacity. See lib/ec2.sh.
 KEY_NAME_REQUESTED="$KEY_NAME"
 KEY_FILE_REQUESTED="$KEY_FILE"
-
-setup_keypair() {
-    KEY_NAME="$KEY_NAME_REQUESTED"
-    KEY_FILE="$KEY_FILE_REQUESTED"
-    KEY_EPHEMERAL=0
-    KEYFILE=""
-    if [ -n "$KEY_NAME" ] && [ -n "$KEY_FILE" ]; then
-        if [ ! -r "$KEY_FILE" ]; then
-            [ "$KEY_EXPLICIT" = 1 ] && die "no readable private key at $KEY_FILE"
-            info "no private key at $KEY_FILE — falling back to an ephemeral pair"
-            KEY_NAME=""
-        elif ! "${AWSC[@]}" ec2 describe-key-pairs --key-names "$KEY_NAME" \
-                --query 'KeyPairs[0].KeyName' >/dev/null 2>&1; then
-            [ "$KEY_EXPLICIT" = 1 ] && die "AWS has no key pair named $KEY_NAME in $REGION"
-            info "AWS has no key pair $KEY_NAME in $REGION — falling back to an ephemeral pair"
-            KEY_NAME=""
-        else
-            KEYFILE="$KEY_FILE"
-            # ssh refuses a private key the rest of the world can read, and
-            # a .pem straight out of the console often arrives 0644.
-            case "$(ls -l "$KEYFILE" | cut -c5-10)" in
-                ------) ;;
-                *) warn "$KEYFILE is group/world readable; ssh will refuse it. chmod 600 it." ;;
-            esac
-            info "using your key pair $KEY_NAME ($KEYFILE)"
-        fi
-    fi
-    if [ -z "$KEY_NAME" ]; then
-        KEYFILE="$WORK/id_ed25519"
-        [ -f "$KEYFILE" ] || ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$KEYFILE"
-        KEY_NAME="$TAG"
-        "${AWSC[@]}" ec2 import-key-pair --key-name "$KEY_NAME" \
-            --public-key-material "fileb://${KEYFILE}.pub" --query 'KeyName' >/dev/null
-        KEY_EPHEMERAL=1
-        info "ephemeral key pair $KEY_NAME (private key lives only in $WORK)"
-    fi
-}
-
-# Several independent sources, because a single one is a single point of
-# failure: DNS filtering, a split-tunnel VPN or a captive resolver can take
-# out one echo service while the AWS API itself still works. The 1.1.1.1
-# and OpenDNS probes need no working name resolution for the echo host.
-detect_public_ip() {
-    local raw ip
-    for src in \
-        "curl -fsS --max-time 8 https://checkip.amazonaws.com" \
-        "curl -fsS --max-time 8 https://api.ipify.org" \
-        "curl -fsS --max-time 8 https://icanhazip.com" \
-        "curl -fsS --max-time 8 --resolve one.one.one.one:443:1.1.1.1 https://one.one.one.one/cdn-cgi/trace" \
-        "dig -4 +short +time=3 +tries=1 myip.opendns.com @208.67.222.222"
-    do
-        raw="$($src 2>/dev/null | tr -d '\r')" || true
-        [ -n "$raw" ] || continue
-        # cdn-cgi/trace answers key=value lines; everything else answers
-        # the bare address.
-        ip="$(printf '%s\n' "$raw" | sed -n 's/^ip=//p' | head -1)"
-        [ -n "$ip" ] || ip="$(printf '%s\n' "$raw" | head -1 | tr -d '[:space:]')"
-        if printf '%s' "$ip" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
-            printf '%s' "$ip"; return 0
-        fi
-    done
-    return 1
-}
-
-if [ -z "$SSH_CIDR" ]; then
-    MYIP="$(detect_public_ip || true)"
-    if [ -z "${MYIP:-}" ]; then
-        die "could not determine your public IPv4 address from any of five sources.
-        Nothing has been launched. Either pass the address explicitly:
-            $0 --ssh-cidr \$(curl -s https://checkip.amazonaws.com)/32
-        or, if this network has no stable IPv4 (IPv6-only, or a rotating
-        egress), open SSH wider — key-only auth, no password:
-            $0 --ssh-cidr 0.0.0.0/0"
-    fi
-    SSH_CIDR="$MYIP/32"
-fi
-
-case "$SSH_CIDR" in
-    0.0.0.0/0) warn "port 22 will be open to the entire internet (key-only auth)" ;;
-esac
-
-setup_security_group() {
-    VPC_ID="$("${AWSC[@]}" ec2 describe-vpcs --filters Name=isDefault,Values=true \
-        --query 'Vpcs[0].VpcId')"
-    [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || die "no default VPC in $REGION"
-    SG_ID="$("${AWSC[@]}" ec2 create-security-group --group-name "$TAG" \
-        --description "ephemeral sarm benchmark box" --vpc-id "$VPC_ID" --query 'GroupId')"
-    "${AWSC[@]}" ec2 authorize-security-group-ingress --group-id "$SG_ID" \
-        --protocol tcp --port 22 --cidr "$SSH_CIDR" >/dev/null
-    info "security group $SG_ID — port 22 from $SSH_CIDR only"
-    info "the load generator runs on the box itself, so nothing else is exposed"
-}
-
-# Undo a region that would not give us a machine. Nothing is attached to
-# these — the launch failed — so the security group deletes immediately
-# rather than going on the deferred list.
-release_region() {
-    local region="$REGION"
-    if [ -n "$SG_ID" ]; then
-        # Nothing is attached — the launch failed — so this normally
-        # deletes outright. If it does not, the group is recorded against
-        # the region it lives in, not the one we are about to try.
-        "${AWSC[@]}" ec2 delete-security-group --group-id "$SG_ID" >/dev/null 2>&1 \
-            || defer_security_group "$SG_ID" "$region"
-        SG_ID=""
-    fi
-    if [ "$KEY_EPHEMERAL" = 1 ] && [ -n "$KEY_NAME" ]; then
-        "${AWSC[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 || true
-        KEY_EPHEMERAL=0
-    fi
-}
+resolve_ssh_cidr
 
 # ── 2. launch ─────────────────────────────────────────────────────────
 # Two independent kill switches, because the local trap only fires while
 # this shell is alive: the instance shuts itself down after $DEADMAN
 # minutes, and shutdown means terminate.
-cat > "$WORK/user-data.sh" <<USERDATA
-#!/bin/bash
-# Deadman switch written by quick_test_ec2.sh — if the orchestrating
-# laptop disappears, this instance still terminates itself.
-shutdown -h +${DEADMAN}
-USERDATA
-
-# One region's worth of attempts: every zone that offers the type, in
-# order, because "no capacity" is a property of a zone and not of a
-# region. Returns 0 with INSTANCE_ID set, 1 if the whole region is out.
-launch_in_region() {
-    local az subnet out rc
-    for az in $AZS; do
-        subnet="$("${AWSC[@]}" ec2 describe-subnets \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=availability-zone,Values=$az" \
-            --query 'Subnets[0].SubnetId')"
-        if [ -z "$subnet" ] || [ "$subnet" = "None" ]; then
-            info "$az — no default subnet, skipping"
-            continue
-        fi
-
-        info "trying $az"
-        # One-time spot, terminating on interruption: a persistent request
-        # would try to replace the instance behind our back, long after
-        # this script has stopped watching.
-        MARKET=()
-        TAGS="Tags=[{Key=Name,Value=$TAG},{Key=Purpose,Value=sarm-benchmark},{Key=Ephemeral,Value=true}]"
-        # One flag, many values: a repeated --tag-specifications would
-        # replace the earlier one rather than add to it.
-        TAGSPEC=(--tag-specifications "ResourceType=instance,$TAGS")
-        # Per zone, not once for the run: the fallthrough can land in a
-        # zone where spot is at parity with on-demand, and taking the
-        # interruption risk there buys nothing.
-        USE_SPOT=0
-        if [ "$SPOT" = 1 ]; then
-            case " $SPOT_AZS " in
-                *" $az "*) USE_SPOT=1 ;;
-                *) info "$az is not cheaper on spot — on-demand here" ;;
-            esac
-        fi
-        if [ "$USE_SPOT" = 1 ]; then
-            MARKET=(--instance-market-options
-                'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
-            # The request is tagged in the same call that creates it, so
-            # cleanup can find and cancel it by tag even on the paths
-            # where this script never learns the instance id.
-            TAGSPEC+=("ResourceType=spot-instances-request,$TAGS")
-        fi
-        # set -e must not fire here: a capacity error is an expected
-        # answer, not a failure of the script.
-        set +e
-        out="$("${AWSC[@]}" ec2 run-instances \
-            --image-id "$AMI" \
-            --instance-type "$ITYPE" \
-            ${MARKET[@]+"${MARKET[@]}"} \
-            --key-name "$KEY_NAME" \
-            --subnet-id "$subnet" \
-            --security-group-ids "$SG_ID" \
-            --associate-public-ip-address \
-            --instance-initiated-shutdown-behavior terminate \
-            --monitoring 'Enabled=true' \
-            --metadata-options 'HttpTokens=required,HttpEndpoint=enabled' \
-            --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=${VOLUME_GB},VolumeType=gp3,DeleteOnTermination=true}" \
-            --user-data "file://$WORK/user-data.sh" \
-            ${TAGSPEC[@]+"${TAGSPEC[@]}"} \
-            --query 'Instances[0].InstanceId' 2>&1)"
-        rc=$?
-        set -e
-
-        if [ "$rc" = 0 ] && [ -n "$out" ] && [ "$out" != "None" ]; then
-            INSTANCE_ID="$out"
-            AZ="$az"
-            SUBNET_ID="$subnet"
-            return 0
-        fi
-
-        case "$out" in
-            *InsufficientInstanceCapacity*|*InsufficientHostCapacity*|*Unsupported*)
-                warn "$az has no $ITYPE capacity right now" ;;
-            *MaxSpotInstanceCountExceeded*|*SpotMaxPriceTooLow*)
-                warn "$az refused the spot request: $(printf '%s' "$out" | tail -1)" ;;
-            *VcpuLimitExceeded*|*InstanceLimitExceeded*)
-                # A quota is regional; no other zone will answer differently.
-                warn "$REGION quota refused the launch: $(printf '%s' "$out" | tail -1)"
-                return 1 ;;
-            *)
-                # An unexpected error is worth surfacing rather than
-                # silently walking the remaining zones with it.
-                warn "$az: $(printf '%s' "$out" | tail -1)" ;;
-        esac
-    done
-    return 1
-}
+write_user_data "$DEADMAN"
 
 # next_region() has already chosen the first one; a region that turns out
 # to have no capacity sends us back to it for the next candidate, which is
@@ -1262,7 +517,7 @@ while :; do
     TRIED="$TRIED $REGION"
     setup_keypair
     setup_security_group
-    if launch_in_region; then LAUNCHED=1; break; fi
+    if launch_group_in_region; then LAUNCHED=1; break; fi
 
     warn "no $ITYPE available anywhere in $REGION ($(region_name "$REGION"))"
     release_region
@@ -1280,6 +535,8 @@ if [ "$LAUNCHED" != 1 ]; then
    Nothing is running and nothing is billed. Options: wait and re-run,
    try another type with --type, or name a region directly with --region."
 fi
+INSTANCE_ID="${LAUNCHED_IDS[0]}"
+INSTANCE_IDS=("$INSTANCE_ID")
 info "$INSTANCE_ID in $AZ — $(region_name "$REGION")"
 
 # The watchdog is armed only now — before this point there is nothing to
@@ -1297,61 +554,28 @@ PUBLIC_IP="$("${AWSC[@]}" ec2 describe-instances --instance-ids "$INSTANCE_ID" \
     --query 'Reservations[0].Instances[0].PublicIpAddress')"
 info "running at $PUBLIC_IP"
 
-SSH_OPTS=(-i "$KEYFILE" -o StrictHostKeyChecking=accept-new
-          -o UserKnownHostsFile="$WORK/known_hosts" -o ConnectTimeout=10
-          -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o LogLevel=ERROR)
+SSH_OPTS=()
+while IFS= read -r o; do SSH_OPTS+=("$o"); done <<< "$(ssh_opts)"
 REMOTE="ubuntu@$PUBLIC_IP"
 rsh() { ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
 
 say "Waiting for sshd"
-for i in $(seq 1 90); do
-    if rsh true 2>/dev/null; then info "up after $((i*10))s"; break; fi
-    sleep 10
-    [ "$i" = 90 ] && die "no ssh after 15 minutes"
-done
+wait_for_ssh "$ITYPE" "$REMOTE" "${SSH_OPTS[@]}"
 
 # ── 3. upload the working tree ────────────────────────────────────────
 # Tracked files as they are on disk, not HEAD — so a local edit is what
 # gets measured. Untracked build inputs (certs, error pages) are
-# regenerated on the box by setup_ec2_metal.sh.
+# regenerated on the box by setup_ec2_metal.sh. The tarball also carries
+# a .perf-provenance stamp, because the tree it unpacks has no .git and
+# run_perf_suite.sh would otherwise report every run as clean — see
+# lib/upload.sh.
 say "Uploading the working tree"
-# macOS bsdtar stores xattrs (com.apple.provenance and friends) as
-# LIBARCHIVE.* pax headers, and GNU tar on the instance then warns about
-# every one of them. Drop them at the source. The flags are probed rather
-# than assumed so this still works when driven from a Linux box.
-TAR_C=(tar)
-for opt in --no-xattrs --no-mac-metadata; do
-    tar "$opt" --help >/dev/null 2>&1 && TAR_C+=("$opt")
-done
-git ls-files -z | COPYFILE_DISABLE=1 "${TAR_C[@]}" --null -T - -czf "$WORK/sarm.tar.gz"
-info "$(du -h "$WORK/sarm.tar.gz" | cut -f1) of tracked files"
-scp "${SSH_OPTS[@]}" -q "$WORK/sarm.tar.gz" "$REMOTE:/tmp/sarm.tar.gz"
-rsh 'rm -rf ~/sarm && mkdir -p ~/sarm && tar -xzf /tmp/sarm.tar.gz -C ~/sarm && rm -f /tmp/sarm.tar.gz'
+upload_tree "$REMOTE" "${SSH_OPTS[@]}"
 info "unpacked to ~/sarm"
-
-# ── provenance ────────────────────────────────────────────────────────
-# The tarball is `git ls-files` output, so ~/sarm has no .git and every
-# `git` call on the instance fails. run_perf_suite.sh's environment
-# section noticed that only for the commit line, which it degraded to
-# "not a checkout"; the dirty count next to it silently became `git
-# status | wc -l` over a failed command, which is 0. So EVERY run in
-# perf-results/ claims a clean tree, whatever was actually measured —
-# false where it matters most, because the whole point of uploading the
-# working tree rather than HEAD is that a local edit is what gets
-# measured. Stamp both facts here, where the .git still exists, and let
-# the suite read them back.
-{
-    echo "commit    : $(git log --oneline -1 2>/dev/null || echo 'unknown')"
-    echo "dirty     : $(git status --porcelain 2>/dev/null | wc -l | tr -d ' ') modified files"
-    git status --porcelain 2>/dev/null | sed 's/^/modified  : /'
-} > "$WORK/provenance"
-scp "${SSH_OPTS[@]}" -q "$WORK/provenance" "$REMOTE:sarm/.perf-provenance"
-info "stamped $(git log --oneline -1 2>/dev/null | cut -c1-9)$(
-    [ -n "$(git status --porcelain 2>/dev/null)" ] && echo ' (dirty)')"
 
 # ── 4. bootstrap ──────────────────────────────────────────────────────
 say "Bootstrapping (toolchain, kernel tuning, build, smoke test)"
-rsh 'chmod +x ~/sarm/scripts/aws/*.sh ~/sarm/certs/generate.sh 2>/dev/null; SARM_DIR=$HOME/sarm ~/sarm/scripts/aws/setup_ec2_metal.sh' \
+rsh 'SARM_DIR=$HOME/sarm ~/sarm/scripts/aws/setup_ec2_metal.sh' \
     2>&1 | tee "$WORK/setup.log"
 
 if [ "$SKIP_SUITE" = 1 ]; then

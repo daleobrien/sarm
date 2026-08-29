@@ -248,6 +248,102 @@ Two caveats that remain, and matter more:
   A then all of B, and keep an unchanged protocol in the table as a control.
   `--workers N` sets the server's worker count.
 
+### Driving a server on another machine
+
+`--target HOST:PORT` skips the build and the server start entirely and points
+the load generators at a server already running somewhere else. `--only
+h1,h2c,h2tls` picks which protocols run.
+
+```bash
+./rps_bench.sh --target 10.0.1.7:8080 --only h2tls --duration 20 --repeat 3
+```
+
+This is the flag that makes an honest throughput number possible. On one box
+the client and the server share cores, and `h2load` costs roughly **4x** what
+sarm costs per request — so a same-box figure is a floor set by the split, not
+a ceiling set by sarm. `--server-cpus` is rejected under `--target`: the
+server is not this script's to start, so pinning it is the other box's job.
+
+## Renting the hardware: the EC2 scripts
+
+Three orchestrators in `scripts/aws/`, all built on the same two libraries.
+
+| script | what it rents | what it answers |
+|---|---|---|
+| `quick_test_ec2.sh` | one `c6g.metal` | *where does the time go* — PMU counters, profiles, annotation |
+| `rps_two_box_ec2.sh` | a small sarm box + a large load box | *how many requests per second* |
+| `run_perf_suite.sh` | nothing — runs on the box | the measurement suite itself |
+
+```bash
+./scripts/aws/quick_test_ec2.sh --yes                 # profile on metal
+./scripts/aws/rps_two_box_ec2.sh --yes                # pure req/s, two machines
+./scripts/aws/rps_two_box_ec2.sh --sweep-only         # drain the deferred lists
+```
+
+**Why two boxes for req/s.** Every figure in `perf-results/` before this was
+taken over loopback with the load generator on the same machine, so the two
+competed for cores and one of them had to lose. `quick_test_ec2.sh` resolves
+that by starving sarm on purpose — two cores for the server, sixty for the
+client — which is exactly right for a *profile* and is not a throughput number
+anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.large` (2 vCPU)
+and the load on a `c7g.8xlarge` (32 vCPU), in one zone, in a cluster placement
+group, talking over their private addresses. The client cannot be the
+bottleneck at 16:1 cores with no server work to do.
+
+It samples the **server's** `/proc/stat` across each protocol's window, so
+"did sarm saturate" is a reading rather than a hope, and it says so in the
+verdict before it prints any req/s figure. Read that line first.
+
+### Shared pieces
+
+Both orchestrators are thin. What they share lives in:
+
+| path | runs on | what it is |
+|---|---|---|
+| `lib/common.sh` | laptop | `say`/`info`/`warn`/`die`, numeric helpers |
+| `lib/pending_sg.sh` | laptop | deferred security-group and placement-group deletion |
+| `lib/region.sh` | laptop | region probing: image, instance types, vCPU quota |
+| `lib/pricing.sh` | laptop | spot vs on-demand, per zone and per region |
+| `lib/ec2.sh` | laptop | key pair, security group, placement group, launch, ssh |
+| `lib/upload.sh` | laptop | the working-tree tarball and its provenance stamp |
+| `setup/packages.sh` | instance | role-based toolchain (`server`, `load`, `metal`) |
+| `setup/tuning.sh` | instance | sysctl and ulimits |
+| `setup/loadgen.sh` | instance | wrk (built when unpackaged), h2load |
+| `setup/build_sarm.sh` | instance | sources, certs, `make production`, smoke test |
+| `setup/profiling.sh` | instance | perf, FlameGraph, PMU verification |
+
+The region and pricing libraries work on a *list* of instance types, because
+the two-box run needs both of them in one zone: the zone list is the
+intersection of what each type is offered in, the vCPU quota check is against
+their sum, and a price is the pair's hourly rate rather than either half's.
+`quick_test_ec2.sh` passes a one-element list and behaves exactly as before.
+
+**Key pairs are per region.** An AWS key pair created in Melbourne does not
+exist in Sydney, so a single hard-coded default silently degrades to a minted
+ephemeral pair everywhere else — the box then works, but is unreachable from
+any other terminal, which matters under `--keep`. `region_key_name()` in
+`lib/ec2.sh` maps region to key (`ap-southeast-4=DaleMelbourne`,
+`ap-southeast-2=DaleSydney`), pairing each with `~/.ssh/<name>.pem`. Override
+with `SARM_EC2_KEYS="ap-southeast-2=DaleSydney us-west-2=DaleOregon"`;
+`--key-name`/`--key-file` still win over the table.
+
+**Starting a server over ssh: redirect the group, not the command.** ssh does
+not return until nothing on the far side holds the channel's stdout/stderr.
+`setsid ./sarm ... > log 2>&1 &` binds the redirections to the *inner*
+command, leaving the background subshell still pointing at the ssh pipes — the
+ssh then hangs forever while the server is up and serving. The redirections
+belong on the `{ ...; }` group that `&` backgrounds, with `exec` so no shell
+is parked behind sarm. Every sarm launch site in this repo also closes fds 3
+and 4.
+
+The instance-side split is what keeps a two-box run cheap: the load box
+installs no compiler and builds no sarm, the server box installs no profiler
+and no load generator, and the two provision in parallel.
+
+`setup_ec2_metal.sh` is therefore no longer a single file you can `curl` on its
+own — it needs the repo next to it. `quick_test_ec2.sh` uploads the tree for
+you, which is the usual path.
+
 ## Static analysis
 
 ```bash
