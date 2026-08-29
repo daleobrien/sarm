@@ -62,6 +62,17 @@
 # saturation drops well below 100%, or until req/s stops rising -- that
 # plateau is the real server ceiling.
 #
+# The h2 defaults below are set to start off that ceiling rather than on
+# it, but --connections is the flag you lower on a small box and it
+# lowers the ceiling with it, so re-read the saturation column after any
+# -c change. The h1 default is deliberately NOT set that way: --pipeline
+# stays at 1, because a pipelined client is not what a browser does, and
+# an h1 row that is honestly ceiling-bound at `connections` in flight is
+# more useful than one that is fast for a reason no real client enjoys.
+# Raise --pipeline when you want HTTP/1.1's plateau specifically; on the
+# 12-core box it is ~316k req/s, flat from depth 20 to 80 while latency
+# climbs linearly, against 2.61M h2c and 2.40M h2tls at -c6 -m32.
+#
 # --target CHANGES WHAT IS BEING MEASURED, and for the better. Without it
 # this script starts its own sarm and drives it over loopback, so the
 # client's cost lands on the same cores as the server's: h2load pays for
@@ -109,7 +120,23 @@ SERVER_CPUS=""
 LOAD_CPUS=""
 REPEAT=1
 JSON=0
-MAX_STREAMS=10
+# h2load streams per connection, so the h2 ceiling is
+# connections x max-streams. 32 rather than 10 because the connection
+# advice above steers a 12-core box to -c6, and -c6 -m10 pins both h2
+# legs at ~85% of their ceiling -- exactly the regime the block above
+# says not to quote. Swept on that box at -c6, median of 3: -m10 gave
+# 1.19M req/s, -m20 2.05M, -m32 2.6965M, -m40 2.69M, -m80 2.70M.
+#
+# 32 and not more because that is MAX_CONCURRENT_STREAMS in src/defs.S,
+# which sarm advertises in its SETTINGS frame and h2load obeys: -m40 and
+# -m80 open the same 32 streams per connection that -m32 does, which is
+# why all three read ~148 in flight and ~2.69M. Above 32 this script's
+# ceiling arithmetic (connections x max-streams) is the only thing that
+# changes, and it changes in the misleading direction -- -m80 reported
+# 30.9% saturation against a ceiling of 480 the server would never have
+# granted. Keep this at or below the advertised limit so the saturation
+# column stays honest, and raise BOTH together if you raise it.
+MAX_STREAMS=32
 WARMUP=0
 # HTTP/1.1 requests written per send. 1 is an ordinary keep-alive client
 # and the default; above 1 the connection holds that many requests
@@ -480,20 +507,54 @@ read -r H2TLS_LAT_US _ <<< "$(printf '%s' "$H2TLS_LAT_SAMPLES" | grep -v '^$' | 
 # wrk does not multiplex, so its ceiling is the connection count; h2load
 # may have --max-streams outstanding on each connection.
 H1_CEIL=$((CONNECTIONS * PIPELINE))
-H2_CEIL=$(( CONNECTIONS * MAX_STREAMS ))
+
+# The server advertises SETTINGS_MAX_CONCURRENT_STREAMS in its opening
+# SETTINGS frame and h2load obeys it, so a --max-streams above that value
+# buys no concurrency at all: the ceiling is connections x min(the two).
+# Left unclamped this arithmetic runs the block at the top of this file
+# backwards -- -c6 -m80 reported 30.9% saturation against a ceiling of
+# 480 the server would never have granted, when the real ceiling was 192
+# and the real saturation 77% -- i.e. it makes a pinned run look like it
+# has headroom, which is the one direction this number must never lie in.
+#
+# Read from the source of truth rather than hardcoding a second copy of
+# 32 here. Anchored on `.equ MAX_CONCURRENT_STREAMS` at the start of the
+# line, because H2C_SETTINGS_MAX_CONCURRENT_STREAMS is a struct field
+# OFFSET that happens to also be 32 and would match a looser pattern.
+# Under --target this is the local checkout's value; correct when the
+# other box runs this same tree (rps_two_box_ec2.sh deploys it), and the
+# summary names the value and its source whenever it clamps.
+H2_ADVERTISED=$(awk '/^[[:space:]]*\.equ[[:space:]]+MAX_CONCURRENT_STREAMS[[:space:]]*,/ {
+        if (match($0, /,[[:space:]]*[0-9]+/)) {
+            v = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", v)
+            if (v != "") { print v; exit }
+        } }' src/defs.S 2>/dev/null)
+case "$H2_ADVERTISED" in ''|*[!0-9]*) H2_ADVERTISED="" ;; esac
+
+# No fallback guess when that read fails (src/defs.S renamed, moved, or
+# unreadable): fall back to --max-streams, which is exactly the behaviour
+# this script had before the clamp, rather than substituting a constant
+# that might not be this build's. The saturation note reverts with it.
+H2_STREAMS_EFF=$MAX_STREAMS
+H2_CLAMPED=0
+if [ -n "$H2_ADVERTISED" ] && [ "$MAX_STREAMS" -gt "$H2_ADVERTISED" ]; then
+    H2_STREAMS_EFF=$H2_ADVERTISED
+    H2_CLAMPED=1
+fi
+H2_CEIL=$(( CONNECTIONS * H2_STREAMS_EFF ))
 read -r H1_INFLIGHT H1_SAT       <<< "$(saturation "$H1_RPS"     "$H1_LAT_US"     "$H1_CEIL")"
 read -r H2_INFLIGHT H2_SAT       <<< "$(saturation "$H2_RPS"     "$H2_LAT_US"     "$H2_CEIL")"
 read -r H2TLS_INFLIGHT H2TLS_SAT <<< "$(saturation "$H2_TLS_RPS" "$H2TLS_LAT_US"  "$H2_CEIL")"
 
 if [ "$JSON" -eq 1 ]; then
-    printf '{"http1_rps": %s, "http2_h2c_rps": %s, "http2_tls_rps": %s, "http1_spread_pct": %s, "http2_h2c_spread_pct": %s, "http2_tls_spread_pct": %s, "http1_latency_avg": "%s", "http1_latency_us": %s, "http2_h2c_latency_us": %s, "http2_tls_latency_us": %s, "http1_inflight": %s, "http2_h2c_inflight": %s, "http2_tls_inflight": %s, "http1_ceiling": %s, "http2_ceiling": %s, "http1_saturation_pct": %s, "http2_h2c_saturation_pct": %s, "http2_tls_saturation_pct": %s, "duration_s": %s, "warmup_s": %s, "repeat": %s, "connections": %s, "threads": %s, "max_streams": %s, "workers": %s, "path": "%s", "server_host": "%s", "remote_target": %s}\n' \
+    printf '{"http1_rps": %s, "http2_h2c_rps": %s, "http2_tls_rps": %s, "http1_spread_pct": %s, "http2_h2c_spread_pct": %s, "http2_tls_spread_pct": %s, "http1_latency_avg": "%s", "http1_latency_us": %s, "http2_h2c_latency_us": %s, "http2_tls_latency_us": %s, "http1_inflight": %s, "http2_h2c_inflight": %s, "http2_tls_inflight": %s, "http1_ceiling": %s, "http2_ceiling": %s, "http1_saturation_pct": %s, "http2_h2c_saturation_pct": %s, "http2_tls_saturation_pct": %s, "duration_s": %s, "warmup_s": %s, "repeat": %s, "connections": %s, "threads": %s, "max_streams": %s, "advertised_max_streams": %s, "workers": %s, "path": "%s", "server_host": "%s", "remote_target": %s}\n' \
         "${H1_RPS:-null}" "${H2_RPS:-null}" "${H2_TLS_RPS:-null}" \
         "${H1_SPREAD:-0}" "${H2_SPREAD:-0}" "${H2TLS_SPREAD:-0}" "${H1_LAT_AVG:-?}" \
         "${H1_LAT_US:-null}" "${H2_LAT_US:-null}" "${H2TLS_LAT_US:-null}" \
         "${H1_INFLIGHT:-null}" "${H2_INFLIGHT:-null}" "${H2TLS_INFLIGHT:-null}" \
         "$H1_CEIL" "$H2_CEIL" \
         "${H1_SAT:-null}" "${H2_SAT:-null}" "${H2TLS_SAT:-null}" \
-        "$DURATION" "$WARMUP" "$REPEAT" "$CONNECTIONS" "$THREADS" "$MAX_STREAMS" "$WORKERS" "$REQ_PATH" \
+        "$DURATION" "$WARMUP" "$REPEAT" "$CONNECTIONS" "$THREADS" "$MAX_STREAMS" "${H2_ADVERTISED:-null}" "$WORKERS" "$REQ_PATH" \
         "$SERVER_HOST" "$REMOTE_TARGET"
 else
     echo ""
@@ -533,16 +594,35 @@ else
     # (It can read slightly over 100% because wrk derives req/s and mean
     # latency separately.) Including it would fire this note on every
     # run and train the reader to ignore it.
-    awk -v h2="${H2_SAT:-0}" -v tls="${H2TLS_SAT:-0}" -v m="$MAX_STREAMS" 'BEGIN {
+    #
+    # Once --max-streams is at the advertised limit, "raise --max-streams"
+    # is no longer the advice -- the flag is capped and raising it moves
+    # nothing but the arithmetic. Say what actually applies instead.
+    awk -v h2="${H2_SAT:-0}" -v tls="${H2TLS_SAT:-0}" -v m="$MAX_STREAMS" \
+        -v adv="${H2_ADVERTISED:-0}" -v clamped="$H2_CLAMPED" 'BEGIN {
         worst = h2 + 0; name = "HTTP/2 (h2c)"
         if (tls + 0 > worst) { worst = tls + 0; name = "HTTP/2 + TLS" }
         if (worst >= 85) {
             printf "\nNOTE: %s is at %.1f%% of its concurrency ceiling. This is a\n", name, worst
             print  "      closed-loop benchmark, so at that saturation req/s is just"
             print  "      concurrency/latency and is NOT a measure of server capacity."
-            printf "      Raise --max-streams above %d (not --connections, which\n", m
-            print  "      oversubscribes the one-process-per-connection server) until"
-            print  "      saturation falls or req/s stops rising."
+            if (adv + 0 > 0 && m + 0 >= adv + 0) {
+                printf "      --max-streams is already at the advertised limit of the\n"
+                printf "      server, %d (MAX_CONCURRENT_STREAMS in src/defs.S), so raising\n", adv
+                print  "      it does nothing. To lift this ceiling you must raise"
+                print  "      that constant and rebuild, or add connections -- and those"
+                print  "      past the core count oversubscribe the server, so prefer the"
+                print  "      constant, or move the load to another box with --target."
+            } else {
+                printf "      Raise --max-streams above %d (not --connections, which\n", m
+                print  "      oversubscribes the one-process-per-connection server) until"
+                print  "      saturation falls or req/s stops rising."
+            }
+        }
+        if (clamped + 0 == 1) {
+            printf "\nNOTE: --max-streams %d exceeds the advertised server limit of %d\n", m, adv
+            print  "      (MAX_CONCURRENT_STREAMS in src/defs.S). h2load obeys SETTINGS, so"
+            printf "      the ceiling above is computed against %d, not the flag.\n", adv
         }
     }'
     # Only when the server is this machine. Under --target the server's

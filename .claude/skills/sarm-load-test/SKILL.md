@@ -58,6 +58,14 @@ Read the verdict before any req/s figure:
 - a percentage — the server never saturated; raise `--max-streams` or
   `--conns-per-core`, or use a smaller `--server-type`.
 
+`--max-streams` stops helping at 32: that is `MAX_CONCURRENT_STREAMS` in
+`src/defs.S`, which sarm advertises in SETTINGS and h2load obeys, so
+`-m128` opens the same 32 streams per connection that `-m32` does. It is
+the default for that reason. Past it the only ways up are raising that
+constant and rebuilding, or adding connections — and connections past the
+core count oversubscribe the one-process-per-connection server. The
+summary says which case you are in.
+
 Use duration mode (the default; `--duration`), not a fixed request count:
 a fixed-request-count mode undercounts once more clients are configured
 than requests are needed.
