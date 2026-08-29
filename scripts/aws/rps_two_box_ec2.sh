@@ -18,8 +18,31 @@
 # no server work to do, and nothing lands on the server's cores except
 # sarm. What comes back is a ceiling rather than a floor.
 #
-#   server   c7g.4xlarge   16 vCPU   runs sarm, nothing else installed
-#   load     c7g.12xlarge  48 vCPU   runs wrk/h2load, no sarm, no compiler
+#   server   c6gn.4xlarge  16 vCPU   runs sarm, nothing else installed
+#   load     c6gn.12xlarge 48 vCPU   runs wrk/h2load, no sarm, no compiler
+#
+# THE FAMILY IS c6gn AND THAT MATTERS MORE THAN THE CORE COUNT. A
+# small-payload RPS test is bound by packet rate, not bandwidth, and c7g's
+# network is a burstable "up to 15 Gbps" allowance that runs out long
+# before its cores do. Measured on 2026-08-29, same 16 cores, same load
+# shape, only the family changed:
+#
+#              c7g.4xlarge          c6gn.4xlarge
+#   h2c     4,421,914 @ 60% cpu   7,375,611 @ 97% cpu   +67%
+#   h2 TLS  4,409,312 @ 51% cpu   7,363,824 @ 94% cpu   +67%
+#   h1        695,027 @ 98% cpu     635,706 @ 98% cpu    -9%
+#
+# The two protocols move in opposite directions, which is what makes the
+# reading safe rather than a coincidence: c6gn is Graviton2 and its cores
+# are SLOWER than c7g's Graviton3, so HTTP/1.1 — already CPU-bound on both
+# — drops 9%, exactly as you would expect. HTTP/2 was network-bound on
+# c7g, so it gains 67% despite the slower cores and only stops when the
+# CPU runs out. Nothing but the network explains that pattern.
+#
+# So every h2 figure taken on c7g understates sarm. Use c6gn (or c7gn
+# where it is offered — it is not in ap-southeast-2) unless you have
+# checked that the run is CPU-bound on whatever you picked; the summary
+# tells you, per protocol, every time.
 #
 # The load box is not a fixed type: it is sized at --load-ratio (default
 # 3) times the server's cores, so changing --server-type cannot silently
@@ -73,10 +96,12 @@
 # Usage:
 #   ./scripts/aws/rps_two_box_ec2.sh
 #   ./scripts/aws/rps_two_box_ec2.sh --yes
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.8xlarge  # 32 vCPU
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.large    # 2 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c6gn.8xlarge # 32 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c6gn.large   # 2 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge  # faster cores,
+#                                                    # but h2 hits its NIC first
 #   ./scripts/aws/rps_two_box_ec2.sh --load-ratio 6             # more headroom
-#   ./scripts/aws/rps_two_box_ec2.sh --load-type c7gn.16xlarge  # pin it
+#   ./scripts/aws/rps_two_box_ec2.sh --load-type c6gn.16xlarge  # pin it
 #   ./scripts/aws/rps_two_box_ec2.sh --protocols h2tls          # just TLS
 #   ./scripts/aws/rps_two_box_ec2.sh --duration 30 --repeat 5
 #   ./scripts/aws/rps_two_box_ec2.sh --connections 64 --max-streams 256
@@ -128,7 +153,10 @@ REGION=""
 # must not happen is the load box failing to keep up, so it is not a fixed
 # type: LOAD_TYPE=auto sizes it at LOAD_RATIO times the server's cores,
 # and the run MEASURES both sides to prove the choice was right.
-SERVER_TYPE="c7g.4xlarge"   # 16 vCPU
+# c6gn, not c7g: see the family note in the header. c7g has the faster
+# cores and loses anyway, because this workload runs out of packets before
+# it runs out of CPU.
+SERVER_TYPE="c6gn.4xlarge"  # 16 vCPU, 25 Gbps dedicated
 LOAD_TYPE="auto"            # sized from the server; see resolve_load_type()
 # MEASURED, not assumed. The repo's "h2load costs ~4x what sarm costs per
 # request" comes from LOOPBACK runs, where the two contend for the same
@@ -272,7 +300,7 @@ SERVER_IP=""; LOAD_IP=""; SERVER_PRIVATE_IP=""
 # The whole design rests on the client never being the slowest part of the
 # loop, and "never" is a function of how big the server is. Pinning the
 # load box to one type means every --server-type change silently moves the
-# ratio — a c7g.8xlarge that gives 16:1 against 2 server cores gives 4:1
+# ratio — a c6gn.8xlarge that gives 16:1 against 2 server cores gives 4:1
 # against 8, which is break-even and no longer safe.
 #
 # So it is derived by default: the smallest size in the server's own family
@@ -931,7 +959,13 @@ case "$SATURATED" in
         note "Something other than sarm was binding. In order of likelihood:"
         note "  * the concurrency ceiling: raise --max-streams above $MAX_STREAMS"
         note "  * too few connections for $SERVER_CPUS_N cores: raise --conns-per-core above $CONNS_PER_CORE"
-        note "  * the server is too big to fill: --server-type c7g.medium" ;;
+        note "  * the server is too big to fill: --server-type ${SERVER_TYPE%%.*}.large"
+        # The one that cost a whole run to find. A server sitting well
+        # below its cores while the client is idle too is the shape of a
+        # network limit, not of a server with nothing to do.
+        note "  * the NIC, not the CPU: a burstable-network family (c7g and"
+        note "    friends) runs out of packets first on small responses."
+        note "    c6gn/c7gn have dedicated bandwidth — see the header." ;;
 esac
 
 fetch_results

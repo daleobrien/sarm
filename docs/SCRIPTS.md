@@ -285,9 +285,31 @@ taken over loopback with the load generator on the same machine, so the two
 competed for cores and one of them had to lose. `quick_test_ec2.sh` resolves
 that by starving sarm on purpose — two cores for the server, sixty for the
 client — which is exactly right for a *profile* and is not a throughput number
-anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.4xlarge` (16 vCPU)
+anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c6gn.4xlarge` (16 vCPU)
 and the load on a box three times its size, in one zone, in a cluster placement
 group, talking over their private addresses.
+
+**Use a dedicated-network family, and c6gn is the default for a reason.** A
+small-payload RPS test is bound by *packet rate*, not bandwidth, and `c7g`'s
+network is a burstable "up to 15 Gbps" allowance that runs out well before its
+cores do. Same 16 cores, same load shape, only the family changed:
+
+| | c7g.4xlarge | c6gn.4xlarge | |
+|---|---|---|---|
+| HTTP/2 h2c | 4,421,914 @ 60% cpu | **7,375,611 @ 97% cpu** | +67% |
+| HTTP/2 + TLS | 4,409,312 @ 51% cpu | **7,363,824 @ 94% cpu** | +67% |
+| HTTP/1.1 | 695,027 @ 98% cpu | 635,706 @ 98% cpu | −9% |
+
+The two protocols moving in *opposite* directions is what makes this a reading
+rather than a coincidence. c6gn is Graviton2 and its cores are slower than
+c7g's Graviton3, so HTTP/1.1 — already CPU-bound on both — drops 9%, exactly as
+predicted. HTTP/2 was network-bound on c7g, so it gains 67% *despite* the
+slower cores, and stops only when the CPU runs out. Nothing but the network
+produces that pattern. Every h2 figure taken on `c7g` understates sarm.
+
+The tell, if you hit this again: the server sits well below its core count
+while the client is idle too. A server with nothing to do looks different from
+a server that cannot get packets.
 
 **The load box is sized from the server, not fixed.** `--load-type auto` (the
 default) picks the smallest type in the server's own family with at least
