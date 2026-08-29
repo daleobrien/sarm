@@ -271,7 +271,7 @@ Three orchestrators in `scripts/aws/`, all built on the same two libraries.
 | script | what it rents | what it answers |
 |---|---|---|
 | `quick_test_ec2.sh` | one `c6g.metal` | *where does the time go* — PMU counters, profiles, annotation |
-| `rps_two_box_ec2.sh` | a small sarm box + a large load box | *how many requests per second* |
+| `rps_two_box_ec2.sh` | a sarm box + a load box 8x its size | *how many requests per second* |
 | `run_perf_suite.sh` | nothing — runs on the box | the measurement suite itself |
 
 ```bash
@@ -285,14 +285,40 @@ taken over loopback with the load generator on the same machine, so the two
 competed for cores and one of them had to lose. `quick_test_ec2.sh` resolves
 that by starving sarm on purpose — two cores for the server, sixty for the
 client — which is exactly right for a *profile* and is not a throughput number
-anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.large` (2 vCPU)
-and the load on a `c7g.8xlarge` (32 vCPU), in one zone, in a cluster placement
-group, talking over their private addresses. The client cannot be the
-bottleneck at 16:1 cores with no server work to do.
+anybody would quote. `rps_two_box_ec2.sh` puts sarm on a `c7g.2xlarge` (8 vCPU)
+and the load on a box eight times its size, in one zone, in a cluster placement
+group, talking over their private addresses.
 
-It samples the **server's** `/proc/stat` across each protocol's window, so
-"did sarm saturate" is a reading rather than a hope, and it says so in the
-verdict before it prints any req/s figure. Read that line first.
+**The load box is sized from the server, not fixed.** `--load-type auto` (the
+default) picks the smallest type in the server's own family with at least
+`--load-ratio` (default 8) times its cores, so changing `--server-type` cannot
+silently erode the margin the measurement depends on — a `c7g.8xlarge` client
+is 16:1 against 2 server cores but only 4:1 against 8, which is break-even
+against h2load's ~4x per-request cost. Past the family's largest size the
+script says so and lets the measurement decide.
+
+```bash
+./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge   # 16 vCPU server
+./scripts/aws/rps_two_box_ec2.sh --load-ratio 12             # more headroom
+./scripts/aws/rps_two_box_ec2.sh --load-type c7gn.16xlarge   # pin it
+```
+
+**Both sides are measured.** `/proc/stat` is sampled on the server *and* the
+load box across each protocol's window. The server's busy cores say whether
+sarm saturated; the client's say whether it had room to spare — which is the
+only evidence that a number is sarm's ceiling and not the load generator's.
+The verdict reports `CLIENT-BOUND` ahead of everything else when the client
+peaked above 85%, because a run in that state contains no server measurement
+at all. Read that line before any req/s figure.
+
+**One zone, private addresses, checked.** The launch resolves one subnet per
+zone and puts both instances in it, and the load is driven at the server's
+private VPC address. After launch the script re-reads both instances'
+`Placement.AvailabilityZone` and confirms the benchmark address is RFC1918,
+terminating both if either is wrong. Cross-zone traffic is billed per gigabyte
+in each direction and adds latency that would land in the req/s figure as if
+it were the server's — a benchmark that quietly measures the network is worse
+than one that stops.
 
 ### Shared pieces
 

@@ -42,12 +42,21 @@ For a throughput number worth quoting, rent the two machines:
 ./scripts/aws/rps_two_box_ec2.sh --yes       # small sarm box + large load box
 ```
 
-It puts sarm on a 2-vCPU instance and the load on a 32-vCPU one, in one
-availability zone and one cluster placement group, and samples the
-*server's* `/proc/stat` across each protocol's window. Read its saturation
-verdict before any req/s figure it prints: under ~85% server-core
-utilisation, something other than sarm was the bottleneck and the number
-is not sarm's.
+It puts sarm on a `c7g.2xlarge` (8 vCPU) and the load on a box sized
+`--load-ratio` (default 8) times that, in one availability zone and one
+cluster placement group, over private addresses — the zone and the
+RFC1918 address are re-checked after launch, so no cross-zone or egress
+traffic is billed.
+
+It samples `/proc/stat` on **both** boxes across each protocol's window.
+Read the verdict before any req/s figure:
+
+- `CLIENT-BOUND` — the load box peaked above 85%; the figures are the
+  load generator's ceiling. Re-run with a higher `--load-ratio`.
+- `SERVER SATURATED` — the server stayed busy and the client had room to
+  spare. Only then are the numbers sarm's.
+- a percentage — the server never saturated; raise `--max-streams` or
+  `--conns-per-core`, or use a smaller `--server-type`.
 
 Use duration mode (the default; `--duration`), not a fixed request count:
 a fixed-request-count mode undercounts once more clients are configured

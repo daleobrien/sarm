@@ -18,8 +18,20 @@
 # no server work to do, and nothing lands on the server's cores except
 # sarm. What comes back is a ceiling rather than a floor.
 #
-#   server   c7g.large      2 vCPU   runs sarm, nothing else installed
-#   load     c7g.8xlarge   32 vCPU   runs wrk/h2load, no sarm, no compiler
+#   server   c7g.2xlarge    8 vCPU   runs sarm, nothing else installed
+#   load     c7g.16xlarge  64 vCPU   runs wrk/h2load, no sarm, no compiler
+#
+# The load box is not a fixed type: it is sized at --load-ratio (default
+# 8) times the server's cores, so changing --server-type cannot silently
+# erode the margin that makes the measurement valid. Both sides' CPU is
+# then sampled over every protocol's window, so "the client had room to
+# spare" is a measurement in the summary rather than an assumption.
+#
+# Both instances go into ONE availability zone and one subnet, and the
+# load is driven at the server's PRIVATE address. That is checked after
+# launch, not just intended: cross-zone traffic is billed per gigabyte
+# each way and is slower, and a benchmark that quietly measures the
+# network instead of sarm is worse than one that stops.
 #
 # WHAT IT DOES
 #   0. sweep the deferred security groups an earlier run left behind
@@ -61,8 +73,10 @@
 # Usage:
 #   ./scripts/aws/rps_two_box_ec2.sh
 #   ./scripts/aws/rps_two_box_ec2.sh --yes
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.medium   # 1 vCPU
-#   ./scripts/aws/rps_two_box_ec2.sh --load-type c7g.16xlarge   # 64 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge  # 16 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.large    # 2 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --load-ratio 12            # more headroom
+#   ./scripts/aws/rps_two_box_ec2.sh --load-type c7gn.16xlarge  # pin it
 #   ./scripts/aws/rps_two_box_ec2.sh --protocols h2tls          # just TLS
 #   ./scripts/aws/rps_two_box_ec2.sh --duration 30 --repeat 5
 #   ./scripts/aws/rps_two_box_ec2.sh --connections 64 --max-streams 256
@@ -103,13 +117,24 @@ eu-west-1 eu-west-2 eu-central-1 ca-central-1 sa-east-1}"
 PRICE_GROUP="ap-southeast-4 ap-southeast-2"
 REGION=""
 
-# The small box is the measurement. Graviton3 rather than metal: this run
-# wants no PMU, and a 2-vCPU instance is a hundredth of the price of the
+# The server box is the measurement. Graviton3 rather than metal: this run
+# wants no PMU, and a shared instance is a fraction of the price of the
 # smallest metal Graviton there is (c6g.metal, 64 cores, because metal
-# does not come smaller). The load box is oversized on purpose — its only
-# job is to never be the answer.
-SERVER_TYPE="c7g.large"     # 2 vCPU
-LOAD_TYPE="c7g.8xlarge"     # 32 vCPU
+# does not come smaller).
+#
+# Its core count is the main thing to turn. More cores measure sarm closer
+# to how it would actually be deployed and give the fork-per-connection
+# model somewhere to go; fewer cores saturate sooner and cost less. What
+# must not happen is the load box failing to keep up, so it is not a fixed
+# type: LOAD_TYPE=auto sizes it at LOAD_RATIO times the server's cores,
+# and the run MEASURES both sides to prove the choice was right.
+SERVER_TYPE="c7g.2xlarge"   # 8 vCPU
+LOAD_TYPE="auto"            # sized from the server; see resolve_load_type()
+# h2load costs roughly 4x what sarm costs per request, so 4:1 is break-even
+# and anything at or below it risks measuring the client. 8:1 is the
+# default because it leaves the client visibly idle at saturation, which
+# is the condition the summary checks for.
+LOAD_RATIO=8
 AMI=""
 UBUNTU="26.04"
 VOLUME_GB=30
@@ -154,6 +179,7 @@ while [ $# -gt 0 ]; do
         --regions)       REGION_CANDIDATES="$2"; shift ;;
         --server-type)   SERVER_TYPE="$2"; shift ;;
         --load-type)     LOAD_TYPE="$2"; shift ;;
+        --load-ratio)    LOAD_RATIO="$2"; shift ;;
         --ami)           AMI="$2"; shift ;;
         --ubuntu)        UBUNTU="$2"; shift ;;
         --volume-gb)     VOLUME_GB="$2"; shift ;;
@@ -201,6 +227,7 @@ done
 [ "$REPEAT" -ge 1 ] || die "--repeat must be at least 1"
 
 SPOT_WANTED="$SPOT"
+[ "$LOAD_RATIO" -ge 1 ] || die "--load-ratio must be at least 1"
 require_tools aws ssh scp git
 
 # Before anything is priced or launched: every script this run will execute
@@ -228,6 +255,45 @@ STARTED=$(date +%s)
 INSTANCE_IDS=()
 SERVER_ID=""; LOAD_ID=""
 SERVER_IP=""; LOAD_IP=""; SERVER_PRIVATE_IP=""
+
+# ── sizing the load box against the server ────────────────────────────
+# The whole design rests on the client never being the slowest part of the
+# loop, and "never" is a function of how big the server is. Pinning the
+# load box to one type means every --server-type change silently moves the
+# ratio — a c7g.8xlarge that gives 16:1 against 2 server cores gives 4:1
+# against 8, which is break-even and no longer safe.
+#
+# So it is derived by default: the smallest size in the server's own family
+# with at least LOAD_RATIO times its cores. Same family means same
+# generation and same clocks, so the ratio is in cores rather than in
+# vaguely comparable machines. An explicit --load-type is honoured as
+# given, and checked rather than resized.
+resolve_load_type() {
+    local svcpus want family size
+    svcpus="$(itype_vcpus_static "$SERVER_TYPE")" \
+        || die "cannot size a load box against '$SERVER_TYPE' — pass --load-type explicitly"
+    SERVER_VCPUS_PLANNED="$svcpus"
+    want=$(( svcpus * LOAD_RATIO ))
+
+    [ "$LOAD_TYPE" != auto ] && return 0
+
+    family="${SERVER_TYPE%%.*}"
+    for size in large xlarge 2xlarge 4xlarge 8xlarge 12xlarge 16xlarge; do
+        if [ "$(itype_vcpus_static "x.$size")" -ge "$want" ]; then
+            LOAD_TYPE="$family.$size"
+            return 0
+        fi
+    done
+    # Past the top of the family there is nothing bigger to ask for. Say so
+    # rather than quietly returning a box that cannot drive the server:
+    # the run still works, and the load-side measurement below is what will
+    # show whether it was enough.
+    LOAD_TYPE="$family.16xlarge"
+    warn "a ${LOAD_RATIO}:1 load box for $SERVER_TYPE would need $want vCPUs;"
+    warn "$LOAD_TYPE is the largest in the $family family at 64. The summary"
+    warn "reports the client's own busy cores — read it before quoting req/s."
+}
+resolve_load_type
 
 # The pair, in the order launch_group_in_region() walks them. Both lists
 # are consumed positionally, so they stay in step.
@@ -335,8 +401,8 @@ price_region
 # ── 2. plan ───────────────────────────────────────────────────────────
 say "Plan"
 printf '   %-14s %s\n' region "$REGION — $(region_name "$REGION")" \
-    server "$SERVER_TYPE — runs only sarm" \
-    load   "$LOAD_TYPE — runs only wrk/h2load" \
+    server "$SERVER_TYPE (${SERVER_VCPUS_PLANNED} vCPU) — runs only sarm" \
+    load   "$LOAD_TYPE — runs only wrk/h2load, sized ${LOAD_RATIO}:1 to the server" \
     az     "$AZ" ubuntu "$UBUNTU" ami "$AMI" \
     protocols "$PROTOCOLS" \
     load-shape "${DURATION}s x $REPEAT, -m$MAX_STREAMS, pipeline $PIPELINE" \
@@ -430,6 +496,31 @@ LOAD_IP="$("${AWSC[@]}" ec2 describe-instances --instance-ids "$LOAD_ID" \
 info "server $SERVER_IP (private $SERVER_PRIVATE_IP)"
 info "load   $LOAD_IP"
 
+# Checked, not assumed. launch_group_in_region() resolves ONE subnet per
+# zone and puts both instances in it, so this should never fire — but the
+# cost of it being wrong is silent: cross-AZ traffic is billed per
+# gigabyte in both directions and adds latency that would land in the
+# req/s figure as if it were the server's. A benchmark that quietly
+# measures the network instead of sarm is worse than one that stops.
+SERVER_AZ="$("${AWSC[@]}" ec2 describe-instances --instance-ids "$SERVER_ID" \
+    --query 'Reservations[0].Instances[0].Placement.AvailabilityZone')"
+LOAD_AZ="$("${AWSC[@]}" ec2 describe-instances --instance-ids "$LOAD_ID" \
+    --query 'Reservations[0].Instances[0].Placement.AvailabilityZone')"
+if [ "$SERVER_AZ" != "$LOAD_AZ" ]; then
+    die "the two instances landed in different zones ($SERVER_AZ vs $LOAD_AZ).
+   Cross-zone traffic is billed per gigabyte and is slower, so this would
+   measure the network rather than sarm. Both are being terminated."
+fi
+# 10/8, 172.16/12 and 192.168/16 are the private ranges; anything else
+# means the traffic would leave the VPC and be billed as egress.
+case "$SERVER_PRIVATE_IP" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
+    *) die "the server's benchmark address $SERVER_PRIVATE_IP is not an RFC1918
+   private address, so the load would leave the VPC and be billed as
+   egress. Both are being terminated." ;;
+esac
+info "both in $SERVER_AZ, over private addresses — no cross-zone or egress charges"
+
 SSH_OPTS=()
 while IFS= read -r o; do SSH_OPTS+=("$o"); done <<< "$(ssh_opts)"
 SERVER_REMOTE="ubuntu@$SERVER_IP"
@@ -484,11 +575,13 @@ LOAD_CPUS_N="$(lod nproc 2>/dev/null | tr -d '\r' | head -1)"
 case "${SERVER_CPUS_N:-}" in ''|*[!0-9]*) SERVER_CPUS_N=1 ;; esac
 case "${LOAD_CPUS_N:-}"   in ''|*[!0-9]*) LOAD_CPUS_N=1 ;; esac
 info "server has $SERVER_CPUS_N vCPU, load box has $LOAD_CPUS_N"
+info "$(awk -v l="$LOAD_CPUS_N" -v s="$SERVER_CPUS_N" \
+    'BEGIN{printf "%.1f:1 client cores per server core", (s>0?l/s:0)}')"
 if [ "$LOAD_CPUS_N" -lt $(( SERVER_CPUS_N * 4 )) ]; then
     warn "the load box has only $LOAD_CPUS_N cores to the server's $SERVER_CPUS_N."
     warn "h2load costs ~4x what sarm costs per request, so below a 4:1 ratio the"
     warn "client can be the side that runs out and the req/s figure is then its"
-    warn "ceiling, not sarm's. Use a larger --load-type."
+    warn "ceiling, not sarm's. Raise --load-ratio, or name a --load-type."
 fi
 
 # ── 5. size the load ──────────────────────────────────────────────────
@@ -612,7 +705,8 @@ info "reachable from the load box at $SERVER_PRIVATE_IP:$PORT"
 # everything that is not idle or iowait; expressed as a fraction of the
 # total it becomes busy CORES once multiplied by nproc, which is the
 # figure that stays comparable when the instance type changes.
-cpu_snapshot() { srv 'head -1 /proc/stat' 2>/dev/null | tr -d '\r'; }
+# <side> is srv or lod — the function that runs a command on that box.
+cpu_snapshot() { "$1" 'head -1 /proc/stat' 2>/dev/null | tr -d '\r'; }
 busy_cores() {  # busy_cores <before> <after> <ncpu>
     awk -v b="$1" -v a="$2" -v n="$3" 'BEGIN {
         split(b, x, " "); split(a, y, " ")
@@ -632,7 +726,10 @@ note() { printf '%s\n' "$*" | tee -a "$WORK/summary.txt"; }
     echo "region        : $REGION ($(region_name "$REGION")), zone $AZ"
     echo "server        : $SERVER_TYPE, $SERVER_CPUS_N vCPU, $SERVER_ID"
     echo "load          : $LOAD_TYPE, $LOAD_CPUS_N vCPU, $LOAD_ID"
-    echo "link          : private VPC address $SERVER_PRIVATE_IP:$PORT, same zone"
+    echo "link          : private VPC address $SERVER_PRIVATE_IP:$PORT"
+    echo "zone          : $SERVER_AZ (both instances, checked) — no cross-zone or egress charges"
+    echo "core ratio    : $(awk -v l="$LOAD_CPUS_N" -v s="$SERVER_CPUS_N" \
+                              'BEGIN{printf "%.1f:1 client per server", (s>0?l/s:0)}')"
     echo "placement     : $([ -n "${PG_NAME:-}" ] && echo "cluster group $PG_NAME" || echo none)"
     echo "market        : $(market_summary)"
     echo "workers       : $WORKERS"
@@ -644,7 +741,13 @@ note() { printf '%s\n' "$*" | tee -a "$WORK/summary.txt"; }
 say "Benchmarking (the load box drives, the server box is measured)"
 for proto in $PROTOCOLS; do
     info "── $proto ──"
-    before="$(cpu_snapshot)"
+    # BOTH sides, over the same window. The server's busy cores say
+    # whether sarm saturated; the client's say whether it had room to
+    # spare, which is the only evidence that the number is sarm's ceiling
+    # and not the load box's. Measuring one without the other is how a
+    # client-bound run gets published as a server result.
+    before="$(cpu_snapshot srv)"
+    lbefore="$(cpu_snapshot lod)"
     if ! lod "cd \$HOME/sarm && ./scripts/benchmarks/rps_bench.sh \
             --target $SERVER_PRIVATE_IP:$PORT --only $proto --json \
             --duration $DURATION --repeat $REPEAT --warm-up $WARMUP \
@@ -655,25 +758,30 @@ for proto in $PROTOCOLS; do
         tail -8 "$WORK/$proto.log" | sed 's/^/     /'
         continue
     fi
-    after="$(cpu_snapshot)"
+    after="$(cpu_snapshot srv)"
+    lafter="$(cpu_snapshot lod)"
     BUSY="$(busy_cores "$before" "$after" "$SERVER_CPUS_N")"
+    LBUSY="$(busy_cores "$lbefore" "$lafter" "$LOAD_CPUS_N")"
     # The busy figure belongs with the throughput figure, so it is folded
     # into the same JSON rather than kept in a second file that a later
     # reader has to remember to join.
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$WORK/$proto.json" "$BUSY" "$SERVER_CPUS_N" <<'PYEOF' || true
+        python3 - "$WORK/$proto.json" "$BUSY" "$SERVER_CPUS_N" "$LBUSY" "$LOAD_CPUS_N" <<'PYEOF' || true
 import json, sys
-path, busy, ncpu = sys.argv[1], sys.argv[2], int(sys.argv[3])
+path, busy, ncpu, lbusy, lcpu = sys.argv[1:6]
 try:
     d = json.load(open(path))
 except Exception:
     sys.exit(0)
-d["server_busy_cores"] = None if busy == "?" else float(busy)
-d["server_cores"] = ncpu
+num = lambda v: None if v == "?" else float(v)
+d["server_busy_cores"] = num(busy)
+d["server_cores"] = int(ncpu)
+d["client_busy_cores"] = num(lbusy)
+d["client_cores"] = int(lcpu)
 json.dump(d, open(path, "w"), indent=1)
 PYEOF
     fi
-    info "server busy: $BUSY of $SERVER_CPUS_N cores over that window"
+    info "server busy: $BUSY of $SERVER_CPUS_N cores, client busy: $LBUSY of $LOAD_CPUS_N"
 done
 
 # ── 8. the readout ────────────────────────────────────────────────────
@@ -698,13 +806,20 @@ spread = d.get(key + "_spread_pct", 0)
 lat = d.get(key + "_latency_us")
 busy = d.get("server_busy_cores")
 cores = d.get("server_cores") or 1
+cbusy = d.get("client_busy_cores")
+ccores = d.get("client_cores") or 1
 if rps is None:
     print(f"{name:<13}: no result"); sys.exit(0)
-per = f"{rps / busy:,.0f} req/s per busy core" if busy else "server load unknown"
+per = f"{rps / busy:,.0f}/busy core" if busy else "server load unknown"
 pct = f"{busy / cores * 100:.0f}%" if busy is not None else "?"
 lat_s = f"{lat:.0f}us" if lat is not None else "?"
+# The client column is the one that says whether to believe the rest of
+# the line: a saturated server next to a saturated client is not a server
+# measurement, however good the req/s looks.
+cli = (f"client {cbusy}/{ccores} ({cbusy / ccores * 100:.0f}%)"
+       if cbusy is not None else "client ?")
 print(f"{name:<13}: {rps:>12,.0f} req/s (+/-{spread}%)  {lat_s:>8} mean  "
-      f"server {busy if busy is not None else '?'}/{cores} cores busy ({pct})  {per}")
+      f"server {busy if busy is not None else '?'}/{cores} ({pct})  {cli}  {per}")
 PYEOF
 )"
     if [ -n "$line" ]; then note "$line"; fi
@@ -715,10 +830,14 @@ note ""
 # was NOT the slowest part of the loop, and the number above is then a
 # statement about whatever else was — the concurrency ceiling, the client,
 # or the link.
+# Two questions, in order: did the CLIENT run out (which invalidates
+# everything), and only then did the server saturate. Answered over every
+# protocol, worst case wins.
 SATURATED="$(python3 - "$WORK" $PROTOCOLS <<'PYEOF' 2>/dev/null || echo unknown
 import json, os, sys
 work = sys.argv[1]
 worst = None
+client_peak = None
 for proto in sys.argv[2:]:
     p = os.path.join(work, proto + ".json")
     if not os.path.exists(p):
@@ -728,17 +847,36 @@ for proto in sys.argv[2:]:
     except Exception:
         continue
     busy, cores = d.get("server_busy_cores"), d.get("server_cores")
+    cbusy, ccores = d.get("client_busy_cores"), d.get("client_cores")
+    if cbusy is not None and ccores:
+        f = cbusy / ccores
+        client_peak = f if client_peak is None else max(client_peak, f)
     if busy is None or not cores:
         continue
     frac = busy / cores
     worst = frac if worst is None else min(worst, frac)
-print("unknown" if worst is None else ("saturated" if worst >= 0.85 else f"{worst * 100:.0f}"))
+# The client running out is reported first and on its own: a run in that
+# state has no server measurement in it to report.
+if client_peak is not None and client_peak >= 0.85:
+    print(f"client-bound {client_peak * 100:.0f}")
+elif worst is None:
+    print("unknown")
+elif worst >= 0.85:
+    print("saturated")
+else:
+    print(f"{worst * 100:.0f}")
 PYEOF
 )"
 case "$SATURATED" in
+    client-bound*)
+        VERDICT_WARN=1
+        note "CLIENT-BOUND — the load box peaked at ${SATURATED##* }% of its ${LOAD_CPUS_N} cores."
+        note "The figures above are the LOAD GENERATOR's ceiling, not sarm's. Re-run with"
+        note "a bigger client: --load-ratio $(( LOAD_RATIO * 2 )), or --load-type explicitly." ;;
     saturated)
-        note "SERVER SATURATED — every protocol above kept the server's cores busy."
-        note "These are sarm's numbers: the client had ${LOAD_CPUS_N} cores and no server work." ;;
+        note "SERVER SATURATED — every protocol above kept the server's cores busy,"
+        note "and the client stayed below 85% of its ${LOAD_CPUS_N} cores throughout."
+        note "These are sarm's numbers: the load box had room to push harder and sarm could not take it." ;;
     unknown)
         note "Could not read the server's CPU time, so nothing here says whether"
         note "sarm was the bottleneck. Treat every figure above as a lower bound." ;;

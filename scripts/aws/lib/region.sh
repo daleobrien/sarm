@@ -85,6 +85,29 @@ region_enabled() {
     case " $ENABLED_REGIONS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# vCPUs from the size suffix alone, without an API call and before any
+# region has been chosen. Modern EC2 families are consistent about this —
+# .large is 2, .4xlarge is 16 — which is what lets the pair be sized
+# against each other while the bill is still zero. Anything unrecognised
+# returns 1 (failure) and the caller asks AWS instead.
+itype_vcpus_static() {
+    case "${1##*.}" in
+        medium)            printf 2 ;;   # c7g.medium is 1, but 2 is the
+                                         #   safe direction for sizing a
+                                         #   load box against it
+        large)             printf 2 ;;
+        xlarge)            printf 4 ;;
+        2xlarge)           printf 8 ;;
+        4xlarge)           printf 16 ;;
+        8xlarge)           printf 32 ;;
+        12xlarge)          printf 48 ;;
+        16xlarge|metal)    printf 64 ;;
+        24xlarge)          printf 96 ;;
+        48xlarge|metal-48xl) printf 192 ;;
+        *) return 1 ;;
+    esac
+}
+
 # vCPUs of one instance type, or empty when the region cannot be asked.
 itype_vcpus() {
     local v
