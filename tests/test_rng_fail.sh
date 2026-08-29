@@ -81,6 +81,23 @@ stop() { { kill "$1" && wait "$1"; } 2>/dev/null; }
 
 cleanup() {
     for pid in $SERVERS; do stop "$pid"; done
+    # sarm pre-forks workers and forks again per connection, so killing
+    # the parent can leave those behind — still holding the listening
+    # socket, and still holding every descriptor they inherited from this
+    # script. Under a parallel `make` that includes its jobserver pipe,
+    # and make then blocks forever waiting to reclaim job tokens an
+    # orphan is sitting on. Sweep the family this run owns, by its port.
+    # (rps_bench.sh and test_multicore.sh have done this for a while.)
+    # this one walks a contiguous run of ports from BASE_PORT, one per
+    # server it started (PORT_N counts them).
+    if [ -n "${BASE_PORT:-}" ] && [ "$BASE_PORT" -ne 0 ]; then
+        _n=0
+        while [ "$_n" -lt "${PORT_N:-0}" ]; do
+            pkill -f "sarm $((BASE_PORT + _n))( |\$)" 2>/dev/null
+            _n=$((_n + 1))
+        done
+    fi
+    true
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -146,7 +163,7 @@ probe() {
     local port=$(( BASE_PORT + PORT_N )); PORT_N=$((PORT_N + 1))
     local out="$WORK/$label.out" err="$WORK/$label.err"
 
-    "$bin" "$port" >"$out" 2>"$err" &
+    "$bin" "$port" >"$out" 2>"$err" 3>&- 4>&- &
     local pid=$!
     SERVERS="$SERVERS $pid"
 

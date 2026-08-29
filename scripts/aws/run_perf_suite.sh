@@ -240,7 +240,7 @@ start_server() {  # start_server <workers>
     stop_server
     # --workers auto reads the affinity mask, so taskset here also decides
     # how many workers 'auto' spawns.
-    taskset -c "$SERVER_CPUS" ./sarm "$PORT" --workers "$workers" >/dev/null 2>&1 &
+    taskset -c "$SERVER_CPUS" ./sarm "$PORT" --workers "$workers" >/dev/null 2>&1 3>&- 4>&- &
     SERVER_PID=$!
     local deadline=$((SECONDS + 15))
     while [ $SECONDS -lt $deadline ]; do

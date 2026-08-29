@@ -117,7 +117,7 @@ if [ ! -x "./sarm" ]; then
 fi
 
 # ── start ────────────────────────────────────────────────────────
-./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 &
+./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 3>&- 4>&- &
 SERVER_PID=$!
 ready=0
 deadline=$((SECONDS + 10))

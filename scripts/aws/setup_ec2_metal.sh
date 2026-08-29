@@ -435,7 +435,7 @@ fi
 
 say "Smoke test"
 PORT=8099
-"$DEST/sarm" "$PORT" >/dev/null 2>&1 &
+"$DEST/sarm" "$PORT" >/dev/null 2>&1 3>&- 4>&- &
 SMOKE_PID=$!
 trap 'kill "$SMOKE_PID" 2>/dev/null || true' EXIT
 for _ in $(seq 1 50); do

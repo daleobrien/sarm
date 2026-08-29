@@ -103,7 +103,7 @@ trap kill_all EXIT INT TERM
 
 # start_server <args...> -> sets SERVER_PID, waits until it answers
 start_server() {
-    ./sarm "$HOST_PORT" "$@" >/dev/null 2>&1 &
+    ./sarm "$HOST_PORT" "$@" >/dev/null 2>&1 3>&- 4>&- &
     SERVER_PID=$!
     local deadline=$((SECONDS + 10))
     while [ $SECONDS -lt $deadline ]; do

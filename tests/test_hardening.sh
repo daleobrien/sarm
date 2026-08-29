@@ -106,6 +106,15 @@ cleanup() {
         kill "$SERVER_PID" 2>/dev/null
         wait "$SERVER_PID" 2>/dev/null
     fi
+    # sarm pre-forks workers and forks again per connection, so killing
+    # the parent can leave those behind — still holding the listening
+    # socket, and still holding every descriptor they inherited from this
+    # script. Under a parallel `make` that includes its jobserver pipe,
+    # and make then blocks forever waiting to reclaim job tokens an
+    # orphan is sitting on. Sweep the family this run owns, by its port.
+    # (rps_bench.sh and test_multicore.sh have done this for a while.)
+    [ -n "${HOST_PORT:-}" ] && pkill -f "sarm ${HOST_PORT}( |\$)" 2>/dev/null
+    true
     rm -rf "$WORK"
 }
 trap cleanup EXIT INT TERM
@@ -173,7 +182,7 @@ head_ "process: what the kernel did with it"
 SPID=""
 start_server() {   # <core-limit> — the `ulimit -c` value for the server
     ( cd "$WORK" && ulimit -c "${1:-0}" 2>/dev/null; \
-      "$ROOT/sarm" "$HOST_PORT" >/dev/null 2>&1 ) &
+      "$ROOT/sarm" "$HOST_PORT" >/dev/null 2>&1 ) 3>&- 4>&- &
     SERVER_PID=$!
     local deadline=$((SECONDS + 15))
     while [ $SECONDS -lt $deadline ]; do

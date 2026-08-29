@@ -206,7 +206,7 @@ trap cleanup EXIT INT TERM
 # passed either way so the two cases differ only in the count.
 # --workers auto reads the affinity mask, so SERVER_PIN also decides how
 # many workers 'auto' would spawn.
-${SERVER_PIN[@]+"${SERVER_PIN[@]}"} ./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 &
+${SERVER_PIN[@]+"${SERVER_PIN[@]}"} ./sarm "$HOST_PORT" --workers "$WORKERS" >/dev/null 2>&1 3>&- 4>&- &
 SERVER_PID=$!
 
 echo -n "waiting for server (pid ${SERVER_PID}) on port ${HOST_PORT} …" >&2
