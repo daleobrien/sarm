@@ -221,6 +221,8 @@ AWSC=()                 # rebuilt once the region is chosen
 
 INSTANCE_ID=""
 SG_ID=""
+ONDEMAND=""         # on-demand $/hr for $ITYPE in $REGION, once known
+SPOT_AZS=""         # the zones where spot actually beats it
 KEY_EPHEMERAL=0     # 1 only when this run created the key pair in AWS
 WATCHDOG=""
 STARTED=$(date +%s)
@@ -662,6 +664,30 @@ next_region || no_region_left
 # region is routinely 2x, so on spot the zones are tried cheapest first
 # rather than in AWS's order. One API call per zone, skipped entirely
 # under --on-demand.
+# The on-demand rate for the same instance in the same region, from the
+# Pricing API — which lives only in a handful of endpoints, so the call
+# goes to us-east-1 and names the region of interest as a filter rather
+# than being made there.
+#
+# There is no --query path into the answer: the Pricing API returns each
+# product as a *JSON string*, not as structure, so JMESPath sees one
+# opaque blob. Hence the sed: cut the OnDemand term out of the blob
+# before reading a price from it, or the first "USD" found would be
+# whichever reserved-instance rate happened to be serialised first.
+ondemand_price() {
+    aws --region us-east-1 --output text pricing get-products \
+        --service-code AmazonEC2 \
+        --filters "Type=TERM_MATCH,Field=instanceType,Value=$ITYPE" \
+                  "Type=TERM_MATCH,Field=regionCode,Value=$REGION" \
+                  "Type=TERM_MATCH,Field=operatingSystem,Value=Linux" \
+                  "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
+                  "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" \
+                  "Type=TERM_MATCH,Field=capacitystatus,Value=Used" \
+        --query 'PriceList[0]' 2>/dev/null \
+        | sed 's/.*"OnDemand"//; s/"Reserved".*//' \
+        | grep -o '"USD" *: *"[0-9.]*"' | head -1 | grep -o '[0-9.]*' || true
+}
+
 spot_price() {
     aws --region "$REGION" --output text ec2 describe-spot-price-history \
         --instance-types "$ITYPE" --product-descriptions "Linux/UNIX" \
@@ -676,7 +702,7 @@ spot_price() {
 # bash 3.2, which is what macOS still ships as /bin/bash, fails to parse
 # one at runtime even though `bash -n` accepts the file.
 order_azs_by_price() {
-    local az price prices sorted
+    local az price prices sorted cheaper saving
     prices=""
     for az in $AZS; do
         # Anything that is not a bare decimal — "None", an error, or a
@@ -693,12 +719,30 @@ order_azs_by_price() {
     sorted="$(printf '%s' "$prices" | sort -n)"
     [ -n "$sorted" ] || return 0
 
+    # Spot is only worth its interruption risk where it is actually
+    # cheaper. AWS caps the spot price at the on-demand rate, so a zone
+    # can sit at exact parity — all of the risk, none of the discount —
+    # and those zones are launched on-demand instead. Zones qualifying
+    # for spot are collected in $SPOT_AZS; the ordering is untouched, so
+    # nothing is dropped from the capacity search either way.
+    SPOT_AZS=""
     while read -r price az; do
         [ -n "$az" ] || continue
         if [ "$price" = 999 ]; then
-            info "$(printf '%-18s' "$az") no published spot price"
-        else
+            info "$(printf '%-18s' "$az") no published spot price — on-demand there"
+        elif [ -z "$ONDEMAND" ]; then
             info "$(printf '%-18s' "$az") \$$price/hr spot"
+            SPOT_AZS="$SPOT_AZS $az"
+        else
+            # awk, not the shell: these are decimals, and [ -lt ] is integers.
+            cheaper="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{print (s<o)?1:0}')"
+            saving="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{printf "%.0f", (o-s)*100/o}')"
+            if [ "$cheaper" = 1 ]; then
+                info "$(printf '%-18s' "$az") \$$price/hr spot — ${saving}% under on-demand"
+                SPOT_AZS="$SPOT_AZS $az"
+            else
+                info "$(printf '%-18s' "$az") \$$price/hr spot — no saving, on-demand there"
+            fi
         fi
     done <<PRICES
 $sorted
@@ -710,7 +754,19 @@ PRICES
 
 if [ "$SPOT" = 1 ]; then
     say "Spot pricing in $REGION"
+    ONDEMAND="$(ondemand_price)"
+    if [ -n "$ONDEMAND" ]; then
+        info "$(printf '%-18s' 'on-demand') \$$ONDEMAND/hr — the bar spot has to beat"
+    else
+        warn "could not read the on-demand rate; taking spot in every zone"
+        warn "  (spot is capped at on-demand, so this cannot cost more — it"
+        warn "   just means a zone at parity will not be spotted)"
+    fi
     order_azs_by_price
+    if [ -z "$SPOT_AZS" ]; then
+        SPOT=0
+        warn "no zone is cheaper on spot — running on-demand instead"
+    fi
 fi
 
 # ── 0b. plan ──────────────────────────────────────────────────────────
@@ -898,7 +954,17 @@ launch_in_region() {
         # One flag, many values: a repeated --tag-specifications would
         # replace the earlier one rather than add to it.
         TAGSPEC=(--tag-specifications "ResourceType=instance,$TAGS")
+        # Per zone, not once for the run: the fallthrough can land in a
+        # zone where spot is at parity with on-demand, and taking the
+        # interruption risk there buys nothing.
+        USE_SPOT=0
         if [ "$SPOT" = 1 ]; then
+            case " $SPOT_AZS " in
+                *" $az "*) USE_SPOT=1 ;;
+                *) info "$az is not cheaper on spot — on-demand here" ;;
+            esac
+        fi
+        if [ "$USE_SPOT" = 1 ]; then
             MARKET=(--instance-market-options
                 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
             # The request is tagged in the same call that creates it, so
