@@ -1011,6 +1011,40 @@ Lmain_serve:
     SCWISVC
     SCERR
 
+    // ── TCP_NODELAY ─────────────────────────────────────────────────
+    // Nagle holds a small write whenever earlier data on the connection
+    // is still unacknowledged, waiting for either an ACK or a full MSS.
+    // A request-response client never notices: by the time sarm writes,
+    // the previous response has been acknowledged, so there is nothing
+    // outstanding and the segment leaves immediately.
+    //
+    // A client that pipelines does notice. sarm answers each request
+    // with its own writev, so responses 2..N of a batch are written
+    // while response 1 is unacknowledged; they are small, they never
+    // fill a loopback MSS, and the client is reading rather than
+    // sending, so nothing acknowledges until the peer's delayed-ACK
+    // timer expires. Measured on a c6g.metal at pipeline depth 8:
+    // 7,059 req/s against 98,415 unpipelined, with the latency
+    // distribution pinned at 41ms (p90 40.98, p99 41.01) — a timer, not
+    // queueing. src/sarm/child.S's Lcheck_leftover exists to serve
+    // exactly that batch without another read(), and this is what stood
+    // between it and being usable.
+    //
+    // Set here, per accepted connection, alongside SO_RCVTIMEO: the
+    // cost is one syscall per connection rather than anything per
+    // request, and it is not inherited from the listening socket.
+    //
+    // Not fatal if it fails — the connection is still correct, just
+    // liable to the stall — so nothing branches on the result.
+    SCWINUM SYS_setsockopt
+    ldr_l x0, clientfd
+    mov x1, #IPPROTO_TCP
+    mov x2, #TCP_NODELAY
+    adr_l x3, one
+    mov x4, #4                  // int
+    SCWISVC
+    SCERR
+
     // ── protocol detection (real read, not a peek,
     //    since Plan.md Phase 2 Step 9) ────────────────────────────────
     // A TLS 1.3 ClientHello always starts with a handshake record (type

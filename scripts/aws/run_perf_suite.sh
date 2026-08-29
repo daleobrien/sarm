@@ -252,6 +252,23 @@ start_server() {  # start_server <workers>
 }
 
 LOAD_PID=""
+# --pipeline has to reach THIS load generator too, not just the one
+# rps_bench.sh runs in section 2. The 2026-08-29 run passed --pipeline 8
+# and got a section 2 that pipelined and sections 4-8 that did not, so
+# the counters described a different workload from the throughput above
+# them — and reported the unpipelined 1.02 context switches per request
+# under a heading that said pipeline 8.
+H1_LOAD_SCRIPT=()
+H1_LOAD_SCRIPT_ARGS=()
+if [ "$PIPELINE" -gt 1 ]; then
+    if [ -f scripts/benchmarks/pipeline.lua ]; then
+        H1_LOAD_SCRIPT=(-s scripts/benchmarks/pipeline.lua)
+        H1_LOAD_SCRIPT_ARGS=(-- "$PIPELINE")
+    else
+        warn "scripts/benchmarks/pipeline.lua is missing — sections 4-8 will not pipeline"
+    fi
+fi
+
 start_load() {  # start_load <h1|h2c|h2tls> <seconds>
     local kind="$1" secs="$2"
     # The client's own report is kept rather than discarded: it is the
@@ -260,7 +277,9 @@ start_load() {  # start_load <h1|h2c|h2tls> <seconds>
     local log="$OUTDIR/load_${kind}.txt"
     case "$kind" in
         h1)    taskset -c "$LOAD_CPUS" wrk -t"$THREADS" -c"$CONNECTIONS" -d"${secs}s" \
-                   "http://127.0.0.1:${PORT}${REQ_PATH}" >"$log" 2>&1 & ;;
+                   ${H1_LOAD_SCRIPT[@]+"${H1_LOAD_SCRIPT[@]}"} \
+                   "http://127.0.0.1:${PORT}${REQ_PATH}" \
+                   ${H1_LOAD_SCRIPT_ARGS[@]+"${H1_LOAD_SCRIPT_ARGS[@]}"} >"$log" 2>&1 & ;;
         h2c)   taskset -c "$LOAD_CPUS" h2load --no-tls-proto=h2c -t"$THREADS" -c"$CONNECTIONS" \
                    -m"$MAX_STREAMS" -D"$secs" "http://127.0.0.1:${PORT}${REQ_PATH}" >"$log" 2>&1 & ;;
         h2tls) taskset -c "$LOAD_CPUS" h2load -t"$THREADS" -c"$CONNECTIONS" \

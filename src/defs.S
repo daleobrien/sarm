@@ -253,6 +253,9 @@
 .equ SO_RCVTIMEO,      20
 // Linux doesn't have SO_NOSIGPIPE; we ignore SIGPIPE instead.
 .equ SO_NOSIGPIPE,     -1
+// TCP_NODELAY is at the IPPROTO_TCP level, not SOL_SOCKET.
+.equ IPPROTO_TCP,      6
+.equ TCP_NODELAY,      1
 
 // prlimit64(pid, resource, new_limit, old_limit) — arm64 Linux has no
 // setrlimit; this is the only limit-setting call in the table.
@@ -543,6 +546,9 @@
 .equ SO_RCVTIMEO,      0x1006
 .equ SO_NOSIGPIPE,     0x1022
 .equ MSG_PEEK,         0x02
+// Same values as Linux: both are from the BSD socket API.
+.equ IPPROTO_TCP,      6
+.equ TCP_NODELAY,      1
 
 // mmap
 .equ PROT_READ,        1
