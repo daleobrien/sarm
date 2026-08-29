@@ -14,6 +14,23 @@
 # NOTE: the util module defines a "strlen" with non-standard ABI (x1 arg).
 # Test C code must avoid libc strlen() when util is linked.
 
+# Parallel by default, same as the top-level Makefile: compiling the test
+# drivers is independent per target, and the `test` recipe below runs the
+# binaries in one serial shell loop, so -j speeds up the build without
+# interleaving any test output.
+#
+#   make -C tests/unit JOBS=1     # serial build
+#
+# JOBS rather than -j because GNU make 3.81 (macOS) hides MAKEFLAGS from
+# the makefile at parse time and cannot see a -j on the command line.
+NPROC := $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || echo 4)
+JOBS ?= $(NPROC)
+ifeq (,$(findstring -j,$(MAKEFLAGS)))
+ifneq ($(JOBS),1)
+MAKEFLAGS += -j$(JOBS)
+endif
+endif
+
 .PHONY: all test build clean
 
 # ── toolchain ───────────────────────────────────────────────────────

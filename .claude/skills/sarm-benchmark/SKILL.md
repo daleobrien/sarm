@@ -11,6 +11,11 @@ make bench_p256_fe_mul && ./_bench_bin/bench_p256_fe_mul     # prints JSON: {"fu
 python3 measure_noise_floor.py bench_p256_fe_mul              # writes the paired .noise.json
 ```
 
+The benchmark Makefile builds in parallel by default (all cores); pass
+`JOBS=1` for a serial build. Never add `-j` — it's already set. This
+affects build time only: the benchmark binaries are always run one at a
+time, so timings are unaffected.
+
 Each `bench_<fn>.c` links the function's own `.S` file directly, so a
 candidate installed by `arm-optimize.py` (see
 [sarm-optimizer](../sarm-optimizer/SKILL.md)) is picked up automatically

@@ -42,6 +42,12 @@ info "OS      : ${PRETTY_NAME:-unknown}"
 info "Kernel  : $(uname -r)"
 info "CPUs    : $(nproc)"
 
+# Every make in this script and in anything it calls, including recursive
+# ones, without having to remember -j at each site. This is a 64-core box
+# whose only job is building and measuring; a serial build wastes minutes
+# of billed metal.
+export MAKEFLAGS="-j$(nproc)"
+
 # Bare metal is what buys the PMU. On a virtualised instance most hardware
 # events read <not supported> and half this toolchain is decorative.
 VIRT="$(systemd-detect-virt 2>/dev/null || echo unknown)"
@@ -179,41 +185,64 @@ OPTIONAL=(
     hyperfine
 )
 
-# Everything in one apt call: apt-fast fetches the whole set through aria2
-# concurrently and dpkg then unpacks it in one pass, so the two lists cost
-# one round of apt startup between them rather than one each — let alone
-# one per package.
+# perf is packaged per kernel flavour and the names drift between
+# releases — EC2 Ubuntu runs the -aws kernel, so the tools may be in
+# linux-tools-aws, or in the version-pinned package, or in neither. Every
+# plausible name is listed and the archive decides which exist.
+PERF_PKGS=(
+    "linux-tools-$(uname -r)" linux-tools-aws
+    linux-tools-generic linux-aws-tools-common
+)
+# wrk is in universe on some releases and absent on others; the fallback
+# is to build it, below.
+EXTRA=(wrk)
+
+# One apt call for the lot. The obstacle to that is that a single name the
+# archive has never heard of fails the entire batch, and the perf and wrk
+# lists are deliberately full of names that may not exist — which is why
+# they used to be installed one at a time, each paying a full round of apt
+# startup and a serialised download.
 #
-# The split above still decides what a failure MEANS, which is the only
-# reason to keep it. A single missing package fails the whole batch and
-# apt does not make it cheap to find out which, so the fallback re-runs
-# the two sets on their own terms: required as a batch that must succeed,
-# optional one at a time so the survivors still get installed.
-ALL=("${REQUIRED[@]}" "${OPTIONAL[@]}")
+# apt-cache answers "does this exist" from the local index, with no
+# network and no privileges, so the batch can be filtered before it is
+# ever submitted. REQUIRED is deliberately NOT filtered: a required
+# package missing from the archive is a failure worth stopping on, not
+# something to quietly drop.
+in_archive() { apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]'; }
+
+MAYBE=()
+SKIPPED=""
+for pkg in "${OPTIONAL[@]}" "${PERF_PKGS[@]}" "${EXTRA[@]}"; do
+    if in_archive "$pkg"; then
+        MAYBE+=("$pkg")
+    else
+        SKIPPED="$SKIPPED $pkg"
+    fi
+done
+[ -n "$SKIPPED" ] && info "not in this release's archive:$SKIPPED"
+
+# The required/optional split still decides what a failure MEANS, which is
+# the only reason to keep it: on the rare batch failure (a package that
+# exists but cannot be configured, a held dependency) the sets are re-run
+# on their own terms rather than the whole run being lost.
+ALL=("${REQUIRED[@]}" "${MAYBE[@]}")
 if apt_run install "${ALL[@]}"; then
     info "${#ALL[@]} packages"
 else
-    info "the combined install failed — separating the required from the optional"
+    info "the combined install failed — separating the required from the rest"
     apt_run install "${REQUIRED[@]}" || {
         apt_log_tail 25
         die "could not install the required packages — see $APT_LOG"
     }
     info "${#REQUIRED[@]} required packages"
-    for pkg in "${OPTIONAL[@]}"; do
+    for pkg in "${MAYBE[@]}"; do
         apt_run install "$pkg" || warn "optional package '$pkg' unavailable — continuing without it"
     done
 fi
 
-# ── 2. perf, which is packaged per kernel flavour ─────────────────────
-# EC2 Ubuntu runs the -aws kernel, so the tools live in linux-tools-aws.
-# Names drift between releases; try every plausible one and verify by
-# actually running perf, since the /usr/bin/perf wrapper happily exists
-# while the versioned binary behind it does not.
-say "Installing perf"
-for pkg in "linux-tools-$(uname -r)" linux-tools-aws linux-tools-generic linux-aws-tools-common; do
-    apt_run install "$pkg" && info "installed $pkg" || true
-done
-
+# ── 2. perf ───────────────────────────────────────────────────────────
+# Installed above; what is left is to verify it, because the /usr/bin/perf
+# wrapper happily exists while the versioned binary behind it does not.
 if ! perf --version >/dev/null 2>&1; then
     warn "the packaged perf does not match this kernel."
     warn "Fix with:  sudo apt-get install linux-tools-\$(uname -r)"
@@ -224,17 +253,16 @@ else
     info "perf: $(perf --version)"
 fi
 
-# ── 3. wrk (HTTP/1.1 load) — universe package if present, else source ─
-say "Installing wrk"
+# ── 3. wrk (HTTP/1.1 load) ────────────────────────────────────────────
+# In the batch above when the release packages it; built here when not.
 if command -v wrk >/dev/null 2>&1; then
-    info "already present: $(command -v wrk)"
-elif apt_run install wrk && command -v wrk >/dev/null 2>&1; then
-    info "installed from apt"
+    info "wrk: $(command -v wrk)"
 else
-    info "not packaged for this release — building from source"
+    say "Building wrk from source"
+    info "not packaged for this release"
     rm -rf /tmp/wrk-build
     git clone --depth 1 -q https://github.com/wg/wrk.git /tmp/wrk-build
-    make -j$(nproc) -C /tmp/wrk-build -j"$(nproc)" >/dev/null
+    make -C /tmp/wrk-build >/dev/null
     sudo install -m 0755 /tmp/wrk-build/wrk /usr/local/bin/wrk
     rm -rf /tmp/wrk-build
     info "installed to /usr/local/bin/wrk"
@@ -347,8 +375,8 @@ say "Building"
 # Stripping changes no instruction and no load-segment layout, so it costs
 # nothing in throughput. If a future strip ever takes the globals too, the
 # check below catches it and the fallback rebuilds unstripped.
-make -j$(nproc) -C "$DEST" clean >/dev/null 2>&1 || true
-make -j$(nproc) -C "$DEST" production 2>&1 | tail -20
+make -C "$DEST" clean >/dev/null 2>&1 || true
+make -C "$DEST" production 2>&1 | tail -20
 [ -x "$DEST/sarm" ] || die "build produced no ./sarm binary"
 
 # `|| true`, not `|| echo 0`: grep -c PRINTS 0 on no match and ALSO
@@ -360,8 +388,8 @@ SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 if [ "$SYMS" -lt 50 ]; then
     warn "the production build left only ${SYMS} global symbols — perf could not"
     warn "attribute samples. Rebuilding unstripped instead."
-    make -j$(nproc) -C "$DEST" clean >/dev/null 2>&1 || true
-    make -j$(nproc) -C "$DEST" 2>&1 | tail -5
+    make -C "$DEST" clean >/dev/null 2>&1 || true
+    make -C "$DEST" 2>&1 | tail -5
     SYMS=$(nm "$DEST/sarm" 2>/dev/null | grep -c ' T ' || true)
 fi
 # Zero is the EXPECTED answer here -- a clean `strip -x` leaves no local

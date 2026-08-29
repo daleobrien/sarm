@@ -10,14 +10,23 @@ Run from the repo root (`sarm.nosync/`). Full rationale: [docs/SCRIPTS.md](../..
 ## Build
 
 ```bash
-make                 # debug build -> ./sarm
+make                  # debug build -> ./sarm (parallel, all cores)
 make production       # strip -x'd release build
 make clean            # remove sarm, build/, generated embedded assets
+make JOBS=1           # serial build, when output order matters
 ```
 
 `make` regenerates `src/embedded.S` (from `www/`) and `src/tls/cert_data.S`
 (from `certs/`) automatically when their inputs change — no separate asset
 step needed for a normal build.
+
+**Builds are parallel by default** — the Makefile sets `-j$(NPROC)` itself,
+so never add `-j` to a `make` command here. To go serial (reading the build
+output in order, or bisecting a suspected build race) use `make JOBS=1`;
+`JOBS=N` picks any other width. `-j1` on the command line does NOT work on
+macOS: GNU make 3.81, which is what macOS ships, hides `MAKEFLAGS` from the
+makefile at parse time, so the makefile cannot see it and stand aside.
+`JOBS` is the portable knob.
 
 ## Tests
 

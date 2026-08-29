@@ -1,6 +1,28 @@
 rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 DETECTED_OS := $(shell uname -s)
 
+# Parallel by default. Every object is an independent assembly of one .S
+# file, so this build is embarrassingly parallel and a serial one wastes
+# most of the machine — 5x on a laptop, far more on the 64-core box the
+# perf work runs on. Nothing has to remember to pass -j.
+#
+# To build serially, use JOBS:
+#
+#   make JOBS=1          # serial, e.g. to read the output in order
+#   make JOBS=4          # four at a time
+#
+# JOBS rather than -j because GNU make 3.81 — which is what macOS still
+# ships — does not expose MAKEFLAGS to the makefile at parse time, so
+# there is no way to see a -j1 on the command line and stand aside. On
+# make 4.x the findstring below does see it, and an explicit -j wins.
+NPROC := $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || echo 4)
+JOBS ?= $(NPROC)
+ifeq (,$(findstring -j,$(MAKEFLAGS)))
+ifneq ($(JOBS),1)
+MAKEFLAGS += -j$(JOBS)
+endif
+endif
+
 # Sources: every .S under src/ (recursively, so the per-function folders
 # are picked up), except the shared headers (config.S, defs.S), the
 # generated embedded table (built separately), and the generated HPACK

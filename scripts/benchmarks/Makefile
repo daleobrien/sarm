@@ -14,6 +14,21 @@
 #   make bench_memcpy && ./_bench_bin/bench_memcpy
 #   make clean
 
+# Parallel by default, same as the top-level Makefile: each bench_<function>
+# target is an independent compile.
+#
+#   make -C scripts/benchmarks JOBS=1     # serial build
+#
+# JOBS rather than -j because GNU make 3.81 (macOS) hides MAKEFLAGS from
+# the makefile at parse time and cannot see a -j on the command line.
+NPROC := $(shell (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || echo 4)
+JOBS ?= $(NPROC)
+ifeq (,$(findstring -j,$(MAKEFLAGS)))
+ifneq ($(JOBS),1)
+MAKEFLAGS += -j$(JOBS)
+endif
+endif
+
 AS      := cc
 CC      := cc
 ASFLAGS := -g -O2 -arch arm64

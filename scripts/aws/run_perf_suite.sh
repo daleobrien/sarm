@@ -120,6 +120,9 @@ done
 skipped() { case ",$SKIP," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 CPUS=$(nproc)
+# Builds here (the micro-benchmark drivers in section 7) happen between
+# measurements, never during one, so they may as well use the whole box.
+export MAKEFLAGS="-j$CPUS"
 [ "$PORT" -eq 0 ] && PORT=$(( 8080 + ($$ % 200) ))
 [ -z "$OUTDIR" ] && OUTDIR="$REPO/perf-results/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUTDIR"
