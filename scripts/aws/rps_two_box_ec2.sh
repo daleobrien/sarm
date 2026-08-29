@@ -318,7 +318,12 @@ resolve_load_type() {
     [ "$LOAD_TYPE" != auto ] && return 0
 
     family="${SERVER_TYPE%%.*}"
-    for size in large xlarge 2xlarge 4xlarge 8xlarge 12xlarge 16xlarge; do
+    # Up to 48xlarge: families like c8gn go to 192 vCPUs, and stopping the
+    # search at 16xlarge silently returned a 64-core client for a job
+    # wanting 96 — a 2:1 ratio under a flag that said 3:1. Sizes absent
+    # from a family are simply never offered there, and the region probe
+    # rejects the pair before anything is launched.
+    for size in large xlarge 2xlarge 4xlarge 8xlarge 12xlarge 16xlarge 24xlarge 48xlarge; do
         if [ "$(itype_vcpus_static "x.$size")" -ge "$want" ]; then
             LOAD_TYPE="$family.$size"
             return 0
@@ -328,10 +333,11 @@ resolve_load_type() {
     # rather than quietly returning a box that cannot drive the server:
     # the run still works, and the load-side measurement below is what will
     # show whether it was enough.
-    LOAD_TYPE="$family.16xlarge"
+    LOAD_TYPE="$family.48xlarge"
     warn "a ${LOAD_RATIO}:1 load box for $SERVER_TYPE would need $want vCPUs;"
-    warn "$LOAD_TYPE is the largest in the $family family at 64. The summary"
-    warn "reports the client's own busy cores — read it before quoting req/s."
+    warn "$LOAD_TYPE is the largest size this script will ask for, at 192."
+    warn "The summary reports the client's own busy cores — read it before"
+    warn "quoting req/s."
 }
 resolve_load_type
 

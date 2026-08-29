@@ -346,8 +346,12 @@ launch_group_in_region() {
                         # tail -1 on a multi-line API error; the ${...:-}
                         # guard is because a reason we cannot read is still
                         # worth reporting as one.
+                        # Blank lines dropped BEFORE tail -1: an API
+                        # error often ends with one, and tailing it gave
+                        # "<zone> refused <type>: " with no reason at all
+                        # — which is what the 2026-08-29 runs printed.
                         warn "$az refused ${types[$i]}: $(printf '%s' "$LAUNCH_ERR" \
-                            | tail -1 | sed 's/^ *//')" ;;
+                            | sed '/^[[:space:]]*$/d' | tail -1 | sed 's/^ *//')" ;;
                 esac
                 break
             fi
