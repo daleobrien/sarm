@@ -167,15 +167,24 @@ LOAD_TYPE="auto"            # sized from the server; see resolve_load_type()
 # neither does one measurement of it, because the cost depends on how fast
 # the server's cores are:
 #
-#   c6gn (Graviton2), 8 server cores    1.47x   -> 3:1 looked ample
+#   c6gn (Graviton2),  8 server cores   1.47x   -> 3:1 looked ample
 #   c8gn (Graviton4), 32 server cores   3.60x   -> 3:1 was CLIENT-BOUND
 #   c8gn (Graviton4), 2048 connections  3.73x   -> CLIENT-BOUND again
+#   c8gn (Graviton4), 16 server cores   1.91x   -> 6:1, client at 30%
 #
-# Faster server cores generate more requests per core, so the client needs
-# more cores per server core, not fewer. 3:1 was set from the Graviton2
-# figure and produced two client-bound runs on Graviton4; 6:1 keeps a
-# ~1.6x margin over the worst measured, and is the largest ratio that
-# still fits a 16-core server inside a 128-vCPU spot quota (16 + 96).
+# It is not a property of the instance pair. It scales with how hard each
+# server core is being DRIVEN: at 32 cores each core turns over more
+# requests and costs the client more to feed, at 16 it costs less. So a
+# ratio measured at one server size does not transfer to another — which
+# is exactly the mistake that set 3:1 from an 8-core Graviton2 run and
+# then produced two client-bound runs on Graviton4. The summary prints
+# the ratio each run measured for that reason; this comment is a record,
+# not a rule.
+#
+# 6:1 is the largest ratio that still fits a 16-core server inside a
+# 128-vCPU spot quota (16 + 96), and at the default size it leaves the
+# client at 30% — roughly 3x margin, not the 1.6x the 32-core figure
+# would imply.
 #
 # The margin is never taken on trust: both sides are measured every run,
 # and a ratio that turns out too thin is reported as CLIENT-BOUND rather
