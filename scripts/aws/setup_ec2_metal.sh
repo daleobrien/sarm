@@ -52,8 +52,10 @@ export MAKEFLAGS="-j$(nproc)"
 # events read <not supported> and half this toolchain is decorative.
 # systemd-detect-virt exits 1 when it finds no virtualisation — which is
 # the answer this script is hoping for — so its status says nothing and
-# only the word it prints is read.
-VIRT="$(systemd-detect-virt 2>/dev/null)"
+# only the word it prints is read. The `|| true` is load-bearing under
+# `set -e`: an assignment takes the exit status of the command it
+# substitutes, so without it the script dies on every bare-metal box.
+VIRT="$(systemd-detect-virt 2>/dev/null || true)"
 [ -n "$VIRT" ] || VIRT=unknown
 info "Virt    : ${VIRT}"
 if [ "$VIRT" != "none" ]; then
