@@ -467,7 +467,15 @@ if [ -n "$PERF" ] && ! skipped counters; then
     EVENT_GROUPS=(
         "cycles,instructions,branches,branch-misses,stalled-cycles-frontend,stalled-cycles-backend"
         "cycles,instructions,cache-references,cache-misses,L1-dcache-loads,L1-dcache-load-misses"
-        "cycles,instructions,L1-icache-load-misses,dTLB-load-misses"
+        # context-switches and cpu-migrations are software events: the
+        # kernel counts them, they occupy no PMU slot, and they therefore
+        # ride along in an existing group rather than costing a fourth
+        # load run. They are here because the h1 profile is 18% of cycles
+        # in finish_task_switch and 8% in the wakeup path — a
+        # process-per-connection server with more connections than cores
+        # pays a wake/sleep per request, and without this row that cost
+        # has to be inferred from icache-miss ratios.
+        "cycles,instructions,L1-icache-load-misses,dTLB-load-misses,context-switches,cpu-migrations"
     )
 
     # Drop any event this core or kernel does not implement, so one
@@ -615,9 +623,33 @@ if [ -n "$PERF" ] && ! skipped counters; then
                         printf "%-6s per core: %.0f req/s per busy sarm core", k, (s > 0 ? r / s : 0)
                         if (n > 0) printf "  |  cycles/request: sarm %.0f, client %.0f", sc / n, lc / n
                     }')"
+
+                    # Switches per request is the figure that separates a
+                    # server spending its cycles on work from one spending
+                    # them on being scheduled. Two per request is the floor
+                    # for a blocking read/write pair; well above that means
+                    # the wake path, not the protocol code, is the cost.
+                    #
+                    # The request count comes from the group-1 load run and
+                    # the switch count from group 3 — different runs of the
+                    # same load for the same seconds, so this is a rate
+                    # comparison, not an exact per-request tally.
+                    # $1 is only taken when it is a number: perf writes
+                    # "<not counted>" into that column for an event it
+                    # could not schedule, and %d of that is a confident 0.
+                    csw=$(awk '/ context-switches/ && $1 ~ /^[0-9,]+$/ {
+                        gsub(/,/,"",$1); print $1; exit }' \
+                        "$OUTDIR/counters_${kind}.txt")
+                    sched=""
+                    [ -n "${csw:-}" ] && sched=$(awk -v k="$kind" -v c="$csw" \
+                        -v r="$rps" -v secs="$MEASURE_SECS" 'BEGIN {
+                            n = r * secs
+                            if (n > 0) printf "%-6s scheduling: %.2f context switches per request (%d in %ds)", k, c / n, c, secs
+                        }')
+                    [ -n "$sched" ] && info "$sched"
                 fi
             fi
-            grep -E "frontend|backend|branch-misses|cache-misses|icache|dTLB" "$OUTDIR/counters_${kind}.txt" \
+            grep -E "frontend|backend|branch-misses|cache-misses|icache|dTLB|context-switches|cpu-migrations" "$OUTDIR/counters_${kind}.txt" \
                 | sed "s/^/   ${kind}  /" | tee -a "$OUTDIR/summary.txt" || true
         fi
     done

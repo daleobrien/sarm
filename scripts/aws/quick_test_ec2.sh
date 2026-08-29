@@ -1090,11 +1090,11 @@ else
         fi
 
         say "Cost per request"
-        grep -E 'per core:|IPC ' "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' || true
+        grep -E 'per core:|IPC |scheduling:' "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' || true
 
         say "Where the cycles went"
-        grep -E 'totals: sarm|frontend|backend|branch-misses|cache-misses' \
-            "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' | head -20 || true
+        grep -E 'totals: sarm|frontend|backend|branch-misses|cache-misses|context-switches' \
+            "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' | head -24 || true
 
         say "Throughput (read this LAST, and only if sarm saturated)"
         grep -E 'req/s' "$LOCAL_OUT/summary.txt" 2>/dev/null | sed 's/^ *//;s/^/   /' | head -6 || true
