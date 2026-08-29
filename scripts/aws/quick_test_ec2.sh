@@ -526,10 +526,38 @@ region_enabled() {
     case " $ENABLED_REGIONS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# Echoes "<quota> <vcpus>" when the region's vCPU quota is known to be too
+# small for a single $ITYPE, and stays silent when it is big enough or
+# unreadable — an unreadable quota (no servicequotas:GetServiceQuota) is
+# not evidence of a small one.
+#
+# Spot and on-demand are counted against SEPARATE quotas, so which one to
+# ask about is a parameter rather than a constant: the price check below
+# can move a run to on-demand after its region was probed on spot, and
+# the quota that was checked would then be the wrong one.
+#   L-34B43A08  All Standard Spot Instance Requests
+#   L-1216C47A  Running On-Demand Standard instances
+vcpu_shortfall() {
+    local region="$1" use_spot="$2" vcpus quota quota_code
+    vcpus="$(aws --region "$region" --output text ec2 describe-instance-types \
+               --instance-types "$ITYPE" \
+               --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' 2>/dev/null || true)"
+    quota_code=L-1216C47A
+    [ "$use_spot" = 1 ] && quota_code=L-34B43A08
+    quota="$(aws --region "$region" --output text service-quotas get-service-quota \
+               --service-code ec2 --quota-code "$quota_code" \
+               --query 'Quota.Value' 2>/dev/null || true)"
+    [ -n "$quota" ] && [ "$quota" != "None" ] || return 0
+    [ -n "$vcpus" ] && [ "$vcpus" != "None" ] || return 0
+    if [ "${quota%%.*}" -lt "$vcpus" ]; then
+        printf '%s %s\n' "${quota%%.*}" "$vcpus"
+    fi
+}
+
 # Its stdout is the machine-readable result line and nothing else — the
 # caller captures it — so progress messages here go to stderr.
 probe_region() {
-    local region="$1" ami azs quota vcpus label quota_code
+    local region="$1" ami azs label short
     label="$(printf '%-16s %-14s' "$region" "$(region_name "$region")")"
     local awsc=(aws --region "$region" --output text)
 
@@ -567,26 +595,10 @@ probe_region() {
     # 64-core metal box needs 64 against a default that is often 5. This
     # is the failure that otherwise appears as VcpuLimitExceeded several
     # minutes and one security group into the run.
-    #
-    # Spot and on-demand are counted against SEPARATE quotas, so checking
-    # the wrong one is worse than not checking: a healthy on-demand limit
-    # says nothing about whether the spot request will be allowed.
-    #   L-34B43A08  All Standard Spot Instance Requests
-    #   L-1216C47A  Running On-Demand Standard instances
-    vcpus="$("${awsc[@]}" ec2 describe-instance-types --instance-types "$ITYPE" \
-               --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' 2>/dev/null || true)"
-    quota_code=L-1216C47A
-    [ "$SPOT" = 1 ] && quota_code=L-34B43A08
-    quota="$(aws --region "$region" --output text service-quotas get-service-quota \
-               --service-code ec2 --quota-code "$quota_code" \
-               --query 'Quota.Value' 2>/dev/null || true)"
-    # An unreadable quota (no servicequotas:GetServiceQuota permission) is
-    # not evidence of a small one — only a known-too-small one disqualifies.
-    if [ -n "$quota" ] && [ "$quota" != "None" ] && [ -n "$vcpus" ] && [ "$vcpus" != "None" ]; then
-        if [ "${quota%%.*}" -lt "$vcpus" ]; then
-            info "$label $([ "$SPOT" = 1 ] && echo spot || echo on-demand) vCPU quota ${quota%%.*} < $vcpus" >&2
-            return 1
-        fi
+    short="$(vcpu_shortfall "$region" "$SPOT")"
+    if [ -n "$short" ]; then
+        info "$label $([ "$SPOT" = 1 ] && echo spot || echo on-demand) vCPU quota ${short%% *} < ${short##* }" >&2
+        return 1
     fi
 
     printf '%s|%s|%s\n' "$region" "$ami" "$azs"
@@ -664,6 +676,13 @@ next_region || no_region_left
 # region is routinely 2x, so on spot the zones are tried cheapest first
 # rather than in AWS's order. One API call per zone, skipped entirely
 # under --on-demand.
+# Display only — the Pricing API pads to ten decimal places and the spot
+# history to six, and neither reads as money. The unrounded values are
+# what the comparisons use; nothing numeric goes through here.
+fmt_price() {
+    printf '%s' "$1" | sed 's/\(\.[0-9]*[1-9]\)0*$/\1/; s/\.0*$//'
+}
+
 # The on-demand rate for the same instance in the same region, from the
 # Pricing API — which lives only in a handful of endpoints, so the call
 # goes to us-east-1 and names the region of interest as a filter rather
@@ -731,23 +750,24 @@ order_azs_by_price() {
         if [ "$price" = 999 ]; then
             info "$(printf '%-18s' "$az") no published spot price — on-demand there"
         elif [ -z "$ONDEMAND" ]; then
-            info "$(printf '%-18s' "$az") \$$price/hr spot"
+            info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot"
             SPOT_AZS="$SPOT_AZS $az"
         else
             # awk, not the shell: these are decimals, and [ -lt ] is integers.
             cheaper="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{print (s<o)?1:0}')"
             saving="$(awk -v s="$price" -v o="$ONDEMAND" 'BEGIN{printf "%.0f", (o-s)*100/o}')"
             if [ "$cheaper" = 1 ]; then
-                info "$(printf '%-18s' "$az") \$$price/hr spot — ${saving}% under on-demand"
+                info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot — ${saving}% under on-demand"
                 SPOT_AZS="$SPOT_AZS $az"
             else
-                info "$(printf '%-18s' "$az") \$$price/hr spot — no saving, on-demand there"
+                info "$(printf '%-18s' "$az") \$$(fmt_price "$price")/hr spot — no saving, on-demand there"
             fi
         fi
     done <<PRICES
 $sorted
 PRICES
 
+    SPOT_AZS="${SPOT_AZS# }"        # comparable with $AZS below
     AZS="$(printf '%s' "$sorted" | awk '{printf "%s ", $2}' | sed 's/ *$//')"
     AZ="${AZS%% *}"
 }
@@ -756,7 +776,7 @@ if [ "$SPOT" = 1 ]; then
     say "Spot pricing in $REGION"
     ONDEMAND="$(ondemand_price)"
     if [ -n "$ONDEMAND" ]; then
-        info "$(printf '%-18s' 'on-demand') \$$ONDEMAND/hr — the bar spot has to beat"
+        info "$(printf '%-18s' 'on-demand') \$$(fmt_price "$ONDEMAND")/hr — the bar spot has to beat"
     else
         warn "could not read the on-demand rate; taking spot in every zone"
         warn "  (spot is capped at on-demand, so this cannot cost more — it"
@@ -767,7 +787,35 @@ if [ "$SPOT" = 1 ]; then
         SPOT=0
         warn "no zone is cheaper on spot — running on-demand instead"
     fi
+
+    # A zone that just dropped to on-demand is billed against a different
+    # quota than the one the region was probed against, and an unchecked
+    # quota is exactly how VcpuLimitExceeded arrives minutes into a run.
+    if [ "$SPOT_AZS" != "$AZS" ]; then
+        short="$(vcpu_shortfall "$REGION" 0)"
+        if [ -n "$short" ]; then
+            warn "on-demand vCPU quota ${short%% *} < ${short##* } in $REGION"
+            warn "  staying on spot in every zone: AWS caps the spot price at"
+            warn "  the on-demand rate, so a zone at parity costs no more than"
+            warn "  on-demand would have — it just carries the interruption risk"
+            SPOT=1
+            SPOT_AZS="$AZS"
+        fi
+    fi
 fi
+
+# What the launch loop will actually ask for. Not a single answer any
+# more: spot is taken only in the zones where it beats on-demand, so a
+# run can be spot in its first choice and on-demand in its fallback.
+market_summary() {
+    if [ "$SPOT" != 1 ]; then
+        echo "on-demand$([ -n "$ONDEMAND" ] && echo " at \$$(fmt_price "$ONDEMAND")/hr")"
+    elif [ "$SPOT_AZS" = "$AZS" ]; then
+        echo "spot in every zone — interruptible on 2 minutes notice"
+    else
+        echo "spot in ${SPOT_AZS:-none} — interruptible on 2 minutes notice; on-demand elsewhere"
+    fi
+}
 
 # ── 0b. plan ──────────────────────────────────────────────────────────
 say "Plan"
@@ -776,7 +824,7 @@ printf '   %-14s %s\n' region "$REGION — $(region_name "$REGION")" type "$ITYP
     suite "run_perf_suite.sh $SUITE_ARGS" timeout "${TIMEOUT}s (deadman ${DEADMAN}m)" \
     results "$LOCAL_OUT"
 printf '   %-14s %s\n' zones "$AZS" \
-    market "$([ "$SPOT" = 1 ] && echo 'spot — interruptible on 2 minutes notice' || echo 'on-demand (--on-demand)')"
+    market "$(market_summary)"
 if [ -n "$PENDING_REGIONS" ]; then
     fallbacks=""
     for r in $PENDING_REGIONS; do fallbacks="$fallbacks $r ($(region_name "$r")),"; done
