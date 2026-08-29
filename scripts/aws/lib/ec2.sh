@@ -162,13 +162,7 @@ setup_security_group() {
 # rather than going on the deferred list.
 release_region() {
     local region="$REGION"
-    if [ -n "$PG_NAME" ]; then
-        # Nothing is in it — the launch failed — so this normally deletes
-        # outright, and the deferred list catches the case where it does not.
-        "${AWSC[@]}" ec2 delete-placement-group --group-name "$PG_NAME" >/dev/null 2>&1 \
-            || defer_placement_group "$PG_NAME" "$region"
-        PG_NAME=""
-    fi
+    release_placement_group
     if [ -n "$SG_ID" ]; then
         "${AWSC[@]}" ec2 delete-security-group --group-id "$SG_ID" >/dev/null 2>&1 \
             || defer_security_group "$SG_ID" "$region"
@@ -190,21 +184,40 @@ release_region() {
 #
 # It is not free of consequences. Asking for a cluster group narrows where
 # EC2 can find capacity, so a launch is likelier to be refused — which is
-# why the caller can turn it off, and why the group is created per region
-# alongside the security group rather than once up front.
+# why the caller can turn it off.
+#
+# ONE GROUP PER ZONE, created inside the zone loop. A cluster placement
+# group binds to the availability zone of the FIRST instance launched into
+# it, and every later launch elsewhere is then refused outright:
+#
+#   Instances in the <name> Placement Group must be launched in the
+#   ap-southeast-2c Availability Zone.
+#
+# Created once per region — as this was — that turns the zone walk into a
+# single attempt: the first zone binds the group, and every remaining zone
+# fails on the group rather than on capacity, including the zones that had
+# room. The 2026-08-30 run lost Sydney that way after a rollback in 2c,
+# and it was invisible until the refusal reason started being printed.
 PG_NAME=""
-setup_placement_group() {
+setup_placement_group() {  # setup_placement_group <az>
+    PG_NAME=""
     [ "${PLACEMENT:-0}" = 1 ] || return 0
-    PG_NAME="$TAG"
-    if "${AWSC[@]}" ec2 create-placement-group --group-name "$PG_NAME" \
+    local name="$TAG-$1"
+    if "${AWSC[@]}" ec2 create-placement-group --group-name "$name" \
             --strategy cluster >/dev/null 2>&1; then
-        info "cluster placement group $PG_NAME — the two boxes get the"
-        info "shortest network path EC2 will give them"
+        PG_NAME="$name"
     else
-        warn "could not create a cluster placement group; launching without one"
-        warn "  (the run still works — the link is just an ordinary VPC hop)"
-        PG_NAME=""
+        warn "could not create a cluster placement group in $1; using none there"
     fi
+}
+
+# Give back a group this run created and did not fill. Nothing is in it —
+# the launch failed — so it normally deletes outright.
+release_placement_group() {
+    [ -n "$PG_NAME" ] || return 0
+    "${AWSC[@]}" ec2 delete-placement-group --group-name "$PG_NAME" >/dev/null 2>&1 \
+        || defer_placement_group "$PG_NAME" "$REGION"
+    PG_NAME=""
 }
 
 # ── launching ─────────────────────────────────────────────────────────
@@ -319,6 +332,11 @@ launch_group_in_region() {
         fi
 
         info "trying $az"
+        # Per zone: see setup_placement_group(). A group left over from a
+        # previous zone in this loop is bound to that zone and would
+        # refuse every launch here.
+        release_placement_group
+        setup_placement_group "$az"
         if [ "$SPOT" = 1 ]; then
             case " $SPOT_AZS " in
                 *" $az "*) ;;
@@ -374,6 +392,7 @@ launch_group_in_region() {
         if [ "$ok" = 1 ]; then
             AZ="$az"
             SUBNET_ID="$subnet"
+            [ -n "$PG_NAME" ] && info "cluster placement group $PG_NAME in $az"
             return 0
         fi
 
@@ -385,8 +404,9 @@ launch_group_in_region() {
                 >/dev/null 2>&1 || warn "rollback terminate failed — CHECK THE CONSOLE for ${LAUNCHED_IDS[*]}"
             LAUNCHED_IDS=()
         fi
-        [ "$quota_stop" = 1 ] && return 1
+        [ "$quota_stop" = 1 ] && { release_placement_group; return 1; }
     done
+    release_placement_group
     LAUNCHED_IDS=()
     return 1
 }

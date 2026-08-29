@@ -18,8 +18,8 @@
 # no server work to do, and nothing lands on the server's cores except
 # sarm. What comes back is a ceiling rather than a floor.
 #
-#   server   c6gn.4xlarge  16 vCPU   runs sarm, nothing else installed
-#   load     c6gn.12xlarge 48 vCPU   runs wrk/h2load, no sarm, no compiler
+#   server   c8gn.4xlarge  16 vCPU   runs sarm, nothing else installed
+#   load     c8gn.24xlarge 96 vCPU   runs wrk/h2load, no sarm, no compiler
 #
 # THE FAMILY IS c6gn AND THAT MATTERS MORE THAN THE CORE COUNT. A
 # small-payload RPS test is bound by packet rate, not bandwidth, and c7g's
@@ -45,7 +45,7 @@
 # tells you, per protocol, every time.
 #
 # The load box is not a fixed type: it is sized at --load-ratio (default
-# 3) times the server's cores, so changing --server-type cannot silently
+# 6) times the server's cores, so changing --server-type cannot silently
 # erode the margin that makes the measurement valid. Both sides' CPU is
 # then sampled over every protocol's window, so "the client had room to
 # spare" is a measurement in the summary rather than an assumption.
@@ -96,12 +96,15 @@
 # Usage:
 #   ./scripts/aws/rps_two_box_ec2.sh
 #   ./scripts/aws/rps_two_box_ec2.sh --yes
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c6gn.8xlarge # 32 vCPU
-#   ./scripts/aws/rps_two_box_ec2.sh --server-type c6gn.large   # 2 vCPU
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c8gn.8xlarge # 32 vCPU,
+#                                                    # needs --on-demand:
+#                                                    # 32+192 exceeds a
+#                                                    # 128 spot quota
+#   ./scripts/aws/rps_two_box_ec2.sh --server-type c8gn.large   # 2 vCPU
 #   ./scripts/aws/rps_two_box_ec2.sh --server-type c7g.4xlarge  # faster cores,
 #                                                    # but h2 hits its NIC first
 #   ./scripts/aws/rps_two_box_ec2.sh --load-ratio 6             # more headroom
-#   ./scripts/aws/rps_two_box_ec2.sh --load-type c6gn.16xlarge  # pin it
+#   ./scripts/aws/rps_two_box_ec2.sh --load-type c8gn.16xlarge  # pin it
 #   ./scripts/aws/rps_two_box_ec2.sh --protocols h2tls          # just TLS
 #   ./scripts/aws/rps_two_box_ec2.sh --duration 30 --repeat 5
 #   ./scripts/aws/rps_two_box_ec2.sh --connections 64 --max-streams 256
@@ -156,25 +159,29 @@ REGION=""
 # c6gn, not c7g: see the family note in the header. c7g has the faster
 # cores and loses anyway, because this workload runs out of packets before
 # it runs out of CPU.
-SERVER_TYPE="c6gn.4xlarge"  # 16 vCPU, 25 Gbps dedicated
+SERVER_TYPE="c8gn.4xlarge"  # 16 vCPU Graviton4, 50 Gbps dedicated
 LOAD_TYPE="auto"            # sized from the server; see resolve_load_type()
-# MEASURED, not assumed. The repo's "h2load costs ~4x what sarm costs per
-# request" comes from LOOPBACK runs, where the two contend for the same
-# cores and caches; it does not survive the move to two boxes. The
-# 2026-08-29 run (perf-results/two-box-20260829-213226) drove a saturated
-# 8-core server and the client's own busy cores came to:
+# MEASURED, and re-measured. The repo's "h2load costs ~4x what sarm costs
+# per request" comes from LOOPBACK runs, where the two contend for the
+# same cores and caches; it does not survive the move to two boxes. But
+# neither does one measurement of it, because the cost depends on how fast
+# the server's cores are:
 #
-#   HTTP/1.1      4.49 client cores per 7.83 server   0.57x
-#   HTTP/2 h2c    9.53 per 7.81                       1.22x
-#   HTTP/2 + TLS 10.69 per 7.28                       1.47x
+#   c6gn (Graviton2), 8 server cores    1.47x   -> 3:1 looked ample
+#   c8gn (Graviton4), 32 server cores   3.60x   -> 3:1 was CLIENT-BOUND
+#   c8gn (Graviton4), 2048 connections  3.73x   -> CLIENT-BOUND again
 #
-# So the worst protocol needs about 1.5 client cores per server core, and
-# the old 8:1 default was provisioning five times what the job used. 3:1
-# keeps a 2x margin over the worst case measured, which buys a much bigger
-# server inside the same family — and the run measures both sides every
-# time, so a ratio that turns out to be too thin is reported as
-# CLIENT-BOUND rather than quietly published as a server result.
-LOAD_RATIO=3
+# Faster server cores generate more requests per core, so the client needs
+# more cores per server core, not fewer. 3:1 was set from the Graviton2
+# figure and produced two client-bound runs on Graviton4; 6:1 keeps a
+# ~1.6x margin over the worst measured, and is the largest ratio that
+# still fits a 16-core server inside a 128-vCPU spot quota (16 + 96).
+#
+# The margin is never taken on trust: both sides are measured every run,
+# and a ratio that turns out too thin is reported as CLIENT-BOUND rather
+# than quietly published as a server result. The summary also prints the
+# ratio it observed and what it would recommend next time.
+LOAD_RATIO=6
 AMI=""
 UBUNTU="26.04"
 VOLUME_GB=30
@@ -492,7 +499,9 @@ while :; do
     TRIED="$TRIED $REGION"
     setup_keypair
     setup_security_group
-    setup_placement_group
+    # The placement group is created per ZONE, inside launch_group_in_region:
+    # a cluster group binds to the zone of its first instance, so one made
+    # here would refuse every zone after the first.
     if launch_group_in_region; then LAUNCHED=1; break; fi
 
     warn "no zone in $REGION ($(region_name "$REGION")) could hold both"
@@ -897,11 +906,22 @@ if worst is not None:
     print(f"{worst:.2f}")
 PYEOF
 )"
+# One number, used everywhere the run recommends a ratio. It is derived
+# from what this run MEASURED, not from what it was given — doubling the
+# provisioned ratio (the old CLIENT-BOUND advice) says nothing about what
+# the job actually needs, and the two lines disagreed: a run measuring
+# 3.73x printed "a ratio of 7" here and "--load-ratio 6" in the verdict.
+#
+# Always at least one above what was provisioned, so the advice moves.
+RECOMMENDED_RATIO=""
 if [ -n "$RATIO_NOTE" ]; then
+    RECOMMENDED_RATIO="$(awk -v r="$RATIO_NOTE" -v cur="$LOAD_RATIO" 'BEGIN{
+        want = r * 2; if (want < 2) want = 2
+        if (want < cur + 1) want = cur + 1
+        printf "%.0f", want }')"
     note ""
     note "Client cost: $RATIO_NOTE client cores per busy server core, worst protocol."
-    note "This run provisioned ${LOAD_RATIO}:1. A ratio of $(awk -v r="$RATIO_NOTE" \
-        'BEGIN{printf "%.0f", (r*2 < 2 ? 2 : r*2)}') would keep a 2x margin over that."
+    note "This run provisioned ${LOAD_RATIO}:1; ${RECOMMENDED_RATIO}:1 would keep a 2x margin over that."
 fi
 
 note ""
@@ -951,7 +971,11 @@ case "$SATURATED" in
         VERDICT_WARN=1
         note "CLIENT-BOUND — the load box peaked at ${SATURATED##* }% of its ${LOAD_CPUS_N} cores."
         note "The figures above are the LOAD GENERATOR's ceiling, not sarm's. Re-run with"
-        note "a bigger client: --load-ratio $(( LOAD_RATIO * 2 )), or --load-type explicitly." ;;
+        note "a bigger client: --load-ratio ${RECOMMENDED_RATIO:-$(( LOAD_RATIO * 2 ))}, or --load-type explicitly."
+        # A capped client cannot show how much it would have used, so the
+        # measured cost above is a floor and the ratio derived from it is
+        # too. Say so rather than let it read as a precise answer.
+        note "(the client was capped, so the measured cost is a lower bound — it may want more)" ;;
     saturated)
         note "SERVER SATURATED — every protocol above kept the server's cores busy,"
         note "and the client stayed below 85% of its ${LOAD_CPUS_N} cores throughout."
