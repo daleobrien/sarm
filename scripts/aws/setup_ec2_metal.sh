@@ -50,7 +50,11 @@ export MAKEFLAGS="-j$(nproc)"
 
 # Bare metal is what buys the PMU. On a virtualised instance most hardware
 # events read <not supported> and half this toolchain is decorative.
-VIRT="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+# systemd-detect-virt exits 1 when it finds no virtualisation — which is
+# the answer this script is hoping for — so its status says nothing and
+# only the word it prints is read.
+VIRT="$(systemd-detect-virt 2>/dev/null)"
+[ -n "$VIRT" ] || VIRT=unknown
 info "Virt    : ${VIRT}"
 if [ "$VIRT" != "none" ]; then
     warn "this does not look like a bare-metal instance (systemd-detect-virt = ${VIRT})."
