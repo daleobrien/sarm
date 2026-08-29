@@ -174,7 +174,7 @@ REQUIRED=(
     python3 python3-pip
     libssl-dev zlib1g-dev
     nghttp2-client            # h2load — HTTP/2 and HTTP/2+TLS load
-    openssl gzip jq
+    openssl gzip jq unzip      # unzip: wrk's Makefile unpacks LuaJIT with it
     util-linux procps psmisc  # taskset, pgrep, fuser
 )
 OPTIONAL=(
@@ -208,18 +208,35 @@ EXTRA=(wrk)
 # ever submitted. REQUIRED is deliberately NOT filtered: a required
 # package missing from the archive is a failure worth stopping on, not
 # something to quietly drop.
-in_archive() { apt-cache policy "$1" 2>/dev/null | grep -q 'Candidate: [^(]'; }
+#
+# `apt-cache show` is used rather than parsing `policy` output for a
+# "Candidate:" line: policy's layout is apt's to change between releases,
+# and a probe that silently answers "no" to everything would quietly
+# throw away the entire measurement toolchain.
+in_archive() { apt-cache show "$1" >/dev/null 2>&1; }
 
+CANDIDATES=("${OPTIONAL[@]}" "${PERF_PKGS[@]}" "${EXTRA[@]}")
+
+# Which is exactly what happened once, so the probe is now checked against
+# a package that must exist before its answers are trusted. If it cannot
+# see that one, the filter is broken rather than the archive being empty,
+# and the right move is to submit everything and let apt decide.
 MAYBE=()
 SKIPPED=""
-for pkg in "${OPTIONAL[@]}" "${PERF_PKGS[@]}" "${EXTRA[@]}"; do
-    if in_archive "$pkg"; then
-        MAYBE+=("$pkg")
-    else
-        SKIPPED="$SKIPPED $pkg"
-    fi
-done
-[ -n "$SKIPPED" ] && info "not in this release's archive:$SKIPPED"
+if in_archive "${REQUIRED[0]}"; then
+    for pkg in "${CANDIDATES[@]}"; do
+        if in_archive "$pkg"; then
+            MAYBE+=("$pkg")
+        else
+            SKIPPED="$SKIPPED $pkg"
+        fi
+    done
+    [ -n "$SKIPPED" ] && info "not in this release's archive:$SKIPPED"
+else
+    warn "apt-cache cannot see '${REQUIRED[0]}', so it cannot be trusted to say"
+    warn "which optional packages exist — offering the lot to apt instead."
+    MAYBE=("${CANDIDATES[@]}")
+fi
 
 # The required/optional split still decides what a failure MEANS, which is
 # the only reason to keep it: on the rare batch failure (a package that
@@ -260,12 +277,21 @@ if command -v wrk >/dev/null 2>&1; then
 else
     say "Building wrk from source"
     info "not packaged for this release"
-    rm -rf /tmp/wrk-build
-    git clone --depth 1 -q https://github.com/wg/wrk.git /tmp/wrk-build
-    make -C /tmp/wrk-build >/dev/null
-    sudo install -m 0755 /tmp/wrk-build/wrk /usr/local/bin/wrk
-    rm -rf /tmp/wrk-build
-    info "installed to /usr/local/bin/wrk"
+    # Everything else on the box is already provisioned by this point, so a
+    # wrk that will not build costs the HTTP/1.1 load generator, not the run.
+    WRK_LOG=/tmp/sarm-wrk-build.log
+    if { rm -rf /tmp/wrk-build &&
+         git clone --depth 1 -q https://github.com/wg/wrk.git /tmp/wrk-build &&
+         make -C /tmp/wrk-build &&
+         sudo install -m 0755 /tmp/wrk-build/wrk /usr/local/bin/wrk
+       } >"$WRK_LOG" 2>&1; then
+        rm -rf /tmp/wrk-build
+        info "installed to /usr/local/bin/wrk"
+    else
+        sed 's/^/     /' "$WRK_LOG" | tail -15
+        warn "wrk failed to build — see $WRK_LOG. h2load still covers HTTP/2;"
+        warn "the HTTP/1.1 leg of rps_bench.sh will not run without wrk."
+    fi
 fi
 
 # ── 4. FlameGraph (not packaged anywhere) ─────────────────────────────
