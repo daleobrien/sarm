@@ -89,6 +89,11 @@ THREADS=0
 # was the old default and it was the binding constraint on every
 # protocol -- see the header of scripts/benchmarks/rps_bench.sh.
 MAX_STREAMS=64
+# HTTP/1.1 requests per send. 1 -- an ordinary keep-alive client -- is
+# the default and what every stored result was measured at. Raising it
+# is how you ask what an h1 request costs when the server is not woken
+# for each one; see scripts/benchmarks/pipeline.lua.
+PIPELINE=1
 WARMUP=3
 REQ_PATH=/
 SERVER_CPUS=""
@@ -104,6 +109,7 @@ while [ $# -gt 0 ]; do
         --connections)  CONNECTIONS="$2"; shift ;;
         --threads)      THREADS="$2"; shift ;;
         --max-streams)  MAX_STREAMS="$2"; shift ;;
+        --pipeline)     PIPELINE="$2"; shift ;;
         --warm-up)      WARMUP="$2"; shift ;;
         --path)         REQ_PATH="$2"; shift ;;
         --server-cpus)  SERVER_CPUS="$2"; shift ;;
@@ -342,7 +348,8 @@ fi
 # The repo's own benchmark, which is the number to quote and compare
 # against the macOS baseline. It starts and stops its own server.
 if ! skipped throughput; then
-    say "2. Throughput (rps_bench.sh, median of $REPEAT, -c$CONNECTIONS -m$MAX_STREAMS -t$THREADS)"
+    say "2. Throughput (rps_bench.sh, median of $REPEAT, -c$CONNECTIONS -m$MAX_STREAMS -t$THREADS$(
+        [ "$PIPELINE" -gt 1 ] && printf ' --pipeline %s' "$PIPELINE"))"
     stop_server
     # The cpusets travel with it. Without them rps_bench.sh starts an
     # UNPINNED server on the whole machine, so section 2 measured 64
@@ -352,7 +359,7 @@ if ! skipped throughput; then
             --server-cpus "$SERVER_CPUS" --load-cpus "$LOAD_CPUS" \
             --duration "$DURATION" --repeat "$REPEAT" \
             --connections "$CONNECTIONS" --threads "$THREADS" \
-            --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \
+            --max-streams "$MAX_STREAMS" --pipeline "$PIPELINE" --warm-up "$WARMUP" \
             --path "$REQ_PATH" --json > "$OUTDIR/throughput.json" 2> "$OUTDIR/throughput.log"; then
         if command -v jq >/dev/null 2>&1; then
             # Latency and in-flight concurrency next to every req/s, so a
@@ -426,7 +433,7 @@ if ! skipped scaling; then
         if ./scripts/benchmarks/rps_bench.sh --no-build --port "$PORT" \
                 --duration "$DURATION" --repeat 1 --workers "$w" \
                 --connections "$SCALING_CONNS" --threads "$SCALING_THREADS" \
-                --max-streams "$MAX_STREAMS" --warm-up "$WARMUP" \
+                --max-streams "$MAX_STREAMS" --pipeline "$PIPELINE" --warm-up "$WARMUP" \
                 --path "$REQ_PATH" --json > "$out" 2>>"$OUTDIR/worker_scaling.log"; then
             if command -v jq >/dev/null 2>&1; then
                 # Saturation travels with each row: a flat rps column
@@ -675,6 +682,16 @@ if [ -n "$PERF" ] && ! skipped profile; then
         perf report -i "$OUTDIR/perf_${kind}.data" --stdio --no-children \
             -s dso,symbol --percent-limit 0.3 > "$OUTDIR/profile_${kind}.txt" 2>/dev/null || true
 
+        # The same report with nothing filtered out. The 0.3% cutoff above
+        # is right for a readable top-N list and wrong for a total: h1
+        # spreads its work over many small parse functions, so summing
+        # only what clears the cutoff accounted for 71% of the samples and
+        # reported sarm at 8.4% when the honest answer was "somewhere
+        # between 8.4% and 37%" — which is too wide a band to decide
+        # whether optimising sarm is worth doing at all.
+        perf report -i "$OUTDIR/perf_${kind}.data" --stdio --no-children \
+            -s dso,symbol --percent-limit 0 > "$OUTDIR/profile_${kind}_full.txt" 2>/dev/null || true
+
         info "── $kind: top functions in sarm ──"
         # Keep only samples that landed in the sarm binary; everything else
         # is kernel and load-generator noise from the shared cores.
@@ -686,15 +703,21 @@ if [ -n "$PERF" ] && ! skipped profile; then
             | tee -a "$OUTDIR/summary.txt" || true
 
         # Where the cycles went overall, which decides whether optimising
-        # sarm at all is the right move for this protocol.
+        # sarm at all is the right move for this protocol. Summed over the
+        # unfiltered report, so these are totals rather than the visible
+        # part of totals; the truncated file is the fallback if the second
+        # perf report did not run.
+        totals_src="$OUTDIR/profile_${kind}_full.txt"
+        [ -s "$totals_src" ] || totals_src="$OUTDIR/profile_${kind}.txt"
         awk '/^ +[0-9]/ {
                 pct = $1; gsub(/%/, "", pct)
                 if ($2 == "sarm") sarm += pct
                 else if ($4 ~ /idle/) idle += pct
                 else kern += pct
              } END {
-                printf "   ── %s totals: sarm %.1f%%  kernel %.1f%%  idle %.1f%%\n", K, sarm, kern, idle
-             }' K="$kind" "$OUTDIR/profile_${kind}.txt" | tee -a "$OUTDIR/summary.txt" || true
+                printf "   ── %s totals: sarm %.1f%%  kernel %.1f%%  idle %.1f%%  (%.0f%% of samples accounted)\n", \
+                    K, sarm, kern, idle, sarm + kern + idle
+             }' K="$kind" "$totals_src" | tee -a "$OUTDIR/summary.txt" || true
 
         if [ "$kind" = "h2tls" ] && [ -z "$TOP_SYMS" ]; then
             TOP_SYMS=$(awk '$2 == "sarm" {print $4}' "$OUTDIR/profile_${kind}.txt" 2>/dev/null \

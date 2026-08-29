@@ -26,6 +26,7 @@
 #   ./scripts/benchmarks/rps_bench.sh --repeat 5    # median of 5, with the spread
 #   ./scripts/benchmarks/rps_bench.sh --max-streams 64  # h2 concurrency per conn
 #   ./scripts/benchmarks/rps_bench.sh --warm-up 3   # discard the first 3s
+#   ./scripts/benchmarks/rps_bench.sh --pipeline 8  # 8 h1 requests per send
 #   ./scripts/benchmarks/rps_bench.sh --json           # machine-readable summary
 #
 # CONNECTION COUNT IS PART OF THE RESULT. sarm serves one connection per
@@ -83,6 +84,11 @@ REPEAT=1
 JSON=0
 MAX_STREAMS=10
 WARMUP=0
+# HTTP/1.1 requests written per send. 1 is an ordinary keep-alive client
+# and the default; above 1 the connection holds that many requests
+# outstanding, which is the only way an HTTP/1.1 client lets sarm serve
+# more than one request per wakeup. See scripts/benchmarks/pipeline.lua.
+PIPELINE=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -98,6 +104,7 @@ while [ $# -gt 0 ]; do
         --server-cpus)   SERVER_CPUS="$2"; shift ;;
         --load-cpus)     LOAD_CPUS="$2"; shift ;;
         --repeat)        REPEAT="$2"; shift ;;
+        --pipeline)      PIPELINE="$2"; shift ;;
         --json)          JSON=1 ;;
         -h|--help)
             sed -n '2,/^$/p' "$0"; exit 0 ;;
@@ -105,6 +112,29 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# ── HTTP/1.1 pipelining ───────────────────────────────────────────────
+# Off by default, so every existing invocation and every stored result
+# keeps meaning what it meant. When on, wrk drives the connection through
+# a script rather than its built-in request path.
+case "$PIPELINE" in
+    ''|*[!0-9]*) echo "$0: --pipeline wants a positive integer, got '$PIPELINE'" >&2; exit 2 ;;
+esac
+[ "$PIPELINE" -ge 1 ] || { echo "$0: --pipeline must be at least 1" >&2; exit 2; }
+
+WRK_SCRIPT=()
+WRK_SCRIPT_ARGS=()
+PIPE_NOTE=""
+if [ "$PIPELINE" -gt 1 ]; then
+    # Repo-relative, not $0-relative: the script has already cd'd to the
+    # repo root, so a relative $0 no longer points where it did.
+    PIPE_LUA="scripts/benchmarks/pipeline.lua"
+    [ -f "$PIPE_LUA" ] || { echo "$0: $PIPE_LUA is missing" >&2; exit 2; }
+    WRK_SCRIPT=(-s "$PIPE_LUA")
+    # wrk passes everything after a bare -- to the script's init().
+    WRK_SCRIPT_ARGS=(-- "$PIPELINE")
+    PIPE_NOTE=", pipeline ${PIPELINE}"
+fi
 
 for cmd in wrk h2load curl make; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -290,8 +320,9 @@ for pass in $(seq 1 "$REPEAT"); do
     # ── HTTP/1.1 via wrk ──────────────────────────────────────────────
     # wrk has no warm-up flag; it is given the extra seconds instead and
     # its own steady-state averaging absorbs them.
-    echo "━━━ HTTP/1.1 (wrk, ${THREADS} threads, ${CONNECTIONS} conns, $((DURATION + WARMUP))s) ━━━" >&2
-    WRK_OUT=$(${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNECTIONS" -d"$((DURATION + WARMUP))s" --latency "$URL")
+    echo "━━━ HTTP/1.1 (wrk, ${THREADS} threads, ${CONNECTIONS} conns, $((DURATION + WARMUP))s${PIPE_NOTE}) ━━━" >&2
+    WRK_OUT=$(${LOAD_PIN[@]+"${LOAD_PIN[@]}"} wrk -t"$THREADS" -c"$CONNECTIONS" -d"$((DURATION + WARMUP))s" \
+        --latency ${WRK_SCRIPT[@]+"${WRK_SCRIPT[@]}"} "$URL" ${WRK_SCRIPT_ARGS[@]+"${WRK_SCRIPT_ARGS[@]}"})
     echo "$WRK_OUT" >&2
     H1_SAMPLES="$H1_SAMPLES$(echo "$WRK_OUT" | awk '/^Requests\/sec:/ {print $2}')
 "
@@ -327,7 +358,7 @@ read -r H2TLS_LAT_US _ <<< "$(printf '%s' "$H2TLS_LAT_SAMPLES" | grep -v '^$' | 
 
 # wrk does not multiplex, so its ceiling is the connection count; h2load
 # may have --max-streams outstanding on each connection.
-H1_CEIL=$CONNECTIONS
+H1_CEIL=$((CONNECTIONS * PIPELINE))
 H2_CEIL=$(( CONNECTIONS * MAX_STREAMS ))
 read -r H1_INFLIGHT H1_SAT       <<< "$(saturation "$H1_RPS"     "$H1_LAT_US"     "$H1_CEIL")"
 read -r H2_INFLIGHT H2_SAT       <<< "$(saturation "$H2_RPS"     "$H2_LAT_US"     "$H2_CEIL")"
@@ -348,8 +379,13 @@ else
     if [ "$REPEAT" -gt 1 ]; then
         echo "median of ${REPEAT} passes, ± full spread"
     fi
-    printf 'HTTP/1.1      : %s req/s (±%s%%)  %sus mean  %s/%s in flight (%s%% — wrk is always at its ceiling)\n' \
+    printf 'HTTP/1.1%-6s: %s req/s (±%s%%)  %sus mean  %s/%s in flight (%s%% — wrk is always at its ceiling)\n' \
+        "$([ "$PIPELINE" -gt 1 ] && printf ' x%s' "$PIPELINE")" \
         "${H1_RPS:-?}" "${H1_SPREAD:-0}" "${H1_LAT_US:-?}" "${H1_INFLIGHT:-?}" "$H1_CEIL" "${H1_SAT:-?}"
+    if [ "$PIPELINE" -gt 1 ]; then
+        echo "                (pipelined ${PIPELINE} deep: req/s is comparable across depths, the latency figure is not —"
+        echo "                 it counts the queueing behind the ${PIPELINE} requests written together)"
+    fi
     printf 'HTTP/2 (h2c)  : %s req/s (±%s%%)  %sus mean  %s/%s in flight (%s%% of ceiling)\n' \
         "${H2_RPS:-?}" "${H2_SPREAD:-0}" "${H2_LAT_US:-?}" "${H2_INFLIGHT:-?}" "$H2_CEIL" "${H2_SAT:-?}"
     printf 'HTTP/2 + TLS  : %s req/s (±%s%%)  %sus mean  %s/%s in flight (%s%% of ceiling)\n' \
