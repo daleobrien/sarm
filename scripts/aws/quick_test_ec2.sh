@@ -843,7 +843,7 @@ launch_in_region() {
         # this script has stopped watching.
         MARKET=()
         [ "$SPOT" = 1 ] && MARKET=(--instance-market-options
-            'MarketType=spot,SpotOptions={SpotInstanceRequestType=one-time,InstanceInterruptionBehavior=terminate}')
+            'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}')
         # set -e must not fire here: a capacity error is an expected
         # answer, not a failure of the script.
         set +e
