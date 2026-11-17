@@ -1,16 +1,16 @@
 <h1 align="center">sarm</h1>
 
-<p align="center">A static-file web server written by hand in ARM64 assembly: HTTP/1.1, HTTP/2 and TLS 1.3, with no libc.</p>
+<p align="center">7.4 million HTTP/2 requests a second, over TLS 1.3, on 16 cores: a static-file web server written by hand in ARM64 assembly, with no libc.</p>
 
 <p align="center">
   <a href="#quick-start"><b>Quick start</b></a> &nbsp;·&nbsp;
   <a href="#documents">Documents</a> &nbsp;·&nbsp;
-  <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
-  <a href="docs/SECURITY.md">Security</a>
+  <a href="#how-fast">How fast</a> &nbsp;·&nbsp;
+  <a href="#how-it-works">How it works</a>
 </p>
 
 <p align="center">
-  <img src="docs/cover.png" alt="sarm's first-byte protocol detection, in its own assembly" width="100%">
+  <img src="docs/cover.png" alt="sarm's first-byte protocol detection, in its own assembly, and its HTTP/2 throughput" width="100%">
 </p>
 
 `sarm` has no libc, no linked libraries and no heap: it talks to the kernel
@@ -48,6 +48,26 @@ curl -k --http2 https://127.0.0.1:8080/
 | [History](docs/HISTORY.md) | What was changed, what it measured, and what was learned doing it |
 | [Multicore baseline](docs/MULTICORE-BASELINE.md) | The throughput work in order, and the noise band around each measurement |
 | [Scripts](docs/SCRIPTS.md) | The tooling: tests, profilers, benchmarks, analysers and the optimisation harness |
+
+## How fast
+
+On a 16-core Graviton2 server (`c6gn.4xlarge`), driven over the network from a
+second machine three times its size:
+
+| Protocol | Requests a second | Server CPU |
+| -------- | ----------------: | ---------: |
+| HTTP/2 + TLS 1.3 | **7,363,824** | 94% |
+| HTTP/2 (h2c) | **7,375,611** | 97% |
+| HTTP/1.1 | **635,706** | 98% |
+
+On a 12-core Apple Silicon laptop over loopback, with only 6 connections so
+the load generator and the server aren't fighting for cores: 303,988 h2c,
+263,565 HTTP/2 + TLS and 102,714 HTTP/1.1 requests a second. A full TLS 1.3
+handshake costs the server about 190 µs of CPU, a whole page load on a new TLS
+connection about 340 µs, and each further HTTP/2 request about 9 µs, most of
+it in system calls. [Multicore baseline](docs/MULTICORE-BASELINE.md) and
+[Scripts](docs/SCRIPTS.md#renting-the-hardware-the-ec2-scripts) say how each
+figure was measured, and what can make such figures misleading.
 
 ## How it works
 
